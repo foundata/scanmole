@@ -8,8 +8,15 @@ license = "GPL-3.0-or-later"
 authors = [{ name = "foundata", email = "office@foundata.com" }]
 dependencies = []
 
+[project.optional-dependencies]
+# The GUI needs PyGObject. On Fedora this is normally the system package
+# python3-gobject; installing it into a venv additionally requires the
+# gobject-introspection and cairo development headers.
+gui = ["pygobject>=3.50"]
+
 [project.scripts]
 scanmole = "scanmole.cli:main"
+scanmole-gui = "scanmole.gui:main"
 
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]
@@ -52,6 +59,14 @@ python_version = "3.12"
 strict = true
 enable_error_code = ["explicit-override"] # Extends strict mode.
 warn_unreachable = true                   # Extends strict mode.
+
+# PyGObject ships no type stubs, and GTK/libadwaita's dynamic vfunc dispatch
+# cannot be described by standard annotations. Exempt the GUI layer and the
+# gi bindings rather than scatter per-line ignores through GTK callbacks.
+[[tool.mypy.overrides]]
+module = ["scanmole.gui", "scanmole.gui.*", "gi", "gi.*"]
+ignore_errors = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = [
