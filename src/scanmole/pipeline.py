@@ -28,42 +28,35 @@ LOGGER = logging.getLogger(__name__)
 KeptPage = tuple[int, Path]
 
 
-def analyze_pages(
-    pages: list[Path], config: ScanConfig, events: EventWriter
-) -> tuple[list[KeptPage], int]:
-    """Emit a ``page`` event per input and return the pages worth keeping.
+def analyze_page(
+    page: Path, number: int, config: ScanConfig, events: EventWriter
+) -> tuple[bool, bool]:
+    """Evaluate one page, emit its ``page`` event and log the outcome.
 
     A page counts as blank when its mean brightness exceeds
     ``config.blank_threshold``. Blank pages are dropped unless
     ``config.keep_blanks`` is set.
 
     Returns:
-        The kept pages and the number of pages detected as blank (dropped or
-        kept).
+        Whether the page should be kept and whether it was detected as blank.
     """
-    kept: list[KeptPage] = []
-    blanks = 0
-    for number, page in enumerate(pages, start=1):
-        mean = image_mean(page)
-        blank = mean is not None and mean > config.blank_threshold
-        keep = config.keep_blanks or not blank
-        if blank:
-            blanks += 1
-        events.emit(
-            "page",
-            n=number,
-            file=str(page),
-            blank=blank,
-            mean=round(mean, 4) if mean is not None else None,
-        )
-        measured = f"mean {mean:.4f}" if mean is not None else "mean n/a"
-        if keep:
-            kept.append((number, page))
-            state = "blank, kept" if blank else "kept"
-            LOGGER.info("Page %d: %s (%s)", number, state, measured)
-        else:
-            LOGGER.info("Page %d: blank, dropped (%s)", number, measured)
-    return kept, blanks
+    mean = image_mean(page)
+    blank = mean is not None and mean > config.blank_threshold
+    keep = config.keep_blanks or not blank
+    events.emit(
+        "page",
+        n=number,
+        file=str(page),
+        blank=blank,
+        mean=round(mean, 4) if mean is not None else None,
+    )
+    measured = f"mean {mean:.4f}" if mean is not None else "mean n/a"
+    if keep:
+        state = "blank, kept" if blank else "kept"
+        LOGGER.info("Page %d: %s (%s)", number, state, measured)
+    else:
+        LOGGER.info("Page %d: blank, dropped (%s)", number, measured)
+    return keep, blank
 
 
 def copy_kept_images(kept: list[KeptPage], destination: Path) -> None:
@@ -73,19 +66,6 @@ def copy_kept_images(kept: list[KeptPage], destination: Path) -> None:
         suffix = page.suffix or ".img"
         shutil.copy2(page, destination / f"page_{number:04d}{suffix}")
     LOGGER.info("Kept page images copied to %s", destination)
-
-
-def _acquire_pages(
-    config: ScanConfig, device: str | None, work_dir: Path, events: EventWriter
-) -> list[Path]:
-    """Return the pages to process, either from images or a live scan."""
-    if config.from_images is not None:
-        pages = list(config.from_images)  # keep the order given
-        LOGGER.info("Building PDF from %d image(s) ...", len(pages))
-        return pages
-    if device is None:  # unreachable: the caller resolves a device for scanning
-        raise ScanMoleError("no device resolved for scanning")
-    return scan_to_files(config, device, work_dir, events)
 
 
 def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
@@ -123,16 +103,38 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             page_size=config.page_size,
             output=str(config.output),
         )
-        pages = _acquire_pages(config, device, work_dir, events)
+        kept: list[KeptPage] = []
+        total = 0
+        blanks = 0
 
-        kept, blanks = analyze_pages(pages, config, events)
-        events.emit("scan_done", total=len(pages), kept=len(kept), blanks=blanks)
-        LOGGER.info("Scanned %d page(s), kept %d", len(pages), len(kept))
+        def handle_page(page: Path) -> None:
+            # Called per page as it lands: from the scanner's reader thread
+            # during a batch, or inline for --from-images. Frontends see the
+            # page event while the rest of the batch is still scanning.
+            nonlocal total, blanks
+            total += 1
+            keep, blank = analyze_page(page, total, config, events)
+            if blank:
+                blanks += 1
+            if keep:
+                kept.append((total, page))
+
+        if config.from_images is not None:
+            LOGGER.info("Building PDF from %d image(s) ...", len(config.from_images))
+            for image in config.from_images:  # keep the order given
+                handle_page(image)
+        else:
+            if device is None:  # unreachable: resolved above for scan runs
+                raise ScanMoleError("no device resolved for scanning")
+            scan_to_files(config, device, work_dir, events, handle_page)
+
+        events.emit("scan_done", total=total, kept=len(kept), blanks=blanks)
+        LOGGER.info("Scanned %d page(s), kept %d", total, len(kept))
         if config.keep_images is not None:
             copy_kept_images(kept, config.keep_images)
         if not kept:
             raise NoPagesError(
-                f"all {len(pages)} page(s) were blank -- nothing to output "
+                f"all {total} page(s) were blank -- nothing to output "
                 "(use --keep-blanks to keep them)"
             )
 

@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import IO
 
@@ -84,7 +85,7 @@ def build_scan_command(
     if "swcrop" in caps:
         command.append(f"--swcrop={'yes' if config.crop else 'no'}")
 
-    command += ["--format=pnm", f"--batch={batch_pattern}"]
+    command += ["--format=pnm", f"--batch={batch_pattern}", "--batch-print"]
     if config.source == "flatbed":
         command.append("--batch-count=1")  # a flatbed never reports "feeder empty"
     effective: dict[str, str | int | None] = {
@@ -95,8 +96,15 @@ def build_scan_command(
     return command, effective
 
 
-def run_scanimage(command: list[str]) -> tuple[int, str]:
-    """Run a batch scan, logging progress from its stderr.
+def run_scanimage(
+    command: list[str], on_page: Callable[[Path], None]
+) -> tuple[int, str]:
+    """Run a batch scan, reporting each completed page while it runs.
+
+    ``--batch-print`` makes scanimage print each page's file name to stdout as
+    soon as the page is written; ``on_page`` is called with that path from a
+    reader thread, so callers can analyze pages and stream progress while the
+    rest of the batch is still scanning. stderr is logged as progress.
 
     Returns:
         The exit code and the collected stderr text.
@@ -107,7 +115,7 @@ def run_scanimage(command: list[str]) -> tuple[int, str]:
     LOGGER.debug("+ %s", shlex.join(command))
     lines: list[str] = []
 
-    def pump(pipe: IO[str]) -> None:
+    def pump_stderr(pipe: IO[str]) -> None:
         for raw in pipe:
             line = raw.rstrip("\n")
             lines.append(line)
@@ -116,35 +124,59 @@ def run_scanimage(command: list[str]) -> tuple[int, str]:
             else:
                 LOGGER.debug("scanimage: %s", line)
 
+    def pump_stdout(pipe: IO[str]) -> None:
+        for raw in pipe:
+            name = raw.strip()
+            if not name or not _PAGE_NAME.fullmatch(Path(name).name):
+                continue
+            try:
+                on_page(Path(name))
+            except Exception:
+                LOGGER.exception("page callback failed for %s", name)
+
     process = subprocess.Popen(
         command,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",
     )
-    stderr = process.stderr
-    if stderr is None:  # unreachable: stderr=PIPE always yields a stream
-        raise DeviceError("scanimage produced no stderr stream")
-    reader = threading.Thread(target=pump, args=(stderr,), daemon=True)
-    reader.start()
-    try:
-        exit_code = process.wait(timeout=SCAN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as exc:
-        process.kill()
-        process.wait()
-        raise DeviceError(f"scan timed out after {SCAN_TIMEOUT_SECONDS}s") from exc
-    reader.join(timeout=10)
+    with process:  # closes the pipes after the readers are done
+        stdout, stderr = process.stdout, process.stderr
+        if stdout is None or stderr is None:  # unreachable: PIPE yields streams
+            raise DeviceError("scanimage produced no output streams")
+        readers = [
+            threading.Thread(target=pump_stderr, args=(stderr,), daemon=True),
+            threading.Thread(target=pump_stdout, args=(stdout,), daemon=True),
+        ]
+        for reader in readers:
+            reader.start()
+        try:
+            exit_code = process.wait(timeout=SCAN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            process.wait()
+            raise DeviceError(
+                f"scan timed out after {SCAN_TIMEOUT_SECONDS}s"
+            ) from exc
+        for reader in readers:
+            reader.join(timeout=10)
     return exit_code, "\n".join(lines)
 
 
 def scan_to_files(
-    config: ScanConfig, device: str, work_dir: Path, events: EventWriter
+    config: ScanConfig,
+    device: str,
+    work_dir: Path,
+    events: EventWriter,
+    on_page: Callable[[Path], None],
 ) -> list[Path]:
     """Scan into ``work_dir`` and return the produced page files, in order.
 
     Emits a ``settings`` event with the values negotiated with the backend
-    before the scan starts.
+    before the scan starts. Each page is delivered through ``on_page`` as soon
+    as scanimage finishes writing it; page files that scanimage wrote but did
+    not announce (defensive) are delivered after the batch, in name order.
 
     Raises:
         DeviceError: If ``scanimage`` fails for a reason other than an empty
@@ -162,12 +194,21 @@ def scan_to_files(
         config.mode,
         config.resolution,
     )
-    exit_code, stderr_text = run_scanimage(command)
+    delivered: list[Path] = []
+    seen: set[Path] = set()
 
-    pages = sorted(
-        path for path in work_dir.iterdir() if _PAGE_NAME.fullmatch(path.name)
-    )
-    if exit_code == _NO_DOCS_EXIT and pages:
+    def deliver(path: Path) -> None:
+        delivered.append(path)
+        seen.add(path)
+        on_page(path)
+
+    exit_code, stderr_text = run_scanimage(command, deliver)
+
+    for path in sorted(work_dir.iterdir()):
+        if _PAGE_NAME.fullmatch(path.name) and path not in seen:
+            deliver(path)
+
+    if exit_code == _NO_DOCS_EXIT and delivered:
         LOGGER.debug("feeder empty (scanimage exit 7) -- normal end of batch")
     elif exit_code not in (0, _NO_DOCS_EXIT):
         tail = (
@@ -175,6 +216,6 @@ def scan_to_files(
             or f"scanimage exited {exit_code}"
         )
         raise DeviceError(f"scan failed: {tail}")
-    if not pages:
+    if not delivered:
         raise NoPagesError("no pages were scanned -- is there paper in the feeder?")
-    return pages
+    return delivered
