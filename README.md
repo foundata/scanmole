@@ -62,6 +62,20 @@ One JSON object per line on stdout; human-readable log on stderr:
 
 This protocol and the option names above are the compatibility boundary: any future reimplementation should preserve them so frontends keep working.
 
+## Translations (GUI)
+
+The GUI is localized with GNU gettext; the CLI (including `--json` output and logs) is intentionally English-only. English is the source language and fallback; German (`de`) is included. The GUI follows the usual locale environment, e.g. `LANGUAGE=de scanmole-gui`.
+
+Translator workflow (needs the `gettext` dnf package):
+
+```sh
+po/updatepo.sh de   # re-extract strings and merge them into po/de.po
+$EDITOR po/de.po    # translate
+po/buildmo.sh       # compile into src/scanmole/gui/locale/ (committed)
+```
+
+Adding a language later (e.g. Spanish): `msginit -l es -i po/scanmole.pot -o po/es.po`, translate, `po/buildmo.sh`. No code changes are needed.
+
 ## Repo layout
 
 The import package is `scanmole` under a src-layout:
@@ -84,6 +98,8 @@ scanmole/                      # repository root
 │       ├── config.py          # ScanConfig dataclass + page-size table
 │       └── gui/               # GTK4/libadwaita GUI (scanmole-gui console script)
 │           ├── app.py         # the window and event handling
-│           └── i18n.py    # gettext catalog loading (_ and ngettext)
+│           ├── i18n.py        # gettext catalog loading (_ and ngettext)
+│           └── locale/        # compiled .mo catalogs (committed, ship in wheel)
+├── po/                        # translation template, per-language .po, scripts
 └── tests/                     # pytest suite (unit/ + integration/)
 ```
