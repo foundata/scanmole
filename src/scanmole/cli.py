@@ -293,21 +293,21 @@ def main(argv: list[str] | None = None) -> int:
             return _list_devices(events, as_json=args.json)
         return run_pipeline(_build_config(args), events)
     except ScanMoleError as exc:
-        events.error(exc.message)
+        events.error(exc.message, code=exc.exit_code)
         LOGGER.error("%s", exc.message)
         return exc.exit_code
     except subprocess.TimeoutExpired as exc:
         message = f"command timed out: {_format_command(exc.cmd)}"
-        events.error(message)
+        events.error(message, code=3)
         LOGGER.error("%s", message)
         return 3
     except KeyboardInterrupt:
-        events.error("interrupted")
+        events.error("interrupted", code=_INTERRUPTED_EXIT_CODE)
         LOGGER.error("interrupted")
         return _INTERRUPTED_EXIT_CODE
     except Exception as exc:  # process boundary: keep the JSON error contract
         message = f"unexpected error: {type(exc).__name__}: {exc}"
-        events.error(message)
+        events.error(message, code=1)
         LOGGER.error("%s", message)
         return 1
 

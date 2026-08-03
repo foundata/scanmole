@@ -44,6 +44,10 @@ class EventWriter:
         self._stream.write("\n")
         self._stream.flush()
 
-    def error(self, message: str) -> None:
-        """Emit an ``error`` event carrying ``message``."""
-        self.emit("error", message=message)
+    def error(self, message: str, *, code: int = 1) -> None:
+        """Emit an ``error`` event carrying ``message`` and the exit ``code``.
+
+        ``code`` mirrors the process exit status so frontends can classify the
+        failure from the stream alone, without waiting on the process.
+        """
+        self.emit("error", message=message, code=code)

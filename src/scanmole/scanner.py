@@ -12,6 +12,7 @@ from typing import IO
 
 from scanmole.config import ScanConfig
 from scanmole.errors import DeviceError, NoPagesError
+from scanmole.events import EventWriter
 from scanmole.external import SCAN_TIMEOUT_SECONDS
 from scanmole.options import (
     Capability,
@@ -38,10 +39,15 @@ def build_scan_command(
     device: str,
     caps: dict[str, Capability],
     batch_pattern: str,
-) -> list[str]:
+) -> tuple[list[str], dict[str, str | int | None]]:
     """Assemble the ``scanimage`` command for a batch scan.
 
     Only options the device actually advertises (per ``caps``) are included.
+
+    Returns:
+        The command and the effective settings: the backend's source and mode
+        strings and the dpi actually requested. A setting is ``None`` when the
+        device does not expose the option at all.
     """
     command = ["scanimage", "-d", device]
 
@@ -81,7 +87,12 @@ def build_scan_command(
     command += ["--format=pnm", f"--batch={batch_pattern}"]
     if config.source == "flatbed":
         command.append("--batch-count=1")  # a flatbed never reports "feeder empty"
-    return command
+    effective: dict[str, str | int | None] = {
+        "source": source,
+        "mode": mode,
+        "resolution": resolution,
+    }
+    return command, effective
 
 
 def run_scanimage(command: list[str]) -> tuple[int, str]:
@@ -127,8 +138,13 @@ def run_scanimage(command: list[str]) -> tuple[int, str]:
     return exit_code, "\n".join(lines)
 
 
-def scan_to_files(config: ScanConfig, device: str, work_dir: Path) -> list[Path]:
+def scan_to_files(
+    config: ScanConfig, device: str, work_dir: Path, events: EventWriter
+) -> list[Path]:
     """Scan into ``work_dir`` and return the produced page files, in order.
+
+    Emits a ``settings`` event with the values negotiated with the backend
+    before the scan starts.
 
     Raises:
         DeviceError: If ``scanimage`` fails for a reason other than an empty
@@ -137,7 +153,8 @@ def scan_to_files(config: ScanConfig, device: str, work_dir: Path) -> list[Path]
     """
     caps = probe_capabilities(device)
     pattern = str(work_dir / "page_%04d.pnm")
-    command = build_scan_command(config, device, caps, pattern)
+    command, effective = build_scan_command(config, device, caps, pattern)
+    events.emit("settings", device=device, **effective)
     LOGGER.info(
         "Scanning from %s (%s, %s, %d dpi) ...",
         device,

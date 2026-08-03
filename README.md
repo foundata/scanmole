@@ -52,13 +52,16 @@ One JSON object per line on stdout; human-readable log on stderr:
 
 ```
 {"event":"devices","devices":[{"device":"...","vendor":"...","model":"...","type":"..."}]}
-{"event":"start","device":"...","output":"..."}
+{"event":"start","protocol":1,"device":"...","source":"adf-duplex","mode":"lineart","resolution":300,"page_size":"a4","output":"..."}
+{"event":"settings","device":"...","source":"ADF Duplex","mode":"Lineart","resolution":300}
 {"event":"page","n":1,"file":"...","blank":false,"mean":0.87}
-{"event":"scan_done","total":5,"kept":4}
-{"event":"ocr_start"}
-{"event":"done","output":"out.pdf","pages":4}
-{"event":"error","message":"..."}
+{"event":"scan_done","total":5,"kept":4,"blanks":1}
+{"event":"ocr_start","lang":"deu"}
+{"event":"done","output":"out.pdf","pages":4,"bytes":812345,"seconds":41.2}
+{"event":"error","message":"...","code":3}
 ```
+
+`start` carries the requested settings; `settings` (scanner runs only) reports the values actually negotiated with the SANE backend. `error.code` mirrors the process exit code.
 
 This protocol and the option names above are the compatibility boundary: any future reimplementation should preserve them so frontends keep working.
 

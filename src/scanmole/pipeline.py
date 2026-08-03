@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from scanmole.config import ScanConfig
@@ -29,18 +30,25 @@ KeptPage = tuple[int, Path]
 
 def analyze_pages(
     pages: list[Path], config: ScanConfig, events: EventWriter
-) -> list[KeptPage]:
+) -> tuple[list[KeptPage], int]:
     """Emit a ``page`` event per input and return the pages worth keeping.
 
     A page counts as blank when its mean brightness exceeds
     ``config.blank_threshold``. Blank pages are dropped unless
     ``config.keep_blanks`` is set.
+
+    Returns:
+        The kept pages and the number of pages detected as blank (dropped or
+        kept).
     """
     kept: list[KeptPage] = []
+    blanks = 0
     for number, page in enumerate(pages, start=1):
         mean = image_mean(page)
         blank = mean is not None and mean > config.blank_threshold
         keep = config.keep_blanks or not blank
+        if blank:
+            blanks += 1
         events.emit(
             "page",
             n=number,
@@ -55,7 +63,7 @@ def analyze_pages(
             LOGGER.info("Page %d: %s (%s)", number, state, measured)
         else:
             LOGGER.info("Page %d: blank, dropped (%s)", number, measured)
-    return kept
+    return kept, blanks
 
 
 def copy_kept_images(kept: list[KeptPage], destination: Path) -> None:
@@ -68,7 +76,7 @@ def copy_kept_images(kept: list[KeptPage], destination: Path) -> None:
 
 
 def _acquire_pages(
-    config: ScanConfig, device: str | None, work_dir: Path
+    config: ScanConfig, device: str | None, work_dir: Path, events: EventWriter
 ) -> list[Path]:
     """Return the pages to process, either from images or a live scan."""
     if config.from_images is not None:
@@ -77,7 +85,7 @@ def _acquire_pages(
         return pages
     if device is None:  # unreachable: the caller resolves a device for scanning
         raise ScanMoleError("no device resolved for scanning")
-    return scan_to_files(config, device, work_dir)
+    return scan_to_files(config, device, work_dir, events)
 
 
 def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
@@ -103,12 +111,22 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         device = config.device or pick_default_device()
 
     work_dir = Path(tempfile.mkdtemp(prefix="scanmole-"))
+    started = time.monotonic()
     try:
-        events.emit("start", device=device, output=str(config.output))
-        pages = _acquire_pages(config, device, work_dir)
+        events.emit(
+            "start",
+            protocol=1,
+            device=device,
+            source=config.source,
+            mode=config.mode,
+            resolution=config.resolution,
+            page_size=config.page_size,
+            output=str(config.output),
+        )
+        pages = _acquire_pages(config, device, work_dir, events)
 
-        kept = analyze_pages(pages, config, events)
-        events.emit("scan_done", total=len(pages), kept=len(kept))
+        kept, blanks = analyze_pages(pages, config, events)
+        events.emit("scan_done", total=len(pages), kept=len(kept), blanks=blanks)
         LOGGER.info("Scanned %d page(s), kept %d", len(pages), len(kept))
         if config.keep_images is not None:
             copy_kept_images(kept, config.keep_images)
@@ -122,13 +140,19 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         dpi = None if from_images else config.resolution
         build_pdf([page for _, page in kept], raw_pdf, dpi)
         if config.ocr:
-            events.emit("ocr_start")
+            events.emit("ocr_start", lang=config.lang)
             LOGGER.info("Running OCR (%s) ...", config.lang)
             run_ocr(raw_pdf, config.output, config)
         else:
             shutil.move(str(raw_pdf), str(config.output))
 
-        events.emit("done", output=str(config.output), pages=len(kept))
+        events.emit(
+            "done",
+            output=str(config.output),
+            pages=len(kept),
+            bytes=config.output.stat().st_size,
+            seconds=round(time.monotonic() - started, 2),
+        )
         LOGGER.info("Done: %s (%d page(s))", config.output, len(kept))
         return 0
     finally:

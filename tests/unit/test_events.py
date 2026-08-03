@@ -45,9 +45,19 @@ def test_error_emits_error_event() -> None:
     stream = io.StringIO()
     writer = EventWriter(enabled=True, stream=stream)
 
-    writer.error("device offline")
+    writer.error("device offline", code=3)
 
     assert json.loads(stream.getvalue()) == {
         "event": "error",
         "message": "device offline",
+        "code": 3,
     }
+
+
+def test_error_defaults_to_the_unexpected_code() -> None:
+    stream = io.StringIO()
+    writer = EventWriter(enabled=True, stream=stream)
+
+    writer.error("boom")
+
+    assert json.loads(stream.getvalue())["code"] == 1
