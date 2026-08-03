@@ -7,6 +7,7 @@ from scanmole.errors import (
     InputError,
     MissingDependencyError,
     NoPagesError,
+    ProcessingError,
     ScanMoleError,
 )
 
@@ -17,6 +18,7 @@ def test_exit_codes_match_contract() -> None:
     assert NoPagesError("x").exit_code == 2
     assert DeviceError("x").exit_code == 3
     assert MissingDependencyError("x").exit_code == 4
+    assert ProcessingError("x").exit_code == 5
 
 
 def test_message_is_preserved() -> None:

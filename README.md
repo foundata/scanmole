@@ -44,7 +44,7 @@ scanmole-gui                   # the GUI
 
 Key options: `-d/--device` (or `$SCANMOLE_DEVICE`; auto-picks the first real scanner otherwise), `--source adf-duplex|adf|adf-back|flatbed`, `--mode lineart|gray|color`, `-r/--resolution`, `--page-size a4|a5|a6|letter|legal|WxH(mm)`, `-l/--lang` (Tesseract codes, `deu+eng` works), `--ocr/--no-ocr`, `--blank-threshold` (default 0.995) / `--keep-blanks`, `--despeckle N`, `--deskew`, `--crop`, `--optimize 0..3`, `--pdfa`, `--keep-images DIR`, `--json`, `-v`. Run `scanmole --help` for the full list.
 
-Exit codes: `0` success, `2` no pages / all blank, `3` device or scan error, `4` missing dependency.
+Exit codes: `0` success, `1` unexpected error, `2` usage error / no pages / all blank, `3` device or scan error, `4` missing dependency, `5` PDF assembly or OCR failed, `130` interrupted.
 
 ## The `--json` protocol (stable API for frontends)
 

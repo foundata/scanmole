@@ -14,7 +14,7 @@ from pathlib import Path
 
 from scanmole.config import ScanConfig
 from scanmole.devices import pick_default_device
-from scanmole.errors import NoPagesError, ScanMoleError
+from scanmole.errors import InputError, NoPagesError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import require_tools
 from scanmole.options import parse_page_size
@@ -140,10 +140,10 @@ def _check_input_images(images: tuple[Path, ...]) -> None:
 
     Raises:
         NoPagesError: If no images were given.
-        ScanMoleError: If a named image does not exist.
+        InputError: If a named image does not exist.
     """
     if not images:
         raise NoPagesError("--from-images needs at least one file")
     for image in images:
         if not image.is_file():
-            raise ScanMoleError(f"input image not found: {image}")
+            raise InputError(f"input image not found: {image}")

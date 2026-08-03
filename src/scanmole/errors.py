@@ -45,3 +45,9 @@ class MissingDependencyError(ScanMoleError):
     """Report that a required external tool is not installed."""
 
     exit_code = 4
+
+
+class ProcessingError(ScanMoleError):
+    """Report an img2pdf or ocrmypdf failure after pages were acquired."""
+
+    exit_code = 5

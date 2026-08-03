@@ -72,6 +72,13 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
             "ocrmypdf) on this system. See the log for details."
         ),
     ),
+    5: (
+        _("Processing Failed"),
+        _(
+            "PDF assembly or OCR failed after scanning. "
+            "See the log for details."
+        ),
+    ),
 }
 
 SIGKILL_GRACE_SECONDS = 3  # between SIGTERM and SIGKILL on cancel

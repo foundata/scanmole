@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 
 from scanmole.config import ScanConfig
-from scanmole.errors import ScanMoleError
+from scanmole.errors import ProcessingError
 from scanmole.external import INSTALL_HINT, TOOL_TIMEOUT_SECONDS, run_command
 
 LOGGER = logging.getLogger(__name__)
@@ -22,16 +23,21 @@ def build_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
             metadata, so without this ``img2pdf`` would assume 96 dpi.
 
     Raises:
-        ScanMoleError: If ``img2pdf`` fails.
+        ProcessingError: If ``img2pdf`` fails or times out.
     """
     command = ["img2pdf"]
     if dpi is not None:
         command += ["--imgsize", f"{dpi}dpi"]
     command += [str(page) for page in pages]
     command += ["-o", str(output)]
-    result = run_command(command, timeout_seconds=TOOL_TIMEOUT_SECONDS)
+    try:
+        result = run_command(command, timeout_seconds=TOOL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise ProcessingError(
+            f"img2pdf timed out after {TOOL_TIMEOUT_SECONDS}s"
+        ) from exc
     if result.returncode != 0:
-        raise ScanMoleError(f"img2pdf failed: {result.stderr.strip()}")
+        raise ProcessingError(f"img2pdf failed: {result.stderr.strip()}")
 
 
 def run_ocr(source: Path, output: Path, config: ScanConfig) -> None:
@@ -41,7 +47,7 @@ def run_ocr(source: Path, output: Path, config: ScanConfig) -> None:
     and idempotent ``--skip-text`` handling.
 
     Raises:
-        ScanMoleError: If ``ocrmypdf`` fails.
+        ProcessingError: If ``ocrmypdf`` fails or times out.
     """
     command = [
         "ocrmypdf",
@@ -57,11 +63,18 @@ def run_ocr(source: Path, output: Path, config: ScanConfig) -> None:
         command += ["--output-type", "pdf"]
     command += [str(source), str(output)]
 
-    result = run_command(command, timeout_seconds=TOOL_TIMEOUT_SECONDS)
+    try:
+        result = run_command(command, timeout_seconds=TOOL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise ProcessingError(
+            f"ocrmypdf timed out after {TOOL_TIMEOUT_SECONDS}s"
+        ) from exc
     if result.stderr:
         LOGGER.debug("%s", result.stderr.rstrip())
     if result.returncode != 0:
         tail = "\n".join(result.stderr.strip().splitlines()[-6:])
         needs_langpack = "language" in tail.lower() or "tessdata" in tail.lower()
         hint = f" ({INSTALL_HINT})" if needs_langpack else ""
-        raise ScanMoleError(f"ocrmypdf failed (exit {result.returncode}): {tail}{hint}")
+        raise ProcessingError(
+            f"ocrmypdf failed (exit {result.returncode}): {tail}{hint}"
+        )
