@@ -1,0 +1,5 @@
+{"device": null, "event": "start", "mode": "lineart", "output": "result.pdf", "page_size": "a4", "protocol": 1, "resolution": 300, "source": "adf-duplex"}
+{"blank": false, "event": "page", "file": "page1.pgm", "mean": 0.4706, "n": 1}
+{"blank": true, "event": "page", "file": "page2.pgm", "mean": 1.0, "n": 2}
+{"blanks": 1, "event": "scan_done", "kept": 1, "total": 2}
+{"bytes": "<SIZE>", "event": "done", "output": "result.pdf", "pages": 1, "seconds": "<SECONDS>"}
