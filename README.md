@@ -5,9 +5,9 @@ Paperless-office document scanning for Linux: ADF duplex batches in, searchable 
 - **`scanmole`**: CLI scanning engine (Python 3, stdlib only). Scans via SANE (`scanimage`), drops blank pages, assembles a PDF with `img2pdf`, runs Tesseract OCR via `ocrmypdf`.
 - **`scanmole-gui`**: GTK4/libadwaita frontend. A thin subprocess wrapper around `scanmole` using its `--json` event protocol; it contains no scanning logic itself.
 
-## Install (Fedora)
+## Install
 
-ScanMole is a Python package installed into a [uv](https://docs.astral.sh/uv/)-managed virtualenv. Its runtime still shells out to the same external tools, which come from Fedora packages:
+ScanMole is a Python package installed into a [uv](https://docs.astral.sh/uv/)-managed virtualenv. Its runtime still shells out to the same external tools, which come from distribution packages. Fedora is the primary platform:
 
 ```sh
 sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf \
@@ -15,7 +15,15 @@ sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf \
                  python3-gobject gtk4 libadwaita
 ```
 
-The ScanMole package itself is installed via uv, not dnf. For development:
+Debian 13+ and Ubuntu 24.04+ are secondary platforms; the code is identical, only the package names differ (older releases lack the required Python ≥ 3.12):
+
+```sh
+sudo apt install sane-utils sane-airscan img2pdf ocrmypdf \
+                 tesseract-ocr tesseract-ocr-deu \
+                 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+```
+
+The ScanMole package itself is installed via uv, not the system package manager. For development:
 
 ```sh
 uv venv --system-site-packages # venv that can see Fedora's python3-gobject
