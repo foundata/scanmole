@@ -83,6 +83,14 @@ def test_build_config_maps_flags(tmp_path: Path) -> None:
     assert config.output == (tmp_path / "out.pdf").resolve()
 
 
+def test_pdfa_defaults_on_and_can_be_disabled(tmp_path: Path) -> None:
+    default = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+    disabled = _build_config(_parse(["--no-pdfa", "-o", str(tmp_path / "b.pdf")]))
+
+    assert default.pdfa is True
+    assert disabled.pdfa is False
+
+
 def test_build_config_from_images_are_paths(tmp_path: Path) -> None:
     args = _parse(["--from-images", "a.png", "b.png", "-o", str(tmp_path / "o.pdf")])
 

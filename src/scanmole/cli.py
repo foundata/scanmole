@@ -182,8 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pdfa",
-        action="store_true",
-        help="produce PDF/A instead of plain PDF",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="produce archival PDF/A output; only applies with OCR (default: on)",
     )
     parser.add_argument(
         "--blank-threshold",
