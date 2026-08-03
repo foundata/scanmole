@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 
 from scanmole.errors import MissingDependencyError
 
@@ -25,9 +26,38 @@ SCAN_TIMEOUT_SECONDS = 3600
 TOOL_TIMEOUT_SECONDS = 3600
 """Timeout for ``img2pdf`` and ``ocrmypdf``."""
 
-INSTALL_HINT = (
+_DNF_HINT = (
     "try: sudo dnf install sane-backends img2pdf ocrmypdf tesseract-langpack-deu"
 )
+_APT_HINT = "try: sudo apt install sane-utils img2pdf ocrmypdf tesseract-ocr-deu"
+
+
+def parse_distro_ids(os_release: str) -> set[str]:
+    """Extract the ``ID`` and ``ID_LIKE`` identifiers from os-release text."""
+    ids: set[str] = set()
+    for line in os_release.splitlines():
+        key, _, value = line.partition("=")
+        if key in ("ID", "ID_LIKE"):
+            ids.update(value.strip().strip('"').lower().split())
+    return ids
+
+
+def hint_for_distro(ids: set[str]) -> str:
+    """Return the package-install hint for a distro id set (Fedora default)."""
+    if ids & {"debian", "ubuntu"}:
+        return _APT_HINT
+    return _DNF_HINT
+
+
+def _detect_install_hint() -> str:
+    try:
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        return _DNF_HINT
+    return hint_for_distro(parse_distro_ids(os_release))
+
+
+INSTALL_HINT = _detect_install_hint()
 
 
 def run_command(
