@@ -25,9 +25,6 @@ SCAN_TIMEOUT_SECONDS = 3600
 TOOL_TIMEOUT_SECONDS = 3600
 """Timeout for ``img2pdf`` and ``ocrmypdf``."""
 
-IMAGE_TIMEOUT_SECONDS = 300
-"""Timeout for a single ImageMagick brightness probe."""
-
 INSTALL_HINT = (
     "try: sudo dnf install sane-backends img2pdf ocrmypdf tesseract-langpack-deu"
 )

@@ -1,17 +1,15 @@
 """Blank-page detection via mean image brightness.
 
 Raw PNM images (the format ``scanimage`` writes) are parsed with the standard
-library alone. Any other image format falls back to ImageMagick when it is
-available.
+library alone. Other formats (possible via ``--from-images``) are not
+measured: those inputs are user-curated, so blank detection is skipped for
+them instead of pulling in an image library.
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
-
-from scanmole.external import IMAGE_TIMEOUT_SECONDS, run_command
 
 LOGGER = logging.getLogger(__name__)
 
@@ -96,43 +94,17 @@ def pnm_mean(path: Path) -> float | None:
     return (total / (counted * maxval)) if counted else 0.0
 
 
-def _magick_mean(path: Path) -> float | None:
-    """Return the mean brightness of any image via ImageMagick, or ``None``."""
-    tool = shutil.which("magick") or shutil.which("convert")
-    if tool is None:
-        LOGGER.warning(
-            "%s: not a PNM and ImageMagick is not installed -- skipping blank "
-            "detection for this page",
-            path.name,
-        )
-        return None
-    result = run_command(
-        [tool, f"{path}[0]", "-colorspace", "gray", "-format", "%[fx:mean]", "info:"],
-        timeout_seconds=IMAGE_TIMEOUT_SECONDS,
-    )
-    if result.returncode != 0:
-        LOGGER.warning(
-            "ImageMagick could not analyze %s: %s", path, result.stderr.strip()
-        )
-        return None
-    try:
-        return float(result.stdout.split()[0])
-    except (ValueError, IndexError):
-        return None
-
-
 def image_mean(path: Path) -> float | None:
-    """Return the mean brightness (0..1) of any image, or ``None`` if unknown.
+    """Return the mean brightness (0..1) of an image, or ``None`` if unknown.
 
-    Raw PNM images are measured natively; other formats use ImageMagick when it
-    is installed. A ``None`` result means blank detection must be skipped for
-    this page.
+    Only raw PNM images are measured. A ``None`` result means blank detection
+    must be skipped for this page; the page is then always kept.
     """
     try:
         native = pnm_mean(path)
     except (ValueError, OSError) as exc:
         LOGGER.warning("cannot parse %s: %s", path, exc)
         return None
-    if native is not None:
-        return native
-    return _magick_mean(path)
+    if native is None:
+        LOGGER.debug("%s: not a raw PNM; skipping blank detection", path.name)
+    return native

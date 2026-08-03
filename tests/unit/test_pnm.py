@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scanmole.pnm import pnm_mean
+from scanmole.pnm import image_mean, pnm_mean
 
 
 def _write(path: Path, data: bytes) -> Path:
@@ -61,3 +61,10 @@ def test_pnm_mean_rejects_truncated_header(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="truncated PNM header"):
         pnm_mean(page)
+
+
+def test_image_mean_skips_non_pnm_files(tmp_path: Path) -> None:
+    png = tmp_path / "page.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+    assert image_mean(png) is None
