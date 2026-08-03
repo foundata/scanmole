@@ -1,14 +1,23 @@
-"""Tests for argument-to-config translation and output-path resolution."""
+"""Tests for argument-to-config translation, path resolution and exit codes."""
 
 from __future__ import annotations
 
 import argparse
+import json
+import signal
 from pathlib import Path
 
 import pytest
 
-from scanmole.cli import _build_config, _resolve_output, build_parser
-from scanmole.errors import InputError
+from scanmole.cli import _build_config, _resolve_output, _Terminated, build_parser, main
+from scanmole.errors import InputError, ProcessingError
+
+
+def _raiser(exc: BaseException) -> object:
+    def raise_it(config: object, events: object) -> int:
+        raise exc
+
+    return raise_it
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:
@@ -80,3 +89,49 @@ def test_build_config_from_images_are_paths(tmp_path: Path) -> None:
     config = _build_config(args)
 
     assert config.from_images == (Path("a.png"), Path("b.png"))
+
+
+def test_main_maps_domain_errors_to_their_exit_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "scanmole.cli.run_pipeline", _raiser(ProcessingError("ocrmypdf failed"))
+    )
+
+    assert main(["--json"]) == 5
+
+    event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert event == {"event": "error", "message": "ocrmypdf failed", "code": 5}
+
+
+def test_main_returns_130_on_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("scanmole.cli.run_pipeline", _raiser(KeyboardInterrupt()))
+
+    assert main([]) == 130
+
+
+def test_main_returns_143_on_sigterm(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("scanmole.cli.run_pipeline", _raiser(_Terminated()))
+
+    assert main(["--json"]) == 143
+
+    event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert event == {"event": "error", "message": "terminated", "code": 143}
+
+
+def test_main_installs_a_sigterm_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scanmole.cli.run_pipeline", lambda config, events: 0)
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        main([])
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        assert handler is not previous
+        with pytest.raises(_Terminated):
+            handler(signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGTERM, previous)

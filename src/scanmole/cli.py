@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from types import FrameType
 from typing import override
 
 from scanmole import __version__
@@ -26,7 +28,29 @@ from scanmole.pipeline import run_pipeline
 
 LOGGER = logging.getLogger("scanmole")
 
-_INTERRUPTED_EXIT_CODE = 130
+_INTERRUPTED_EXIT_CODE = 130  # 128 + SIGINT
+_TERMINATED_EXIT_CODE = 143  # 128 + SIGTERM
+
+
+class _Terminated(Exception):
+    """Raised by the SIGTERM handler so cleanup handlers run before exit.
+
+    The GUI (and process supervisors) stop a run with SIGTERM. Python's
+    default disposition would kill the interpreter without unwinding, leaving
+    the scanimage child running and the work directory behind.
+    """
+
+
+def _install_sigterm_handler() -> None:
+    """Convert SIGTERM into :class:`_Terminated`."""
+
+    def raise_terminated(signum: int, frame: FrameType | None) -> None:
+        raise _Terminated
+
+    try:
+        signal.signal(signal.SIGTERM, raise_terminated)
+    except ValueError:  # not the main thread (embedded use); keep the default
+        pass
 
 
 class _LevelPrefixFormatter(logging.Formatter):
@@ -287,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     """Run the ScanMole command line and return a process exit code."""
     args = build_parser().parse_args(argv)
     configure_logging(verbose=args.verbose)
+    _install_sigterm_handler()
     events = EventWriter(enabled=args.json)
     try:
         if args.list_devices:
@@ -305,6 +330,10 @@ def main(argv: list[str] | None = None) -> int:
         events.error("interrupted", code=_INTERRUPTED_EXIT_CODE)
         LOGGER.error("interrupted")
         return _INTERRUPTED_EXIT_CODE
+    except _Terminated:
+        events.error("terminated", code=_TERMINATED_EXIT_CODE)
+        LOGGER.error("terminated")
+        return _TERMINATED_EXIT_CODE
     except Exception as exc:  # process boundary: keep the JSON error contract
         message = f"unexpected error: {type(exc).__name__}: {exc}"
         events.error(message, code=1)

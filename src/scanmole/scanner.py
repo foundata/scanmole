@@ -159,6 +159,14 @@ def run_scanimage(
             raise DeviceError(
                 f"scan timed out after {SCAN_TIMEOUT_SECONDS}s"
             ) from exc
+        except BaseException:  # SIGINT/SIGTERM: never leave scanimage running
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
         for reader in readers:
             reader.join(timeout=10)
     return exit_code, "\n".join(lines)
