@@ -147,9 +147,7 @@ def test_from_images_failure_does_not_claim_preserved_pages(
     monkeypatch.setattr("scanmole.pipeline.build_pdf", failing_build_pdf)
 
     with pytest.raises(ProcessingError) as info:
-        run_pipeline(
-            _config((page,), tmp_path / "out.pdf"), EventWriter(enabled=False)
-        )
+        run_pipeline(_config((page,), tmp_path / "out.pdf"), EventWriter(enabled=False))
 
     assert "kept in" not in info.value.message
 

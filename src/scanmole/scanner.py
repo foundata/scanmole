@@ -156,9 +156,7 @@ def run_scanimage(
         except subprocess.TimeoutExpired as exc:
             process.kill()
             process.wait()
-            raise DeviceError(
-                f"scan timed out after {SCAN_TIMEOUT_SECONDS}s"
-            ) from exc
+            raise DeviceError(f"scan timed out after {SCAN_TIMEOUT_SECONDS}s") from exc
         except BaseException:  # SIGINT/SIGTERM: never leave scanimage running
             process.terminate()
             try:

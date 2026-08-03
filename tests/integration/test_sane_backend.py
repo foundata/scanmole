@@ -52,9 +52,7 @@ def test_list_devices_reports_the_test_backend(
 
     event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert event["event"] == "devices"
-    assert any(
-        device["device"].startswith("test:") for device in event["devices"]
-    )
+    assert any(device["device"].startswith("test:") for device in event["devices"])
 
 
 @_NEEDS_TEST_BACKEND
@@ -83,9 +81,7 @@ def test_flatbed_scan_produces_a_pdf_and_the_event_stream(
     assert main(argv) == 0
 
     assert output.is_file()
-    events = [
-        json.loads(line) for line in capsys.readouterr().out.strip().splitlines()
-    ]
+    events = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
     kinds = [event["event"] for event in events]
     assert kinds[0] == "start"
     assert "settings" in kinds
