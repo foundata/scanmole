@@ -190,7 +190,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.995,
         metavar="F",
-        help="mean brightness above which a page is blank (default: %(default)s)",
+        help=(
+            "mean brightness above which a page is blank; 0 disables "
+            "(default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--keep-blanks",

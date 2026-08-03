@@ -34,14 +34,19 @@ def analyze_page(
     """Evaluate one page, emit its ``page`` event and log the outcome.
 
     A page counts as blank when its mean brightness exceeds
-    ``config.blank_threshold``. Blank pages are dropped unless
-    ``config.keep_blanks`` is set.
+    ``config.blank_threshold``; a threshold of ``0`` (or below) disables blank
+    detection entirely. Blank pages are dropped unless ``config.keep_blanks``
+    is set.
 
     Returns:
         Whether the page should be kept and whether it was detected as blank.
     """
     mean = image_mean(page)
-    blank = mean is not None and mean > config.blank_threshold
+    blank = (
+        config.blank_threshold > 0
+        and mean is not None
+        and mean > config.blank_threshold
+    )
     keep = config.keep_blanks or not blank
     events.emit(
         "page",

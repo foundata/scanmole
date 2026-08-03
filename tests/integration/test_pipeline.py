@@ -6,6 +6,7 @@ off so the test needs only ``img2pdf``; it is skipped when that is absent.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import shutil
@@ -16,7 +17,7 @@ import pytest
 from scanmole.config import ScanConfig
 from scanmole.errors import NoPagesError, ProcessingError
 from scanmole.events import EventWriter
-from scanmole.pipeline import run_pipeline
+from scanmole.pipeline import analyze_page, run_pipeline
 
 pytestmark = pytest.mark.integration
 
@@ -151,3 +152,15 @@ def test_from_images_failure_does_not_claim_preserved_pages(
         )
 
     assert "kept in" not in info.value.message
+
+
+def test_blank_threshold_zero_disables_blank_detection(tmp_path: Path) -> None:
+    page = _white_page(tmp_path / "white.pgm")
+    config = dataclasses.replace(
+        _config((page,), tmp_path / "out.pdf"), blank_threshold=0.0
+    )
+
+    keep, blank = analyze_page(page, 1, config, EventWriter(enabled=False))
+
+    assert keep is True
+    assert blank is False
