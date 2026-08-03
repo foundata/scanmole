@@ -99,6 +99,27 @@ def test_build_config_from_images_are_paths(tmp_path: Path) -> None:
     assert config.from_images == (Path("a.png"), Path("b.png"))
 
 
+def test_from_images_rejects_an_explicit_device(tmp_path: Path) -> None:
+    args = _parse(
+        ["--from-images", "a.png", "-d", "test:0", "-o", str(tmp_path / "o.pdf")]
+    )
+
+    with pytest.raises(InputError, match="--from-images"):
+        _build_config(args)
+
+
+def test_from_images_ignores_the_device_environment_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SCANMOLE_DEVICE", "test:0")
+
+    config = _build_config(
+        _parse(["--from-images", "a.png", "-o", str(tmp_path / "o.pdf")])
+    )
+
+    assert config.device is None
+
+
 def test_main_maps_domain_errors_to_their_exit_code(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

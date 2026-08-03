@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import signal
 import subprocess
 import sys
@@ -106,7 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-d",
         "--device",
-        default=os.environ.get(DEVICE_ENV_VAR) or None,
+        # The ${DEVICE_ENV_VAR} fallback happens at device selection time, not
+        # here: an explicit -d must stay distinguishable from the environment.
         help=f"SANE device (default: ${DEVICE_ENV_VAR}, else first real device)",
     )
     parser.add_argument(
@@ -260,7 +260,15 @@ def _resolve_output(args: argparse.Namespace) -> Path:
 
 
 def _build_config(args: argparse.Namespace) -> ScanConfig:
-    """Translate parsed arguments into a :class:`ScanConfig`."""
+    """Translate parsed arguments into a :class:`ScanConfig`.
+
+    Raises:
+        InputError: If ``--from-images`` is combined with an explicit device.
+    """
+    if args.from_images is not None and args.device is not None:
+        raise InputError(
+            "--from-images does not scan; do not combine it with -d/--device"
+        )
     from_images = (
         tuple(Path(image) for image in args.from_images)
         if args.from_images is not None
