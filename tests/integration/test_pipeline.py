@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from scanmole.config import ScanConfig
-from scanmole.errors import NoPagesError
+from scanmole.errors import NoPagesError, ProcessingError
 from scanmole.events import EventWriter
 from scanmole.pipeline import run_pipeline
 
@@ -35,7 +35,7 @@ def _white_page(path: Path) -> Path:
     return path
 
 
-def _config(images: tuple[Path, ...], output: Path) -> ScanConfig:
+def _config(images: tuple[Path, ...] | None, output: Path) -> ScanConfig:
     return ScanConfig(
         device=None,
         source="adf-duplex",
@@ -96,3 +96,58 @@ def test_from_images_all_blank_returns_no_pages_code(tmp_path: Path) -> None:
         run_pipeline(_config((blank,), output), EventWriter(enabled=False))
 
     assert not output.exists()
+
+
+def test_processing_failure_preserves_scanned_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+    ) -> list[Path]:
+        page = _gray_page(work_dir / "page_0001.pnm")
+        assert callable(on_page)
+        on_page(page)
+        return [page]
+
+    def failing_build_pdf(pages: object, output: Path, dpi: object) -> None:
+        raise ProcessingError("img2pdf failed: boom")
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", failing_build_pdf)
+    config = _config(images=None, output=tmp_path / "out.pdf")
+
+    with pytest.raises(ProcessingError) as info:
+        run_pipeline(config, EventWriter(enabled=False))
+
+    message = info.value.message
+    assert "kept in" in message
+    work_dir = Path(message.split("kept in ", 1)[1].split(" ", 1)[0])
+    try:
+        assert (work_dir / "page_0001.pnm").is_file()
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_from_images_failure_does_not_claim_preserved_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = _gray_page(tmp_path / "input.pgm")
+
+    def failing_build_pdf(pages: object, output: Path, dpi: object) -> None:
+        raise ProcessingError("img2pdf failed: boom")
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", failing_build_pdf)
+
+    with pytest.raises(ProcessingError) as info:
+        run_pipeline(
+            _config((page,), tmp_path / "out.pdf"), EventWriter(enabled=False)
+        )
+
+    assert "kept in" not in info.value.message

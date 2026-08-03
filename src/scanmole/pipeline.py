@@ -92,6 +92,10 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
 
     work_dir = Path(tempfile.mkdtemp(prefix="scanmole-"))
     started = time.monotonic()
+    preserve = False
+    kept: list[KeptPage] = []
+    total = 0
+    blanks = 0
     try:
         events.emit(
             "start",
@@ -103,9 +107,6 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             page_size=config.page_size,
             output=str(config.output),
         )
-        kept: list[KeptPage] = []
-        total = 0
-        blanks = 0
 
         def handle_page(page: Path) -> None:
             # Called per page as it lands: from the scanner's reader thread
@@ -157,8 +158,22 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         )
         LOGGER.info("Done: %s (%d page(s))", config.output, len(kept))
         return 0
+    except ScanMoleError as exc:
+        # The paper has already gone through the feeder and may be unstapled
+        # or shredded; once pages exist, they may be the only copy. Keep them
+        # and tell the user where they are, whatever went wrong afterwards.
+        if total > 0 and config.from_images is None:
+            preserve = True
+            exc.message += (
+                f" -- the {total} scanned page(s) are kept in {work_dir} "
+                f"(recover with: scanmole --from-images '{work_dir}'/page_*.pnm "
+                "-o out.pdf)"
+            )
+            exc.args = (exc.message,)
+        raise
     finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        if not preserve:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _check_input_images(images: tuple[Path, ...]) -> None:

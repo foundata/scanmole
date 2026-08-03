@@ -75,8 +75,8 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
     5: (
         _("Processing Failed"),
         _(
-            "PDF assembly or OCR failed after scanning. "
-            "See the log for details."
+            "PDF assembly or OCR failed after scanning. The scanned pages "
+            "were kept; see the log for the folder path."
         ),
     ),
 }
