@@ -1,0 +1,29 @@
+
+Options specific to device `fujitsu:ScanSnap iX500:65535':
+  Standard:
+    --source ADF Front|ADF Back|ADF Duplex [ADF Front]
+        Selects the scan source (such as a document-feeder).
+    --mode Lineart|Halftone|Gray|Color [Lineart]
+        Selects the scan mode (e.g., lineart, monochrome, or color).
+    --resolution 50..600dpi (in steps of 1) [600]
+        Sets the resolution of the scanned image.
+  Geometry:
+    -l 0..224.846mm (in steps of 0.0211639) [0]
+        Top-left x position of scan area.
+    -t 0..863.489mm (in steps of 0.0211639) [0]
+        Top-left y position of scan area.
+    -x 0..224.846mm (in steps of 0.0211639) [215.872]
+        Width of scan-area.
+    -y 0..863.489mm (in steps of 0.0211639) [279.364]
+        Height of scan-area.
+    --page-width 0..224.846mm (in steps of 0.0211639) [215.872]
+        Specifies the width of the media.
+    --page-height 0..863.489mm (in steps of 0.0211639) [279.364]
+        Specifies the height of the media.
+  Enhancement:
+    --swdeskew[=(yes|no)] [no]
+        Request driver to rotate skewed pages digitally.
+    --swdespeck 0..9 (in steps of 1) [0]
+        Maximum diameter of lone dots to remove from scan.
+    --swcrop[=(yes|no)] [no]
+        Request driver to remove border from pages digitally.

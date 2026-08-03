@@ -1,0 +1,18 @@
+
+Options specific to device `airscan:e0:Brother ADS-4550W':
+  Standard:
+    --resolution 75|100|200|300|600dpi [300]
+        Sets the resolution of the scanned image.
+    --mode Color|Gray [Color]
+        Selects the scan mode (e.g., lineart, monochrome, or color).
+    --source Flatbed|ADF|ADF Duplex [Flatbed]
+        Selects the scan source (such as a document-feeder).
+  Geometry:
+    -l 0..215.9mm [0]
+        Top-left x position of scan area.
+    -t 0..297.011mm [0]
+        Top-left y position of scan area.
+    -x 0..215.9mm [215.9]
+        Width of scan-area.
+    -y 0..297.011mm [297.011]
+        Height of scan-area.

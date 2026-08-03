@@ -1,0 +1,26 @@
+
+Options specific to device `test:0':
+  Scan Mode:
+    --mode Gray|Color [Gray]
+        Selects the scan mode (e.g., lineart, monochrome, or color).
+    --depth 1|8|16 [8]
+        Number of bits per sample, typical values are 1 for "line-art" and 8
+        for multibit scans.
+    --hand-scanner[=(yes|no)] [no]
+        Simulate a hand-scanner.  Hand-scanners do not know the image height a
+        priori.
+    --three-pass[=(yes|no)] [no]
+        Simulate a three-pass scanner.
+    --resolution 1..1200dpi (in steps of 1) [50]
+        Sets the resolution of the scanned image.
+    --source Flatbed|Automatic Document Feeder [Flatbed]
+        Selects the scan source (such as a document-feeder).
+  Geometry:
+    -l 0..200mm (in steps of 1) [0]
+        Top-left x position of scan area.
+    -t 0..200mm (in steps of 1) [0]
+        Top-left y position of scan area.
+    -x 0..200mm (in steps of 1) [80]
+        Width of scan-area.
+    -y 0..200mm (in steps of 1) [100]
+        Height of scan-area.

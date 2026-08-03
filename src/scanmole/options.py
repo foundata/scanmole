@@ -103,9 +103,24 @@ def probe_capabilities(device: str) -> dict[str, Capability]:
             f"cannot query device {device}: "
             f"{detail or f'scanimage -A exited {result.returncode}'}"
         )
+    caps = parse_capabilities(result.stdout)
+    if not caps:
+        LOGGER.warning(
+            "could not parse any options from `scanimage -d %s -A`; "
+            "passing only resolution",
+            device,
+        )
+    return caps
 
+
+def parse_capabilities(listing: str) -> dict[str, Capability]:
+    """Parse the text of a ``scanimage -A`` option listing.
+
+    Pure function over the captured listing, so backend formats can be pinned
+    with fixtures (tests/fixtures/scanimage-A/) without hardware.
+    """
     caps: dict[str, Capability] = {}
-    for line in result.stdout.splitlines():
+    for line in listing.splitlines():
         match = _OPTION_LINE.match(line)
         if not match:
             continue
@@ -124,12 +139,6 @@ def probe_capabilities(device: str) -> dict[str, Capability]:
                 capability.minimum = float(span.group(1))
                 capability.maximum = float(span.group(2))
         caps[name] = capability
-    if not caps:
-        LOGGER.warning(
-            "could not parse any options from `scanimage -d %s -A`; "
-            "passing only resolution",
-            device,
-        )
     return caps
 
 
