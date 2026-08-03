@@ -1,0 +1,64 @@
+[project]
+name = "scanmole"
+version = "0.1.0"
+description = "Scan documents from a SANE scanner straight to a searchable PDF."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+authors = [{ name = "foundata", email = "office@foundata.com" }]
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "mypy",
+  "pytest>=8.0",
+  "pytest-cov",
+  "ruff",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E4",  # pycodestyle import errors
+  "E7",  # pycodestyle statement errors
+  "E9",  # pycodestyle runtime errors
+  "F",   # Pyflakes
+  "I",   # import sorting
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "UP",  # pyupgrade
+  "RUF", # Ruff-specific rules
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+indent-style = "space"
+line-ending = "lf"
+quote-style = "double"
+skip-magic-trailing-comma = false
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+enable_error_code = ["explicit-override"] # Extends strict mode.
+warn_unreachable = true                   # Extends strict mode.
+
+[tool.pytest.ini_options]
+addopts = [
+  "--import-mode=importlib",
+  "--strict-config",
+  "--strict-markers",
+]
+filterwarnings = ["error"]
+xfail_strict = true
+testpaths = ["tests"]
+markers = [
+  "integration: exercises external tools (img2pdf/ocrmypdf); skipped if absent",
+]
