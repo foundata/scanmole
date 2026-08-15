@@ -37,6 +37,7 @@ from gi.repository import (  # noqa: E402  # after require_version
     Gtk,
 )
 
+from scanmole import __version__  # noqa: E402
 from scanmole.gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 
 # The GUI holds no pipeline logic; this pure helper is imported only so the
@@ -44,8 +45,10 @@ from scanmole.gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
 
 APP_ID = "com.foundata.ScanMole"
+PROJECT_URL = "https://foundata.com/en/projects/scanmole/"
 CONFIG_FILE = Path(GLib.get_user_config_dir()) / "scanmole" / "gui.json"
-LOGO_FILE = Path(__file__).resolve().parent / "scanmole-logo.svg"
+ICON_DIR = Path(__file__).resolve().parent / "icons"
+LOGO_FILE = ICON_DIR / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
 
 SOURCES = (
     (_("Flatbed"), "flatbed"),
@@ -54,7 +57,9 @@ SOURCES = (
     (_("ADF Back"), "adf-back"),
 )
 MODES = ((_("B/W"), "lineart"), (_("Gray"), "gray"), (_("Color"), "color"))
-RESOLUTIONS = tuple((str(dpi), str(dpi)) for dpi in (150, 200, 300, 600))
+RESOLUTION_PRESETS = (150, 200, 300, 600)
+RESOLUTION_MINIMUM = 50
+RESOLUTION_MAXIMUM = 1200
 PAGE_SIZES = (
     (_("Automatic"), "auto"),
     ("A4", "a4"),
@@ -68,6 +73,8 @@ LANGUAGES = (
     (_("English (eng)"), "eng"),
     (_("German + English (deu+eng)"), "deu+eng"),
 )
+# Endonyms on purpose: a language name is most recognizable in itself.
+UI_LANGUAGES = ((_("System default"), ""), ("English", "en"), ("Deutsch", "de"))
 
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
@@ -232,10 +239,6 @@ class ChoiceRow:
                     self._combo.set_selected(index)
                 return
 
-    def set_subtitle(self, text: str) -> None:
-        """Set the row subtitle."""
-        self.row.set_subtitle(text)
-
 
 # PyGObject has no stubs, so the GTK base class is Any; subclassing it is the
 # GTK boundary that cannot be typed.
@@ -246,7 +249,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """Build the UI, restore settings and start device discovery."""
         super().__init__(**kwargs)
         self.set_title("ScanMole")
-        self.set_default_size(620, 840)
+        self.set_default_size(720, 900)
 
         self._scanmole = find_scanmole()
         self._settings = load_settings()
@@ -263,6 +266,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._last_output: Path | None = None
         self._folder = str(self._settings.get("folder") or default_folder())
         self._languages: list[tuple[str, str]] = list(LANGUAGES)
+        self._cli_version: str | None = None
+        self._startup_ui_language = str(self._settings.get("ui_language") or "")
+        self._res_syncing = False
 
         self._build_ui()
         self._apply_saved_settings()
@@ -273,7 +279,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
-        """Assemble the header bar, form groups, log and result bar."""
+        """Assemble the header bar, the form sections and the result bar."""
         toolbar = Adw.ToolbarView()
         self.set_content(toolbar)
 
@@ -287,43 +293,102 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         title_label.add_css_class("heading")
         title_box.append(title_label)
         header.set_title_widget(title_box)
-        toolbar.add_top_bar(header)
-
-        # One primary action: Scan is the only accented control (mockup rule).
-        self._scan_btn = Gtk.Button()
-        self._scan_btn.set_child(
-            Adw.ButtonContent(
-                icon_name="media-playback-start-symbolic", label=_("Scan")
-            )
+        about_btn = Gtk.Button(
+            icon_name="help-about-symbolic", tooltip_text=_("About ScanMole")
         )
-        self._scan_btn.add_css_class("suggested-action")
-        self._scan_btn.connect("clicked", self._on_scan_clicked)
-        header.pack_end(self._scan_btn)
-
-        self._cancel_btn = Gtk.Button(label=_("Cancel"), visible=False)
-        self._cancel_btn.add_css_class("destructive-action")
-        self._cancel_btn.connect("clicked", self._on_cancel_clicked)
-        header.pack_end(self._cancel_btn)
+        about_btn.add_css_class("flat")
+        about_btn.connect("clicked", self._on_about_clicked)
+        header.pack_end(about_btn)
+        toolbar.add_top_bar(header)
 
         scroller = Gtk.ScrolledWindow(
             hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True
         )
         toolbar.set_content(scroller)
 
-        clamp = Adw.Clamp(maximum_size=640, tightening_threshold=480)
-        scroller.set_child(clamp)
+        self._clamp = Adw.Clamp(maximum_size=1080, tightening_threshold=900)
+        scroller.set_child(self._clamp)
 
-        box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=18,
+        columns = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=24,
             margin_top=18,
             margin_bottom=18,
             margin_start=16,
             margin_end=16,
         )
-        clamp.set_child(box)
+        self._left_column = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=18, hexpand=True
+        )
+        self._right_column = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=18, hexpand=True
+        )
+        columns.append(self._left_column)
+        columns.append(self._right_column)
+        self._columns = columns
+        self._clamp.set_child(columns)
 
-        scanner_grp = Adw.PreferencesGroup(title=_("Scanner"))
+        self._build_scanner_group()
+        self._build_output_group()
+        self._build_document_group()
+        self._build_processing_group()
+        self._build_application_group()
+        self._build_log_area()
+
+        self._form_groups = (
+            self._scanner_grp,
+            self._doc_grp,
+            self._proc_grp,
+            self._out_grp,
+            self._app_grp,
+        )
+
+        toolbar.add_bottom_bar(self._build_result_bar())
+
+        # Responsive layout: two columns by default (720 px wide window), one
+        # column below 700 px via a breakpoint.
+        self._apply_layout(wide=True)
+        breakpoint = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 700sp")
+        )
+        breakpoint.connect("apply", lambda *_a: self._apply_layout(wide=False))
+        breakpoint.connect("unapply", lambda *_a: self._apply_layout(wide=True))
+        self.add_breakpoint(breakpoint)
+
+        self._on_document_changed()
+
+    def _apply_layout(self, *, wide: bool) -> None:
+        """Arrange the form sections in one or two columns."""
+        sections_wide_left = (self._scanner_grp, self._doc_grp, self._proc_grp)
+        sections_wide_right = (self._out_grp, self._app_grp, self._log_area)
+        sections_narrow = (
+            self._scanner_grp,
+            self._out_grp,
+            self._doc_grp,
+            self._proc_grp,
+            self._app_grp,
+            self._log_area,
+        )
+        for section in sections_narrow:
+            parent = section.get_parent()
+            if parent is not None:
+                parent.remove(section)
+        if wide:
+            for section in sections_wide_left:
+                self._left_column.append(section)
+            for section in sections_wide_right:
+                self._right_column.append(section)
+        else:
+            for section in sections_narrow:
+                self._left_column.append(section)
+        self._right_column.set_visible(wide)
+        self._columns.set_homogeneous(wide)
+        self._clamp.set_maximum_size(1080 if wide else 640)
+        self._clamp.set_tightening_threshold(900 if wide else 480)
+
+    def _build_scanner_group(self) -> None:
+        """Build the Scanner group including the primary Scan action."""
+        self._scanner_grp = Adw.PreferencesGroup(title=_("Scanner"))
         # Never make this row insensitive: the refresh button is one of its
         # suffix children, and a disabled row would take the only way to
         # recover from an empty device list down with it.
@@ -342,11 +407,31 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._refresh_btn.add_css_class("flat")
         self._refresh_btn.connect("clicked", self._refresh_devices)
         self._device_row.add_suffix(self._refresh_btn)
-        scanner_grp.add(self._device_row)
-        self._source_row = ChoiceRow(scanner_grp, _("Source"), SOURCES)
-        box.append(scanner_grp)
+        self._scanner_grp.add(self._device_row)
+        self._source_row = ChoiceRow(self._scanner_grp, _("Source"), SOURCES)
 
-        out_grp = Adw.PreferencesGroup(title=_("Output"))
+        # One primary action: Scan is the only accented control, full width at
+        # the bottom of the Scanner group (mockup rule); Cancel swaps in while
+        # a scan runs.
+        self._scan_btn = Gtk.Button(margin_top=6)
+        self._scan_btn.set_child(
+            Adw.ButtonContent(
+                icon_name="media-playback-start-symbolic", label=_("Scan")
+            )
+        )
+        self._scan_btn.add_css_class("suggested-action")
+        self._scan_btn.add_css_class("pill")
+        self._scan_btn.connect("clicked", self._on_scan_clicked)
+        self._scanner_grp.add(self._scan_btn)
+        self._cancel_btn = Gtk.Button(label=_("Cancel"), visible=False, margin_top=6)
+        self._cancel_btn.add_css_class("destructive-action")
+        self._cancel_btn.add_css_class("pill")
+        self._cancel_btn.connect("clicked", self._on_cancel_clicked)
+        self._scanner_grp.add(self._cancel_btn)
+
+    def _build_output_group(self) -> None:
+        """Build the Output group (folder, filename template)."""
+        self._out_grp = Adw.PreferencesGroup(title=_("Output"))
         self._folder_row = Adw.ActionRow(title=_("Folder"))
         self._folder_btn = Gtk.Button(valign=Gtk.Align.CENTER)
         self._folder_btn.set_child(
@@ -357,18 +442,19 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._folder_btn.connect("clicked", self._on_pick_folder)
         self._folder_row.add_suffix(self._folder_btn)
         self._folder_row.set_activatable_widget(self._folder_btn)
-        out_grp.add(self._folder_row)
+        self._out_grp.add(self._folder_row)
 
         self._name_row = Adw.ActionRow(title=_("File name"))
         name_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
             spacing=3,
             valign=Gtk.Align.CENTER,
+            hexpand=True,
             margin_top=6,
             margin_bottom=6,
         )
         self._name_entry = Gtk.Entry(
-            placeholder_text=DEFAULT_OUTPUT_TEMPLATE, width_chars=26
+            placeholder_text=DEFAULT_OUTPUT_TEMPLATE, width_chars=22, hexpand=True
         )
         self._name_entry.connect("changed", self._update_name_preview)
         name_box.append(self._name_entry)
@@ -386,48 +472,116 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         hint.add_css_class("dim-label")
         name_box.append(hint)
         self._name_row.add_suffix(name_box)
-        out_grp.add(self._name_row)
-        box.append(out_grp)
+        self._out_grp.add(self._name_row)
 
-        doc_grp = Adw.PreferencesGroup(title=_("Document"))
+    def _build_document_group(self) -> None:
+        """Build the Document group (color mode, resolution, page size)."""
+        self._doc_grp = Adw.PreferencesGroup(title=_("Document"))
         self._mode_row = ChoiceRow(
-            doc_grp, _("Color mode"), MODES, self._on_document_changed
+            self._doc_grp, _("Color mode"), MODES, self._on_document_changed
         )
-        self._res_row = ChoiceRow(
-            doc_grp, _("Resolution"), RESOLUTIONS, self._on_document_changed
+
+        # Hybrid resolution control: a numeric dpi entry plus preset chips.
+        # The static bounds are a sanity clamp only; the CLI snaps the value
+        # to what the device actually supports during capability negotiation.
+        self._res_row = Adw.ActionRow(title=_("Resolution"))
+        res_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=6,
+            valign=Gtk.Align.CENTER,
+            margin_top=6,
+            margin_bottom=6,
         )
+        spin_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=6, halign=Gtk.Align.END
+        )
+        adjustment = Gtk.Adjustment(
+            lower=RESOLUTION_MINIMUM,
+            upper=RESOLUTION_MAXIMUM,
+            step_increment=10,
+            page_increment=50,
+            value=300,
+        )
+        self._res_spin = Gtk.SpinButton(adjustment=adjustment, numeric=True)
+        self._res_spin.set_width_chars(5)
+        self._res_spin.connect("value-changed", self._on_resolution_changed)
+        spin_box.append(self._res_spin)
+        dpi_label = Gtk.Label(label="dpi")
+        dpi_label.add_css_class("dim-label")
+        spin_box.append(dpi_label)
+        res_box.append(spin_box)
+        chips = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END)
+        chips.add_css_class("linked")
+        self._res_chips: list[tuple[Gtk.ToggleButton, int]] = []
+        for preset in RESOLUTION_PRESETS:
+            chip = Gtk.ToggleButton(label=str(preset))
+            chip.connect("toggled", self._on_resolution_chip, preset)
+            chips.append(chip)
+            self._res_chips.append((chip, preset))
+        res_box.append(chips)
+        self._res_row.add_suffix(res_box)
+        self._doc_grp.add(self._res_row)
+
         self._size_row = Adw.ComboRow(title=_("Page size"))
         self._size_row.set_model(
             Gtk.StringList.new([label for label, _value in PAGE_SIZES])
         )
-        doc_grp.add(self._size_row)
-        box.append(doc_grp)
+        self._doc_grp.add(self._size_row)
 
-        proc_grp = Adw.PreferencesGroup(title=_("Processing"))
+    def _build_processing_group(self) -> None:
+        """Build the Processing group (OCR, language, blank pages)."""
+        self._proc_grp = Adw.PreferencesGroup(title=_("Processing"))
         self._ocr_row = Adw.SwitchRow(
             title=_("OCR"),
             subtitle=_("Make the PDF text-searchable (PDF/A)"),
             active=True,
         )
         self._ocr_row.connect("notify::active", self._on_ocr_toggled)
-        proc_grp.add(self._ocr_row)
+        self._proc_grp.add(self._ocr_row)
         self._lang_row = Adw.ComboRow(title=_("OCR Language"))
         self._lang_row.set_model(
             Gtk.StringList.new([label for label, _value in self._languages])
         )
-        proc_grp.add(self._lang_row)
+        self._proc_grp.add(self._lang_row)
         self._blank_row = Adw.SwitchRow(
             title=_("Skip blank pages"),
             subtitle=_("Removes pages detected as empty"),
             active=True,
         )
-        proc_grp.add(self._blank_row)
-        box.append(proc_grp)
+        self._proc_grp.add(self._blank_row)
 
-        # Collapsed, copyable log below the form (mockup rule: the log is
-        # diagnostics, not part of the flow). The text area sits under the
-        # header line, full width, so it never collides with the Copy button.
-        log_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    def _build_application_group(self) -> None:
+        """Build the Application group (interface language, reset)."""
+        self._app_grp = Adw.PreferencesGroup(title=_("Application"))
+        self._ui_lang_row = Adw.ComboRow(
+            title=_("Interface language"),
+            subtitle=_("Only the GUI is translated"),
+        )
+        self._ui_lang_row.set_model(
+            Gtk.StringList.new([label for label, _value in UI_LANGUAGES])
+        )
+        self._ui_lang_row.connect("notify::selected", self._on_ui_language_changed)
+        self._app_grp.add(self._ui_lang_row)
+
+        reset_row = Adw.ActionRow(
+            title=_("Reset settings"),
+            subtitle=_("Restore all options to their defaults"),
+        )
+        reset_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        reset_btn.set_child(
+            Adw.ButtonContent(
+                icon_name="edit-undo-symbolic", label=_("Reset to defaults")
+            )
+        )
+        reset_btn.add_css_class("destructive-action")
+        reset_btn.connect("clicked", self._on_reset_clicked)
+        reset_row.add_suffix(reset_btn)
+        reset_row.set_activatable_widget(reset_btn)
+        self._app_grp.add(reset_row)
+
+    def _build_log_area(self) -> None:
+        """Build the collapsed, copyable log below the form."""
+        self._log_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         log_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._log_expander = Gtk.Expander(
             label=_("Log"), hexpand=True, valign=Gtk.Align.CENTER
@@ -440,7 +594,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         copy_btn.add_css_class("flat")
         copy_btn.connect("clicked", self._on_copy_log)
         log_header.append(copy_btn)
-        log_area.append(log_header)
+        self._log_area.append(log_header)
         log_scroller = Gtk.ScrolledWindow(
             min_content_height=170, has_frame=True, visible=False
         )
@@ -463,14 +617,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "notify::expanded",
             lambda *_a: log_scroller.set_visible(self._log_expander.get_expanded()),
         )
-        log_area.append(log_scroller)
-        box.append(log_area)
-
-        self._form_groups = (scanner_grp, doc_grp, proc_grp, out_grp)
-
-        toolbar.add_bottom_bar(self._build_result_bar())
-
-        self._on_document_changed()
+        self._log_area.append(log_scroller)
 
     def _build_result_bar(self) -> Gtk.Box:
         """Build the persistent bottom bar showing progress and the result."""
@@ -546,15 +693,28 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         settings = self._settings
         self._source_row.select(str(settings.get("source", "adf-duplex")))
         self._mode_row.select(str(settings.get("mode", "lineart")))
-        self._res_row.select(str(settings.get("resolution", "300")))
+        try:
+            resolution = int(str(settings.get("resolution", "300")))
+        except ValueError:
+            resolution = 300
+        self._res_spin.set_value(resolution)
+        self._sync_resolution_chips()
         combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
         self._select_language(str(settings.get("lang", "deu")))
-        self._lang_row.set_visible(self._ocr_row.get_active())
+        self._lang_row.set_sensitive(self._ocr_row.get_active())
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
         template = str(settings.get("filename_template") or "")
         self._name_entry.set_text(
             "" if template in ("", DEFAULT_OUTPUT_TEMPLATE) else template
+        )
+        combo_select(
+            self._ui_lang_row, UI_LANGUAGES, str(settings.get("ui_language") or "")
+        )
+        self._folder_btn.set_child(
+            Adw.ButtonContent(
+                icon_name="folder-symbolic", label=abbreviate_home(self._folder)
+            )
         )
         self._on_document_changed()
 
@@ -576,12 +736,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "device": self._selected_device() or "",
             "source": self._source_row.value(),
             "mode": self._mode_row.value(),
-            "resolution": self._res_row.value(),
+            "resolution": str(int(self._res_spin.get_value())),
             "page_size": combo_value(self._size_row, PAGE_SIZES),
             "ocr": self._ocr_row.get_active(),
             "lang": self._selected_language(),
             "skip_blanks": self._blank_row.get_active(),
             "filename_template": self._current_template(),
+            "ui_language": combo_value(self._ui_lang_row, UI_LANGUAGES),
             "folder": self._folder,
         }
         store_settings(self._settings)
@@ -601,6 +762,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _devices_worker(self, prefer: str) -> None:
         """Worker thread: query devices and hand results back to the main loop."""
+        if self._cli_version is None:
+            self._cli_version = self._probe_cli_version()
         devices: list[dict[str, str]] = []
         err = ""
         try:
@@ -636,6 +799,22 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         except OSError as exc:
             err = _("Device search failed: %(error)s") % {"error": exc}
         GLib.idle_add(self._apply_devices, devices, err, prefer)
+
+    def _probe_cli_version(self) -> str | None:
+        """Return the supervised CLI's version string, or ``None``."""
+        try:
+            result = subprocess.run(
+                [self._scanmole, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        lines = result.stdout.strip().splitlines()
+        parts = lines[0].split() if lines else []
+        return parts[-1] if len(parts) >= 2 else None
 
     def _apply_devices(
         self, devices: list[dict[str, str]], err: str, prefer: str
@@ -701,9 +880,37 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             template += ".pdf"
         return template
 
+    def _current_resolution(self) -> int:
+        """Return the dpi from the hybrid resolution control."""
+        return int(self._res_spin.get_value())
+
+    def _sync_resolution_chips(self) -> None:
+        """Highlight the preset chip matching the entry, or none."""
+        self._res_syncing = True
+        current = self._current_resolution()
+        for chip, preset in self._res_chips:
+            chip.set_active(preset == current)
+        self._res_syncing = False
+
+    def _on_resolution_chip(self, chip: Gtk.ToggleButton, preset: int) -> None:
+        """Fill the entry from a clicked preset chip."""
+        if self._res_syncing:
+            return
+        if chip.get_active():
+            self._res_spin.set_value(preset)
+        else:
+            # Clicking the active chip again keeps it active; the "no chip"
+            # state is reached by typing a custom value, not by unselecting.
+            self._sync_resolution_chips()
+
+    def _on_resolution_changed(self, *_args: object) -> None:
+        """React to any dpi change from the entry or a chip."""
+        self._sync_resolution_chips()
+        self._on_document_changed()
+
     def _on_document_changed(self, *_args: object) -> None:
         """Refresh the size estimate and the filename preview."""
-        dpi = int(self._res_row.value())
+        dpi = self._current_resolution()
         base = _SIZE_BASE_MB.get(self._mode_row.value(), 0.3)
         estimate = max(base * (dpi / 300.0) ** 2, 0.1)
         self._res_row.set_subtitle(
@@ -714,7 +921,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _update_name_preview(self, *_args: object) -> None:
         """Render the template with the current form values as an example."""
-        preset = f"{self._mode_row.value()}-{self._res_row.value()}"
+        preset = f"{self._mode_row.value()}-{self._current_resolution()}"
         example = expand_template(
             self._current_template(),
             when=datetime.now().astimezone(),
@@ -723,6 +930,71 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             preset=preset,
         )
         self._name_row.set_subtitle(example)
+
+    # ------------------------------------------------------- application
+
+    def _on_ui_language_changed(self, *_args: object) -> None:
+        """Persist the interface language and hint at the required restart."""
+        value = combo_value(self._ui_lang_row, UI_LANGUAGES)
+        self._settings["ui_language"] = value
+        store_settings(self._settings)
+        # gettext is bound at startup (module-level strings), so a change
+        # honestly needs a restart; say so instead of pretending otherwise.
+        if value != self._startup_ui_language:
+            self._ui_lang_row.set_subtitle(
+                _("Only the GUI is translated · takes effect after the next start")
+            )
+        else:
+            self._ui_lang_row.set_subtitle(_("Only the GUI is translated"))
+
+    def _on_reset_clicked(self, *_args: object) -> None:
+        """Ask for confirmation, then reset the GUI settings to defaults."""
+        dialog = Adw.AlertDialog(
+            heading=_("Reset Settings?"),
+            body=_(
+                "All GUI options return to their defaults. Scanned files and "
+                "folders on disk are not touched."
+            ),
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("reset", _("Reset"))
+        dialog.set_response_appearance("reset", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_reset_response)
+        dialog.present(self)
+
+    def _on_reset_response(self, _dialog: object, response: str) -> None:
+        """Apply the settings reset when confirmed."""
+        if response != "reset":
+            return
+        # Only the GUI settings file is cleared; scans, output folders and
+        # the CLI are never touched.
+        self._settings = {}
+        store_settings(self._settings)
+        self._folder = default_folder()
+        self._apply_saved_settings()
+        self._on_ui_language_changed()
+        self._set_result_bar("idle", _("Settings reset to defaults."))
+
+    def _on_about_clicked(self, *_args: object) -> None:
+        """Show the About dialog with GUI and CLI versions."""
+        cli_version = self._cli_version or _("unknown")
+        comments = (
+            _("Scan documents from a SANE scanner straight to a searchable PDF.")
+            + "\n"
+            + _("scanmole CLI: %(version)s") % {"version": cli_version}
+        )
+        about = Adw.AboutDialog(
+            application_name="ScanMole",
+            application_icon=APP_ID,
+            developer_name="foundata GmbH",
+            version=__version__,
+            comments=comments,
+            website=PROJECT_URL,
+            license_type=Gtk.License.GPL_3_0,
+        )
+        about.present(self)
 
     # ----------------------------------------------------------- scanning
 
@@ -738,7 +1010,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "--mode",
             self._mode_row.value(),
             "-r",
-            self._res_row.value(),
+            str(self._current_resolution()),
             "--page-size",
             combo_value(self._size_row, PAGE_SIZES),
         ]
@@ -969,13 +1241,22 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     # -------------------------------------------------------- UI plumbing
 
     def _set_running(self, running: bool) -> None:
-        """Toggle the form and header buttons for a running scan."""
+        """Toggle the form and the primary action for a running scan."""
         self._scan_btn.set_visible(not running)
         self._cancel_btn.set_visible(running)
         self._cancel_btn.set_sensitive(True)
         self._refresh_btn.set_sensitive(not running)
         for group in self._form_groups:
             group.set_sensitive(not running)
+        # The Scanner group hosts the Scan/Cancel buttons; keep them usable
+        # while the rest of the group is locked during a run.
+        if running:
+            self._scanner_grp.set_sensitive(True)
+            self._device_row.set_sensitive(False)
+            self._source_row.row.set_sensitive(False)
+        else:
+            self._device_row.set_sensitive(True)
+            self._source_row.row.set_sensitive(True)
 
     def _append_log(self, text: str) -> None:
         """Append a line to the log view and scroll it into view."""
@@ -996,8 +1277,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         dialog.present(self)
 
     def _on_ocr_toggled(self, *_args: object) -> None:
-        """Show the language selection only while OCR is on."""
-        self._lang_row.set_visible(self._ocr_row.get_active())
+        """Enable the language selection only while OCR is on."""
+        self._lang_row.set_sensitive(self._ocr_row.get_active())
 
     def _on_pick_folder(self, *_args: object) -> None:
         """Open a folder chooser for the output directory."""
@@ -1053,6 +1334,10 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
 
     def _on_activate(self, app: Adw.Application) -> None:
         """Present the main window, creating it on first activation."""
+        # Make the packaged mascot icon resolvable by name (About dialog).
+        display = Gdk.Display.get_default()
+        if display is not None and ICON_DIR.is_dir():
+            Gtk.IconTheme.get_for_display(display).add_search_path(str(ICON_DIR))
         win = self.props.active_window or MainWindow(application=app)
         win.present()
 

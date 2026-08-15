@@ -1,6 +1,6 @@
 # ScanMole
 
-<img src="src/scanmole/gui/scanmole-logo.svg" alt="ScanMole logo: a mole with glasses holding a scanned document" width="110" align="right">
+<img src="src/scanmole/gui/icons/hicolor/scalable/apps/com.foundata.ScanMole.svg" alt="ScanMole logo: a mole with glasses holding a scanned document" width="110" align="right">
 
 Paperless-office document scanning for Linux: ADF duplex batches in, searchable (OCRed) PDFs out. Replaces our ad-hoc `scanimage | img2pdf | ocrmypdf` bash script with a proper CLI and a GTK4 GUI on top of it.
 

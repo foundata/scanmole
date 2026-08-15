@@ -8,13 +8,34 @@ level, while this launcher probes for them first.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+from pathlib import Path
 
 from scanmole import BYLINE, __version__
 
 _MISSING_GUI_MESSAGE = (
     "scanmole-gui needs PyGObject and GTK 4 — install: python3-gobject gtk4 libadwaita"
 )
+
+
+def preferred_ui_language() -> str:
+    """Return the persisted GUI language override (``en``/``de``), or ``""``.
+
+    Read without GLib on purpose: the language must be in the environment
+    before :mod:`scanmole.gui.i18n` builds its gettext catalog at import time,
+    which happens when the GTK probe below succeeds and ``app`` is imported.
+    """
+    config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    try:
+        data = json.loads(
+            (Path(config_home) / "scanmole" / "gui.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return ""
+    language = data.get("ui_language") if isinstance(data, dict) else ""
+    return language if language in ("en", "de") else ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
         # Handled before the GTK probe so it works without PyGObject.
         print(f"scanmole-gui {__version__}\n{BYLINE}")
         return 0
+    language = preferred_ui_language()
+    if language:
+        os.environ["LANGUAGE"] = language
     try:
         import gi
 
