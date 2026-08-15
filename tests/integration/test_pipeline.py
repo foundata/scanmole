@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from scanmole.config import ScanConfig
-from scanmole.errors import NoPagesError, ProcessingError
+from scanmole.errors import NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.pipeline import analyze_page, run_pipeline
 
@@ -133,6 +133,44 @@ def test_processing_failure_preserves_scanned_pages(
         assert (work_dir / "page_0001.pnm").is_file()
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_page_callback_failure_preserves_pages_and_reports_no_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mirrors run_scanimage's contract: a failing page callback terminates the
+    # batch and propagates as a ScanMoleError after pages were delivered.
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+    ) -> list[Path]:
+        page = _gray_page(work_dir / "page_0001.pnm")
+        assert callable(on_page)
+        on_page(page)
+        raise ScanMoleError("page processing failed: boom")
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    stream = io.StringIO()
+    config = _config(images=None, output=tmp_path / "out.pdf")
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(config, EventWriter(enabled=True, stream=stream))
+
+    message = info.value.message
+    assert "kept in" in message
+    work_dir = Path(message.split("kept in ", 1)[1].split(" ", 1)[0])
+    try:
+        assert (work_dir / "page_0001.pnm").is_file()
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    kinds = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
+    assert "scan_done" not in kinds
+    assert "done" not in kinds
 
 
 def test_from_images_failure_does_not_claim_preserved_pages(

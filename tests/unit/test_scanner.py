@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from scanmole.config import ScanConfig
-from scanmole.errors import DeviceError, NoPagesError
+from scanmole.errors import DeviceError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.scanner import build_scan_command, run_scanimage, scan_to_files
 
@@ -66,6 +66,52 @@ def test_run_scanimage_ignores_non_page_stdout_lines(tmp_path: Path) -> None:
     run_scanimage(["sh", "-c", "echo 'not a page'; echo ''"], seen.append)
 
     assert seen == []
+
+
+def test_run_scanimage_propagates_page_callback_failures(tmp_path: Path) -> None:
+    page = tmp_path / "page_0001.pnm"
+
+    def failing_callback(path: Path) -> None:
+        raise RuntimeError("callback exploded")
+
+    # The sleep would stall the test for 30s if the failing callback did not
+    # terminate the subprocess promptly.
+    with pytest.raises(ScanMoleError, match="callback exploded") as info:
+        run_scanimage(["sh", "-c", f"echo '{page}'; sleep 30"], failing_callback)
+
+    assert isinstance(info.value.__cause__, RuntimeError)
+
+
+def test_run_scanimage_propagates_domain_errors_unwrapped(tmp_path: Path) -> None:
+    page = tmp_path / "page_0001.pnm"
+    error = ProcessingError("event stream gone")
+
+    def failing_callback(path: Path) -> None:
+        raise error
+
+    with pytest.raises(ProcessingError) as info:
+        run_scanimage(["sh", "-c", f"echo '{page}'"], failing_callback)
+
+    assert info.value is error
+
+
+def test_run_scanimage_stops_delivering_after_a_callback_failure(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "page_0001.pnm"
+    second = tmp_path / "page_0002.pnm"
+    seen: list[Path] = []
+
+    def failing_callback(path: Path) -> None:
+        seen.append(path)
+        raise RuntimeError("boom")
+
+    with pytest.raises(ScanMoleError):
+        run_scanimage(
+            ["sh", "-c", f"echo '{first}'; echo '{second}'"], failing_callback
+        )
+
+    assert seen == [first]
 
 
 def test_build_scan_command_uses_batch_print(tmp_path: Path) -> None:

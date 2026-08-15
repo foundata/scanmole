@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import IO
 
 from scanmole.config import ScanConfig
-from scanmole.errors import DeviceError, NoPagesError
+from scanmole.errors import DeviceError, NoPagesError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import SCAN_TIMEOUT_SECONDS
 from scanmole.options import (
@@ -111,9 +111,13 @@ def run_scanimage(
 
     Raises:
         DeviceError: If the scan exceeds :data:`SCAN_TIMEOUT_SECONDS`.
+        ScanMoleError: If ``on_page`` raised. A domain error propagates as-is;
+            anything else is chained into a :class:`ScanMoleError`. The scan
+            subprocess is terminated first, so no further pages are acquired.
     """
     LOGGER.debug("+ %s", shlex.join(command))
     lines: list[str] = []
+    page_failure: Exception | None = None
 
     def pump_stderr(pipe: IO[str]) -> None:
         for raw in pipe:
@@ -125,14 +129,22 @@ def run_scanimage(
                 LOGGER.debug("scanimage: %s", line)
 
     def pump_stdout(pipe: IO[str]) -> None:
+        # A failing page callback must fail the whole batch: continuing would
+        # let the run end in a misleading success, "all blank" or empty-feeder
+        # result. Record the error for the controlling thread, stop the scan
+        # and stop delivering pages.
+        nonlocal page_failure
         for raw in pipe:
             name = raw.strip()
             if not name or not _PAGE_NAME.fullmatch(Path(name).name):
                 continue
             try:
                 on_page(Path(name))
-            except Exception:
-                LOGGER.exception("page callback failed for %s", name)
+            except Exception as exc:
+                page_failure = exc
+                LOGGER.debug("page callback failed for %s", name, exc_info=True)
+                process.terminate()
+                break
 
     process = subprocess.Popen(
         command,
@@ -167,6 +179,12 @@ def run_scanimage(
             raise
         for reader in readers:
             reader.join(timeout=10)
+    if page_failure is not None:
+        if isinstance(page_failure, ScanMoleError):
+            raise page_failure
+        raise ScanMoleError(
+            f"page processing failed: {page_failure}"
+        ) from page_failure
     return exit_code, "\n".join(lines)
 
 
@@ -188,6 +206,9 @@ def scan_to_files(
         DeviceError: If ``scanimage`` fails for a reason other than an empty
             feeder at the end of a batch.
         NoPagesError: If no pages were produced.
+        ScanMoleError: If ``on_page`` failed for a page. Pages scanned up to
+            that point stay in ``work_dir``; the pipeline's recovery contract
+            (keep acquired pages, name the path) applies.
     """
     caps = probe_capabilities(device)
     pattern = str(work_dir / "page_%04d.pnm")
