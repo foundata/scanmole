@@ -60,12 +60,11 @@ strict = true
 enable_error_code = ["explicit-override"] # Extends strict mode.
 warn_unreachable = true                   # Extends strict mode.
 
-# PyGObject ships no type stubs, and GTK/libadwaita's dynamic vfunc dispatch
-# cannot be described by standard annotations. Exempt the GUI layer and the
-# gi bindings rather than scatter per-line ignores through GTK callbacks.
+# PyGObject ships no type stubs; the gi bindings resolve to Any. The GUI code
+# itself is checked strictly, with per-line ignores only where the GTK
+# boundary cannot be expressed (e.g. subclassing the Any-typed widget classes).
 [[tool.mypy.overrides]]
-module = ["scanmole.gui", "scanmole.gui.*", "gi", "gi.*"]
-ignore_errors = true
+module = ["gi", "gi.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

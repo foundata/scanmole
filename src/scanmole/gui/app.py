@@ -20,7 +20,9 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import IO
 
 import gi
 
@@ -137,7 +139,9 @@ def as_int(value: object, fallback: int) -> int:
     return value if isinstance(value, int) else fallback
 
 
-class MainWindow(Adw.ApplicationWindow):
+# PyGObject has no stubs, so the GTK base class is Any; subclassing it is the
+# GTK boundary that cannot be typed.
+class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     """The single application window: scan form, progress area and results."""
 
     def __init__(self, **kwargs: object) -> None:
@@ -453,7 +457,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _selected_device(self) -> str | None:
         """Return the SANE id of the selected device, or ``None``."""
-        index = self._device_row.get_selected()
+        index = int(self._device_row.get_selected())  # untyped GTK call
         if 0 <= index < len(self._devices):
             return self._devices[index].get("device")
         return None
@@ -562,13 +566,19 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._on_process_exit, proc, rc)
 
     @staticmethod
-    def _pump(stream: object, handler: object, proc: object) -> None:
+    def _pump(
+        stream: IO[str] | None,
+        handler: Callable[[subprocess.Popen[str], str], object],
+        proc: subprocess.Popen[str],
+    ) -> None:
         """Forward each line from ``stream`` to ``handler`` on the main loop."""
+        if stream is None:  # unreachable: the child is started with PIPE
+            return
         try:
-            for line in stream:  # type: ignore[attr-defined]
+            for line in stream:
                 GLib.idle_add(handler, proc, line)
         except (OSError, ValueError):
-            pass
+            pass  # the pipe went away with the process; exit reporting covers it
 
     # -------------------------------------------------- JSON event stream
 
@@ -701,7 +711,7 @@ class MainWindow(Adw.ApplicationWindow):
         if proc.poll() is None:
             self._append_log("[gui] still running — SIGKILL to process group")
             self._signal_group(proc, signal.SIGKILL)
-        return GLib.SOURCE_REMOVE
+        return bool(GLib.SOURCE_REMOVE)
 
     @staticmethod
     def _signal_group(proc: subprocess.Popen[str], sig: int) -> None:
@@ -735,9 +745,9 @@ class MainWindow(Adw.ApplicationWindow):
         """Advance the indeterminate progress bar while a scan runs."""
         if self._proc is None:
             self._bar.set_visible(False)
-            return GLib.SOURCE_REMOVE
+            return bool(GLib.SOURCE_REMOVE)
         self._bar.pulse()
-        return GLib.SOURCE_CONTINUE
+        return bool(GLib.SOURCE_CONTINUE)
 
     def _set_status(self, text: str) -> None:
         """Set the status label text."""
@@ -797,7 +807,8 @@ class MainWindow(Adw.ApplicationWindow):
         launcher.open_containing_folder(self, None, None)
 
 
-class ScanMoleApp(Adw.Application):
+# Same GTK boundary as MainWindow: the base class is Any without stubs.
+class ScanMoleApp(Adw.Application):  # type: ignore[misc]
     """The libadwaita application owning a single :class:`MainWindow`."""
 
     def __init__(self) -> None:
@@ -815,7 +826,7 @@ def main(argv: list[str] | None = None) -> int:
     """Run the ScanMole GUI and return the application exit code."""
     GLib.set_application_name("ScanMole")
     app = ScanMoleApp()
-    return app.run(sys.argv if argv is None else argv)
+    return int(app.run(sys.argv if argv is None else argv))  # untyped GTK call
 
 
 if __name__ == "__main__":
