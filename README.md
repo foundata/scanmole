@@ -61,6 +61,8 @@ Key options: `-d/--device` (or `$SCANMOLE_DEVICE`; auto-picks the first real sca
 
 The GUI follows the usual locale environment, e.g. `LANGUAGE=de scanmole-gui`; German is included.
 
+What if my scanner makes problems, for example wrong page sizes in `auto` mode, surviving blank pages, or a badly mapped mode? Every device behaves a little differently at the edges of a scan, and we can usually fix it from a few captured files alone: see [reporting scanner problems and device quirks](CONTRIBUTING.md#scanner-quirks) for exactly what to include.
+
 ### Exit codes<a id="usage-exit-codes"></a>
 
 `0` success, `1` unexpected error, `2` usage error / no pages / all blank, `3` device or scan error, `4` missing dependency, `5` PDF assembly or OCR failed, `130`/`143` interrupted/terminated. On any failure after pages were acquired, the scanned page images are kept and the error message names their directory, so a batch can be rebuilt with `--from-images` instead of rescanning the paper.
@@ -84,7 +86,7 @@ One JSON object per line on stdout; human-readable log on stderr:
 
 ## Contributing<a id="contributing"></a>
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report issues and submit changes. Translations are welcome.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report issues and submit changes, including [what to send when a scanner model misbehaves](CONTRIBUTING.md#scanner-quirks). Translations are welcome.
 
 ## Licensing, copyright<a id="licensing-copyright"></a>
 
