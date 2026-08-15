@@ -241,6 +241,32 @@ def test_autocrop_pnm_crops_color_pages(tmp_path: Path) -> None:
     assert raster[:3] == bytes([240, 250, 245])
 
 
+def test_autocrop_pnm_strips_uniform_white_end_padding(tmp_path: Path) -> None:
+    # Some devices pad past the paper end with pure white, indistinguishable
+    # from paper by brightness. The padding is bit-perfectly uniform though;
+    # real paper carries sensor noise (alternating 250/252 here).
+    paper_row = bytes([250, 252] * 20)
+    padding_row = bytes([255] * 40)
+    page = _write(
+        tmp_path / "padded.pgm",
+        b"P5\n40 60\n255\n" + paper_row * 40 + padding_row * 20,
+    )
+
+    assert autocrop_pnm(page, 0) is True
+
+    assert page.read_bytes() == b"P5\n40 40\n255\n" + paper_row * 40
+
+
+def test_autocrop_pnm_keeps_full_length_noisy_paper(tmp_path: Path) -> None:
+    # No uniform bottom row: nothing must be stripped from a full-length page.
+    paper_row = bytes([250, 252] * 20)
+    original = b"P5\n40 60\n255\n" + paper_row * 60
+    page = _write(tmp_path / "full.pgm", original)
+
+    assert autocrop_pnm(page, 0) is False
+    assert page.read_bytes() == original
+
+
 def test_autocrop_pnm_skips_p4_and_non_pnm(tmp_path: Path) -> None:
     p4 = _write(tmp_path / "b.pbm", b"P4\n8 1\n\x00")
     png = _write(tmp_path / "n.png", b"\x89PNG\r\n\x1a\n" + bytes(16))

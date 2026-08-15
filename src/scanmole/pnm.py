@@ -272,6 +272,15 @@ def autocrop_pnm(path: Path, trim_px: int) -> bool:
         return sum(segment) / len(segment) >= cutoff
 
     top, bottom = 0, height - 1
+    # End-of-paper padding can be as bright as paper: some devices pad color
+    # and back-side passes with pure white, invisible to the brightness walk.
+    # But that padding is synthetic and bit-perfectly uniform, which real
+    # scanned paper never is (sensor noise), so first strip the run of rows
+    # identical to a perfectly uniform bottom row.
+    last_row = gray[(height - 1) * width :]
+    if min(last_row) == max(last_row):
+        while bottom > top and gray[bottom * width : (bottom + 1) * width] == last_row:
+            bottom -= 1
     while top < bottom and not row_is_paper(top):
         top += 1
     while bottom > top and not row_is_paper(bottom):
