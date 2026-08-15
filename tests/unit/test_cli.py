@@ -55,6 +55,36 @@ def test_resolve_output_reserves_the_name_against_concurrent_runs(
     assert first.is_file() and first.stat().st_size == 0
 
 
+def test_resolve_output_default_template_claims_the_next_free_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    first = _resolve_output(_parse([]))
+    second = _resolve_output(_parse([]))
+
+    assert first.name.endswith("_scan_001.pdf")
+    assert second.name.endswith("_scan_002.pdf")
+    assert first.is_file() and first.stat().st_size == 0  # reserved
+
+
+def test_resolve_output_expands_templates_in_outbase(tmp_path: Path) -> None:
+    resolved = _resolve_output(_parse([str(tmp_path / "{YYYY}-{MM}_{preset}_{NN}")]))
+
+    assert resolved.parent == tmp_path
+    assert resolved.name.endswith("_lineart-300_01.pdf")
+    assert resolved.name[:4].isdigit()
+
+
+def test_resolve_output_rejects_device_placeholder_with_from_images(
+    tmp_path: Path,
+) -> None:
+    args = _parse(["--from-images", "a.png", "-o", str(tmp_path / "{device}_{NN}")])
+
+    with pytest.raises(InputError, match=r"\{device\}"):
+        _resolve_output(args)
+
+
 def test_resolve_output_rejects_an_unwritable_location(tmp_path: Path) -> None:
     args = _parse([str(tmp_path / "missing-dir" / "scan.pdf")])
 

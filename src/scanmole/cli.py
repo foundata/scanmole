@@ -19,10 +19,16 @@ from typing import override
 
 from scanmole import __version__
 from scanmole.config import ScanConfig
-from scanmole.devices import DEVICE_ENV_VAR, is_real_device, list_devices
+from scanmole.devices import (
+    DEVICE_ENV_VAR,
+    is_real_device,
+    list_devices,
+    pick_default_device,
+)
 from scanmole.errors import InputError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import require_tools
+from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template, has_counter
 from scanmole.pipeline import run_pipeline
 
 LOGGER = logging.getLogger("scanmole")
@@ -82,11 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  scanmole                       scan ADF duplex -> "
-            "./YYYY-MM-DD_scan_HH-MM.pdf\n"
+            "./2026-08-15_scan_001.pdf\n"
             "  scanmole invoice               -> ./invoice.pdf\n"
+            "  scanmole '{YYYY}-{MM}_{preset}_{NN}'   -> "
+            "./2026-08_lineart-300_01.pdf\n"
             "  scanmole --source flatbed --mode gray -r 150 --no-ocr -o test.pdf\n"
             "  scanmole --from-images p1.png p2.png -o doc.pdf\n"
-            "  scanmole --list-devices --json"
+            "  scanmole --list-devices --json\n"
+            "\n"
+            "filename placeholders: {YYYY} {MM} {DD} (date), {hh} {mm} {ss} "
+            "(time), {NN}/{NNN} (auto-number), {preset}, {device}"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -94,9 +105,17 @@ def build_parser() -> argparse.ArgumentParser:
         "outbase",
         nargs="?",
         metavar="OUTBASE",
-        help="output file base name (.pdf appended if missing)",
+        help="output file name or template (.pdf appended if missing)",
     )
-    parser.add_argument("-o", "--output", metavar="FILE", help="output PDF file")
+    parser.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help=(
+            "output PDF file or template "
+            f"(default: {DEFAULT_OUTPUT_TEMPLATE} in the current directory)"
+        ),
+    )
     parser.add_argument(
         "--list-devices",
         action="store_true",
@@ -285,22 +304,62 @@ def _discard_unused_reservation(output: Path | None) -> None:
         LOGGER.debug("could not clean up %s", output, exc_info=True)
 
 
-def _resolve_output(args: argparse.Namespace) -> Path:
-    """Resolve the final, non-overwriting output path from the arguments.
-
-    Raises:
-        InputError: If both ``-o`` and a positional base name are given.
-    """
-    if args.output and args.outbase:
-        raise InputError("give either -o/--output or a positional OUTBASE, not both")
-    name = args.output or args.outbase
-    if not name:
-        stamp = datetime.now().astimezone().strftime("%Y-%m-%d_scan_%H-%M")
-        name = f"{stamp}.pdf"
+def _as_pdf_path(name: str) -> Path:
+    """Turn an expanded output name into an absolute path ending in .pdf."""
     path = Path(name).expanduser()
     if path.suffix.lower() != ".pdf":
         path = path.with_name(path.name + ".pdf")
-    return _unique_output(path.resolve())
+    return path.resolve()
+
+
+def _resolve_output(args: argparse.Namespace) -> Path:
+    """Expand the output template and reserve a final, non-overwriting path.
+
+    ``-o``/``OUTBASE`` may contain the documented filename placeholders. A
+    template with an ``NN``/``NNN`` counter claims the next free number; any
+    other name falls back to the ``_2``, ``_3``, ... suffix.
+
+    Raises:
+        InputError: If both ``-o`` and a positional base name are given, the
+            template needs a device on a run without one, or the output
+            location is not writable.
+    """
+    if args.output and args.outbase:
+        raise InputError("give either -o/--output or a positional OUTBASE, not both")
+    template = args.output or args.outbase or DEFAULT_OUTPUT_TEMPLATE
+    device: str | None = args.device or None
+    if "{device}" in template and device is None:
+        if args.from_images is not None:
+            raise InputError(
+                "the {device} placeholder needs a scanner run; "
+                "--from-images has no device"
+            )
+        device = pick_default_device()
+    preset = f"{args.mode}-{args.resolution}"
+    when = datetime.now().astimezone()
+
+    def expand(counter: int) -> Path:
+        try:
+            name = expand_template(
+                template, when=when, counter=counter, device=device, preset=preset
+            )
+        except ValueError as exc:  # unreachable: {device} was resolved above
+            raise InputError(str(exc)) from exc
+        return _as_pdf_path(name)
+
+    if not has_counter(template):
+        return _unique_output(expand(1))
+    number = 1
+    while True:
+        candidate = expand(number)
+        try:
+            candidate.touch(exist_ok=False)
+        except FileExistsError:
+            number += 1
+        except OSError as exc:
+            raise InputError(f"cannot create output file {candidate}: {exc}") from exc
+        else:
+            return candidate
 
 
 def _build_config(args: argparse.Namespace) -> ScanConfig:

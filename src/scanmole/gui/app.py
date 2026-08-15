@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import IO
 
@@ -31,6 +32,10 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402  # after require_version
 
 from scanmole.gui.i18n import _, ngettext  # noqa: E402  # after gi setup
+
+# The GUI holds no pipeline logic; this pure helper is imported only so the
+# live filename preview matches what the CLI will produce.
+from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
 
 APP_ID = "com.foundata.ScanMole"
 CONFIG_FILE = Path(GLib.get_user_config_dir()) / "scanmole" / "gui.json"
@@ -271,16 +276,30 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._folder_row.add_suffix(folder_btn)
         self._folder_row.set_activatable_widget(folder_btn)
         out_grp.add(self._folder_row)
-        self._name_row = Adw.EntryRow(title=_("Filename (optional)"))
+        self._name_row = Adw.EntryRow(title=_("Filename template"))
+        self._name_row.set_text(DEFAULT_OUTPUT_TEMPLATE)
         self._name_row.set_tooltip_text(
-            _('Leave empty for an automatic name; ".pdf" is appended if missing')
+            _(
+                "Placeholders: {YYYY}, {MM}, {DD} (date), {hh}, {mm}, {ss} "
+                "(time), {NN}/{NNN} (auto-number), {preset}, {device}"
+            )
         )
         out_grp.add(self._name_row)
+        self._name_preview_row = Adw.ActionRow(title=_("Example"))
+        self._name_preview_row.add_css_class("property")
+        out_grp.add(self._name_preview_row)
         box.append(out_grp)
 
         self._form_groups = (scanner_grp, doc_grp, proc_grp, out_grp)
 
         box.append(self._build_progress_area())
+
+        # The preview depends on the template, the device and the settings
+        # that make up {preset}; refresh it whenever one of them changes.
+        self._name_row.connect("changed", self._update_name_preview)
+        self._mode_row.connect("notify::selected", self._update_name_preview)
+        self._res_row.connect("notify::selected", self._update_name_preview)
+        self._update_name_preview()
 
     def _build_result_group(self) -> Adw.PreferencesGroup:
         """Build the (initially hidden) saved-file result group."""
@@ -354,6 +373,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._lang_row.set_text(str(settings.get("lang", "deu")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
+        self._name_row.set_text(
+            str(settings.get("filename_template") or DEFAULT_OUTPUT_TEMPLATE)
+        )
 
     def _save_settings(self) -> None:
         """Snapshot the current form into the settings file."""
@@ -366,6 +388,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "ocr": self._ocr_row.get_active(),
             "lang": self._lang_row.get_text().strip(),
             "skip_blanks": self._blank_row.get_active(),
+            "filename_template": self._name_row.get_text().strip()
+            or DEFAULT_OUTPUT_TEMPLATE,
             "folder": self._folder,
         }
         store_settings(self._settings)
@@ -466,6 +490,28 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_device_selected(self, *_args: object) -> None:
         """Show the selected device's SANE id as the row subtitle."""
         self._device_row.set_subtitle(self._selected_device() or "")
+        self._update_name_preview()
+
+    def _current_template(self) -> str:
+        """Return the filename template from the form, with .pdf ensured."""
+        template = self._name_row.get_text().strip() or DEFAULT_OUTPUT_TEMPLATE
+        if not template.lower().endswith(".pdf"):
+            template += ".pdf"
+        return template
+
+    def _update_name_preview(self, *_args: object) -> None:
+        """Render the template with the current form values as an example."""
+        mode = combo_value(self._mode_row, MODES)
+        resolution = combo_value(self._res_row, RESOLUTIONS)
+        preset = f"{mode}-{resolution}"
+        example = expand_template(
+            self._current_template(),
+            when=datetime.now().astimezone(),
+            counter=1,
+            device=self._selected_device() or "device",
+            preset=preset,
+        )
+        self._name_preview_row.set_subtitle(example)
 
     # ----------------------------------------------------------- scanning
 
@@ -494,13 +540,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             argv.append("--no-ocr")
         if not self._blank_row.get_active():
             argv.append("--keep-blanks")
-        name = self._name_row.get_text().strip()
-        if name:
-            if not name.lower().endswith(".pdf"):
-                name += ".pdf"
-            argv += ["-o", str(folder / name)]
-        # With no -o, scanmole picks its default name; the process runs with
-        # cwd=folder so that name lands in the chosen output folder.
+        # The CLI expands the filename placeholders and picks the next free
+        # counter value; the GUI only forwards the template.
+        argv += ["-o", str(folder / self._current_template())]
         return argv
 
     def _on_scan_clicked(self, *_args: object) -> None:
