@@ -230,15 +230,44 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _unique_output(path: Path) -> Path:
-    """Return ``path`` or the next free ``name_2.pdf``, ``name_3.pdf``, ..."""
-    if not path.exists():
-        return path
+    """Reserve and return ``path`` or the next free ``name_2.pdf``, ...
+
+    The chosen name is reserved by creating it empty with ``O_EXCL``, so two
+    concurrent runs can never pick the same output file; a plain existence
+    check would let both pass before either has written anything. The
+    pipeline later replaces the empty file atomically with the finished PDF;
+    :func:`main` removes it again when no PDF was published.
+
+    Raises:
+        InputError: If the output location is not writable.
+    """
     number = 2
+    candidate = path
     while True:
-        candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
-        if not candidate.exists():
+        try:
+            candidate.touch(exist_ok=False)
+        except FileExistsError:
+            candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
+            number += 1
+        except OSError as exc:
+            raise InputError(f"cannot create output file {candidate}: {exc}") from exc
+        else:
             return candidate
-        number += 1
+
+
+def _discard_unused_reservation(output: Path | None) -> None:
+    """Remove a reserved output file that never received a PDF.
+
+    The reservation is the still-empty file :func:`_unique_output` created;
+    once the pipeline has published, the file has content and stays.
+    """
+    if output is None:
+        return
+    try:
+        if output.stat().st_size == 0:
+            output.unlink()
+    except OSError:
+        LOGGER.debug("could not clean up %s", output, exc_info=True)
 
 
 def _resolve_output(args: argparse.Namespace) -> Path:
@@ -325,10 +354,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(verbose=args.verbose)
     _install_sigterm_handler()
     events = EventWriter(enabled=args.json)
+    output: Path | None = None
     try:
         if args.list_devices:
             return _list_devices(events, as_json=args.json)
-        return run_pipeline(_build_config(args), events)
+        config = _build_config(args)
+        output = config.output
+        return run_pipeline(config, events)
     except ScanMoleError as exc:
         events.error(exc.message, code=exc.exit_code)
         LOGGER.error("%s", exc.message)
@@ -351,6 +383,10 @@ def main(argv: list[str] | None = None) -> int:
         events.error(message, code=1)
         LOGGER.error("%s", message)
         return 1
+    finally:
+        # Covers every failure and interrupt path above; after a successful
+        # publish the file has content and is left alone.
+        _discard_unused_reservation(output)
 
 
 def _format_command(cmd: object) -> str:

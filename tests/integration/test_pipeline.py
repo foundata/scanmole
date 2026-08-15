@@ -18,7 +18,7 @@ from scanmole.config import ScanConfig
 from scanmole.errors import NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.options import Capability
-from scanmole.pipeline import analyze_page, run_pipeline
+from scanmole.pipeline import analyze_page, publish_pdf, run_pipeline
 from scanmole.scanner import EffectiveSettings, ScanResult
 
 pytestmark = pytest.mark.integration
@@ -233,6 +233,30 @@ def test_snapped_resolution_reaches_pdf_assembly(
     assert settings["resolution"] == 150
     start = next(event for event in events if event["event"] == "start")
     assert start["resolution"] == 300  # the requested value, per the contract
+
+
+def test_publish_pdf_replaces_the_reservation_and_leaves_no_staging(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "work" / "raw.pdf"
+    source.parent.mkdir()
+    source.write_bytes(b"%PDF-content")
+    output = tmp_path / "out.pdf"
+    output.touch()  # the CLI's empty reservation
+
+    publish_pdf(source, output)
+
+    assert output.read_bytes() == b"%PDF-content"
+    assert not source.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out.pdf", "work"]
+
+
+def test_publish_pdf_failure_raises_processing_error(tmp_path: Path) -> None:
+    source = tmp_path / "raw.pdf"
+    source.write_bytes(b"%PDF-content")
+
+    with pytest.raises(ProcessingError, match="cannot write output"):
+        publish_pdf(source, tmp_path / "missing-dir" / "out.pdf")
 
 
 def test_blank_threshold_zero_disables_blank_detection(tmp_path: Path) -> None:

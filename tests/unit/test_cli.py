@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from scanmole.cli import _build_config, _resolve_output, _Terminated, build_parser, main
+from scanmole.config import ScanConfig
 from scanmole.errors import InputError, ProcessingError
 
 
@@ -36,6 +37,68 @@ def test_resolve_output_avoids_overwriting_existing_file(tmp_path: Path) -> None
     args = _parse([str(existing)])
 
     assert _resolve_output(args).name == "scan_2.pdf"
+
+
+def test_resolve_output_reserves_the_name_against_concurrent_runs(
+    tmp_path: Path,
+) -> None:
+    # Two runs resolving the same name must never get the same path: the
+    # first call reserves the file on disk, so the second sees it taken. A
+    # bare existence check would hand both runs "scan.pdf".
+    args = _parse([str(tmp_path / "scan")])
+
+    first = _resolve_output(args)
+    second = _resolve_output(_parse([str(tmp_path / "scan")]))
+
+    assert first.name == "scan.pdf"
+    assert second.name == "scan_2.pdf"
+    assert first.is_file() and first.stat().st_size == 0
+
+
+def test_resolve_output_rejects_an_unwritable_location(tmp_path: Path) -> None:
+    args = _parse([str(tmp_path / "missing-dir" / "scan.pdf")])
+
+    with pytest.raises(InputError, match="cannot create output file"):
+        _resolve_output(args)
+
+
+def test_main_removes_the_reservation_when_the_run_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "scanmole.cli.run_pipeline", _raiser(ProcessingError("ocrmypdf failed"))
+    )
+    output = tmp_path / "doomed.pdf"
+
+    assert main(["-o", str(output)]) == 5
+
+    assert not output.exists()
+
+
+def test_main_removes_the_reservation_on_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scanmole.cli.run_pipeline", _raiser(KeyboardInterrupt()))
+    output = tmp_path / "interrupted.pdf"
+
+    assert main(["-o", str(output)]) == 130
+
+    assert not output.exists()
+
+
+def test_main_keeps_the_published_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_pipeline(config: ScanConfig, events: object) -> int:
+        config.output.write_bytes(b"%PDF-fake")
+        return 0
+
+    monkeypatch.setattr("scanmole.cli.run_pipeline", fake_pipeline)
+    output = tmp_path / "done.pdf"
+
+    assert main(["-o", str(output)]) == 0
+
+    assert output.read_bytes() == b"%PDF-fake"
 
 
 def test_resolve_output_rejects_output_and_positional_together(tmp_path: Path) -> None:

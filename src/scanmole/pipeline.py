@@ -8,6 +8,7 @@ machine-readable event and a human log line.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import tempfile
 import time
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from scanmole.config import ScanConfig
 from scanmole.devices import pick_default_device
-from scanmole.errors import InputError, NoPagesError, ScanMoleError
+from scanmole.errors import InputError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import require_tools
 from scanmole.options import parse_page_size
@@ -62,6 +63,33 @@ def analyze_page(
     else:
         LOGGER.info("Page %d: blank, dropped (%s)", number, measured)
     return keep, blank
+
+
+def publish_pdf(source: Path, output: Path) -> None:
+    """Publish ``source`` as ``output``, atomically replacing the reservation.
+
+    The CLI reserved ``output`` as an empty file so concurrent runs cannot
+    collide. ``os.replace`` is atomic only within one filesystem and the work
+    directory usually lives on another one (/tmp), so the PDF is staged next
+    to ``output`` first.
+
+    Raises:
+        ProcessingError: If the finished PDF cannot be moved into place.
+    """
+    staged: Path | None = None
+    try:
+        handle, staged_name = tempfile.mkstemp(
+            dir=output.parent, prefix=f".{output.stem}.", suffix=".part"
+        )
+        os.close(handle)
+        staged = Path(staged_name)
+        shutil.move(str(source), str(staged))
+        os.replace(staged, output)
+    except OSError as exc:
+        raise ProcessingError(f"cannot write output {output}: {exc}") from exc
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 
 
 def copy_kept_images(kept: list[KeptPage], destination: Path) -> None:
@@ -158,9 +186,11 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         if config.ocr:
             events.emit("ocr_start", lang=config.lang)
             LOGGER.info("Running OCR (%s) ...", config.lang)
-            run_ocr(raw_pdf, config.output, config)
+            final_pdf = work_dir / "ocr.pdf"
+            run_ocr(raw_pdf, final_pdf, config)
         else:
-            shutil.move(str(raw_pdf), str(config.output))
+            final_pdf = raw_pdf
+        publish_pdf(final_pdf, config.output)
 
         events.emit(
             "done",
