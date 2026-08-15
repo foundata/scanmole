@@ -182,6 +182,18 @@ def test_lineart_threshold_defaults_to_half(tmp_path: Path) -> None:
     assert config.lineart_threshold == 0.5
 
 
+def test_version_output_credits_foundata(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as info:
+        main(["--version"])
+
+    assert info.value.code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("scanmole ")
+    assert "by foundata (https://foundata.com)" in out
+
+
 def test_page_size_defaults_to_auto(tmp_path: Path) -> None:
     config = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
 

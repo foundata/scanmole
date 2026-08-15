@@ -17,7 +17,7 @@ from pathlib import Path
 from types import FrameType
 from typing import override
 
-from scanmole import __version__
+from scanmole import BYLINE, __version__
 from scanmole.config import ScanConfig
 from scanmole.devices import (
     DEVICE_ENV_VAR,
@@ -258,7 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="verbose logging to stderr",
     )
     parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {__version__}"
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}\n{BYLINE}",
     )
     return parser
 

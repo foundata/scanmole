@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import sys
 
+from scanmole import BYLINE, __version__
+
 _MISSING_GUI_MESSAGE = (
     "scanmole-gui needs PyGObject and GTK 4 — install: python3-gobject gtk4 libadwaita"
 )
@@ -17,6 +19,11 @@ _MISSING_GUI_MESSAGE = (
 
 def main(argv: list[str] | None = None) -> int:
     """Launch the GUI, or report missing GTK bindings and exit non-zero."""
+    arguments = sys.argv[1:] if argv is None else argv
+    if "--version" in arguments:
+        # Handled before the GTK probe so it works without PyGObject.
+        print(f"scanmole-gui {__version__}\n{BYLINE}")
+        return 0
     try:
         import gi
 
