@@ -44,6 +44,7 @@ SOURCES = (
 MODES = ((_("Lineart"), "lineart"), (_("Gray"), "gray"), (_("Color"), "color"))
 RESOLUTIONS = tuple((f"{dpi} dpi", str(dpi)) for dpi in (150, 200, 300, 400, 600))
 PAGE_SIZES = (
+    (_("Automatic"), "auto"),
     ("A4", "a4"),
     ("A5", "a5"),
     ("A6", "a6"),
@@ -348,7 +349,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         combo_select(self._mode_row, MODES, str(settings.get("mode", "lineart")))
         combo_select(self._res_row, RESOLUTIONS, str(settings.get("resolution", "300")))
-        combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "a4")))
+        combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
         self._lang_row.set_text(str(settings.get("lang", "deu")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())

@@ -88,21 +88,26 @@ def build_scan_command(
     if resolution is not None:
         command += ["--resolution", str(resolution)]
 
-    width, height = parse_page_size(config.page_size)
-    if "page-width" in caps:
-        command += [
-            "--page-width",
-            format_mm(width, caps["page-width"], "--page-width"),
-        ]
-    if "page-height" in caps:
-        command += [
-            "--page-height",
-            format_mm(height, caps["page-height"], "--page-height"),
-        ]
-    if "x" in caps:
-        command += ["-x", format_mm(width, caps["x"], "-x")]
-    if "y" in caps:
-        command += ["-y", format_mm(height, caps["y"], "-y")]
+    size = parse_page_size(config.page_size)
+    if size is None:
+        # Auto page size: scan the device's full window (it clamps oversized
+        # requests itself); the pipeline crops each page to the paper edges.
+        width, height = float("inf"), float("inf")
+    else:
+        width, height = size
+    for option, value, capability in (
+        ("--page-width", width, caps.get("page-width")),
+        ("--page-height", height, caps.get("page-height")),
+        ("-x", width, caps.get("x")),
+        ("-y", height, caps.get("y")),
+    ):
+        if capability is None:
+            continue
+        if value == float("inf") and (
+            capability.kind != "range" or capability.maximum is None
+        ):
+            continue  # no known maximum: let the backend's default window apply
+        command += [option, format_mm(value, capability, option)]
 
     if config.despeckle > 0 and "swdespeck" in caps:
         command.append(f"--swdespeck={config.despeckle}")

@@ -21,7 +21,7 @@ from scanmole.events import EventWriter
 from scanmole.external import require_tools
 from scanmole.options import parse_page_size
 from scanmole.pdf import build_pdf, run_ocr
-from scanmole.pnm import binarize_image, image_mean
+from scanmole.pnm import autocrop_image, binarize_image, image_mean
 from scanmole.scanner import scan_to_files
 
 LOGGER = logging.getLogger(__name__)
@@ -115,7 +115,12 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
     if config.ocr:
         required.append("ocrmypdf")
     require_tools(required)
-    parse_page_size(config.page_size)  # validate early, before touching hardware
+    # Validate early, before touching hardware. None means "auto": scan the
+    # full device window and crop each page to the detected paper edges.
+    auto_page_size = parse_page_size(config.page_size) is None
+    # Shave the detected paper box inward by about a third of a millimetre so
+    # half-gray edge pixels cannot survive as a dark rim.
+    crop_trim_px = max(1, round(config.resolution / 75))
 
     device: str | None = None
     if from_images:
@@ -149,6 +154,12 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # page event while the rest of the batch is still scanning.
             nonlocal total, blanks, binarized
             total += 1
+            # With page size auto the scan covers the device's full window;
+            # crop to the paper first so backing strips and end-of-paper
+            # padding reach neither the 1-bit conversion nor blank detection,
+            # and the PDF page gets the paper's real size.
+            if not from_images and auto_page_size:
+                autocrop_image(page, crop_trim_px)
             # Backends without a 1-bit mode (eSCL offers only Gray/Color)
             # degrade a lineart request to gray; restore the asked-for 1-bit
             # output in software, before blank detection so the 0.995 default
@@ -181,6 +192,10 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         else:
             if device is None:  # unreachable: resolved above for scan runs
                 raise ScanMoleError("no device resolved for scanning")
+            if auto_page_size:
+                LOGGER.info(
+                    "Auto page size: cropping each page to the detected paper edges"
+                )
             scanned = scan_to_files(config, device, work_dir, events, handle_page)
             # The backend may have snapped the requested dpi; the PDF must be
             # stamped with what the pages were actually scanned at, or their

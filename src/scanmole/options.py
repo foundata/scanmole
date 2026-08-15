@@ -244,19 +244,28 @@ def map_mode(want: str, caps: dict[str, Capability]) -> str | None:
     )
 
 
-def parse_page_size(spec: str) -> tuple[float, float]:
-    """Parse ``a4``/``letter``/... or ``WxH`` (mm) into a width/height pair.
+def parse_page_size(spec: str) -> tuple[float, float] | None:
+    """Parse ``a4``/``letter``/..., ``WxH`` (mm) or ``auto`` into a size.
+
+    Returns:
+        The width/height pair in millimetres, or ``None`` for ``auto``: the
+        scan then uses the device's maximum window and the pipeline crops each
+        page to the detected paper edges.
 
     Raises:
-        InputError: If ``spec`` is neither a known name nor ``WxH`` in mm.
+        InputError: If ``spec`` is neither ``auto``, a known name nor ``WxH``
+            in mm.
     """
     text = spec.strip().lower()
+    if text == "auto":
+        return None
     if text in PAGE_SIZES:
         return PAGE_SIZES[text]
     match = re.fullmatch(r"(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)", text)
     if match is None:
         raise InputError(
-            f"invalid --page-size '{spec}' (use a4|a5|a6|letter|legal or WxH in mm)"
+            f"invalid --page-size '{spec}' "
+            "(use auto, a4|a5|a6|letter|legal, or WxH in mm)"
         )
     return float(match.group(1)), float(match.group(2))
 

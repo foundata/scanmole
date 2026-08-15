@@ -152,6 +152,12 @@ def test_lineart_threshold_defaults_to_half(tmp_path: Path) -> None:
     assert config.lineart_threshold == 0.5
 
 
+def test_page_size_defaults_to_auto(tmp_path: Path) -> None:
+    config = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+
+    assert config.page_size == "auto"
+
+
 def test_lineart_threshold_rejects_values_of_one_or_more(tmp_path: Path) -> None:
     args = _parse(["--lineart-threshold", "1.5", "-o", str(tmp_path / "a.pdf")])
 

@@ -131,9 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--page-size",
-        default="a4",
+        default="auto",
         metavar="SIZE",
-        help="a4|a5|a6|letter|legal or WxH in mm (default: %(default)s)",
+        help=(
+            "auto (detect the paper edges), a4|a5|a6|letter|legal, or WxH in "
+            "mm (default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--despeckle",

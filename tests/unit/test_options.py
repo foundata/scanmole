@@ -84,6 +84,11 @@ def test_parse_page_size_rejects_garbage() -> None:
         parse_page_size("huge")
 
 
+def test_parse_page_size_auto_returns_none() -> None:
+    assert parse_page_size("auto") is None
+    assert parse_page_size(" AUTO ") is None
+
+
 def test_snap_resolution_picks_nearest_enum_value() -> None:
     caps = {"resolution": _enum("75", "150", "300", "600")}
 

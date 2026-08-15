@@ -49,7 +49,7 @@ Brother devices: modern ones (e.g. ADS-4550W) work driverless via `sane-airscan`
 
 ```sh
 scanmole --list-devices        # what SANE sees (webcams/v4l are ignored)
-scanmole                       # ADF duplex, lineart, 300 dpi, A4, German OCR
+scanmole                       # ADF duplex, lineart, 300 dpi, auto size, German OCR
                                #   -> ./YYYY-MM-DD_scan_HH-MM.pdf
 scanmole -o invoice.pdf --mode gray -r 300 -l deu+eng
 scanmole --source flatbed --no-ocr --keep-blanks draft
@@ -57,7 +57,7 @@ scanmole --from-images pages/*.png -o rebuild.pdf   # pipeline without a scanner
 scanmole-gui                   # the GUI
 ```
 
-Key options: `-d/--device` (or `$SCANMOLE_DEVICE`; auto-picks the first real scanner otherwise), `--source adf-duplex|adf|adf-back|flatbed`, `--mode lineart|gray|color`, `-r/--resolution`, `--page-size a4|a5|a6|letter|legal|WxH(mm)`, `-l/--lang` (Tesseract codes, `deu+eng` works), `--ocr/--no-ocr`, `--lineart-threshold` (software 1-bit cutoff for devices without a lineart mode; default 0.5, `0` keeps gray), `--blank-threshold` (default 0.995, `0` disables) / `--keep-blanks`, `--despeckle N`, `--deskew`, `--crop`, `--optimize 0..3`, `--pdfa/--no-pdfa` (PDF/A on by default; applies when OCR runs), `--keep-images DIR`, `--json`, `-v`. Run `scanmole --help` for the full list.
+Key options: `-d/--device` (or `$SCANMOLE_DEVICE`; auto-picks the first real scanner otherwise), `--source adf-duplex|adf|adf-back|flatbed`, `--mode lineart|gray|color`, `-r/--resolution`, `--page-size auto|a4|a5|a6|letter|legal|WxH(mm)` (default `auto`: pages are cropped to the detected paper edges, so receipts come out receipt-sized), `-l/--lang` (Tesseract codes, `deu+eng` works), `--ocr/--no-ocr`, `--lineart-threshold` (software 1-bit cutoff for devices without a lineart mode; default 0.5, `0` keeps gray), `--blank-threshold` (default 0.995, `0` disables) / `--keep-blanks`, `--despeckle N`, `--deskew`, `--crop`, `--optimize 0..3`, `--pdfa/--no-pdfa` (PDF/A on by default; applies when OCR runs), `--keep-images DIR`, `--json`, `-v`. Run `scanmole --help` for the full list.
 
 The GUI follows the usual locale environment, e.g. `LANGUAGE=de scanmole-gui`; German is included.
 

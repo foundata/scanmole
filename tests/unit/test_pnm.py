@@ -6,7 +6,25 @@ from pathlib import Path
 
 import pytest
 
-from scanmole.pnm import binarize_image, binarize_pnm, image_mean, pnm_mean
+from scanmole.pnm import (
+    autocrop_image,
+    autocrop_pnm,
+    binarize_image,
+    binarize_pnm,
+    image_mean,
+    pnm_mean,
+)
+
+
+def _bordered_page(paper: int = 250, backing: int = 110) -> bytes:
+    """A 40x30 gray page: paper spans columns 5-34 and rows 3-24."""
+    rows = []
+    for y in range(30):
+        if 3 <= y <= 24:
+            rows.append(bytes([backing] * 5 + [paper] * 30 + [backing] * 5))
+        else:
+            rows.append(bytes([backing] * 40))
+    return b"P5\n40 30\n255\n" + b"".join(rows)
 
 
 def _write(path: Path, data: bytes) -> Path:
@@ -163,6 +181,81 @@ def test_binarize_image_keeps_a_malformed_page_with_a_warning(
     page = _write(tmp_path / "short.pgm", original)
 
     assert binarize_image(page, 0.5) is False
+    assert page.read_bytes() == original
+
+
+def test_autocrop_pnm_crops_to_the_paper_box(tmp_path: Path) -> None:
+    page = _write(tmp_path / "bordered.pgm", _bordered_page())
+
+    assert autocrop_pnm(page, 0) is True
+
+    data = page.read_bytes()
+    assert data.startswith(b"P5\n30 22\n255\n")
+    raster = data.split(b"\n", 3)[3]
+    assert set(raster) == {250}  # only paper pixels remain
+
+
+def test_autocrop_pnm_shaves_the_trim_inward(tmp_path: Path) -> None:
+    page = _write(tmp_path / "bordered.pgm", _bordered_page())
+
+    assert autocrop_pnm(page, 2) is True
+
+    assert page.read_bytes().startswith(b"P5\n26 18\n255\n")
+
+
+def test_autocrop_pnm_keeps_pages_without_a_border(tmp_path: Path) -> None:
+    # White backing (or a borderless scan): every profile is paper-bright.
+    original = b"P5\n40 30\n255\n" + bytes([250] * 1200)
+    page = _write(tmp_path / "clean.pgm", original)
+
+    assert autocrop_pnm(page, 4) is False
+    assert page.read_bytes() == original
+
+
+def test_autocrop_pnm_keeps_a_page_with_no_detectable_paper(tmp_path: Path) -> None:
+    # All-dark frame (jammed feeder, full-bleed photo): never crop to nothing.
+    original = b"P5\n40 30\n255\n" + bytes([80] * 1200)
+    page = _write(tmp_path / "dark.pgm", original)
+
+    assert autocrop_pnm(page, 4) is False
+    assert page.read_bytes() == original
+
+
+def test_autocrop_pnm_crops_color_pages(tmp_path: Path) -> None:
+    # 40x30 RGB: same geometry as _bordered_page, encoded per channel.
+    rows = []
+    for y in range(30):
+        if 3 <= y <= 24:
+            row = [200, 110, 90] * 5 + [240, 250, 245] * 30 + [200, 110, 90] * 5
+        else:
+            row = [200, 110, 90] * 40
+        rows.append(bytes(row))
+    page = _write(tmp_path / "color.ppm", b"P6\n40 30\n255\n" + b"".join(rows))
+
+    assert autocrop_pnm(page, 0) is True
+
+    data = page.read_bytes()
+    assert data.startswith(b"P6\n30 22\n255\n")
+    raster = data.split(b"\n", 3)[3]
+    assert len(raster) == 30 * 22 * 3
+    assert raster[:3] == bytes([240, 250, 245])
+
+
+def test_autocrop_pnm_skips_p4_and_non_pnm(tmp_path: Path) -> None:
+    p4 = _write(tmp_path / "b.pbm", b"P4\n8 1\n\x00")
+    png = _write(tmp_path / "n.png", b"\x89PNG\r\n\x1a\n" + bytes(16))
+
+    assert autocrop_pnm(p4, 4) is False
+    assert autocrop_pnm(png, 4) is False
+
+
+def test_autocrop_image_keeps_a_malformed_page_with_a_warning(
+    tmp_path: Path,
+) -> None:
+    original = b"P5\n40 30\n255\n" + bytes(10)  # truncated raster
+    page = _write(tmp_path / "short.pgm", original)
+
+    assert autocrop_image(page, 4) is False
     assert page.read_bytes() == original
 
 

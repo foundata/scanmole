@@ -129,6 +129,35 @@ def test_build_scan_command_uses_batch_print(tmp_path: Path) -> None:
     assert effective == EffectiveSettings(source=None, mode=None, resolution=None)
 
 
+def test_build_scan_command_auto_size_requests_the_full_window(
+    tmp_path: Path,
+) -> None:
+    caps = {
+        "x": Capability(kind="range", minimum=0.0, maximum=215.9),
+        "y": Capability(kind="range", minimum=0.0, maximum=3098.8),
+    }
+
+    command, _effective = build_scan_command(
+        _config(page_size="auto"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert command[command.index("-x") + 1] == "215.9"
+    assert command[command.index("-y") + 1] == "3098.8"
+
+
+def test_build_scan_command_auto_size_omits_geometry_without_ranges(
+    tmp_path: Path,
+) -> None:
+    caps = {"x": Capability(kind="other")}
+
+    command, _effective = build_scan_command(
+        _config(page_size="auto"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert "-x" not in command
+    assert "-y" not in command
+
+
 def test_build_scan_command_reports_the_snapped_resolution(tmp_path: Path) -> None:
     caps = {"resolution": Capability(kind="enum", choices=["150", "600"])}
 

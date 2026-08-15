@@ -328,6 +328,70 @@ def test_lineart_threshold_zero_keeps_the_gray_pages(
     assert (keep_dir / "page_0001.pnm").read_bytes().startswith(b"P5\n")
 
 
+def test_auto_page_size_crops_before_binarization_and_blank_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A blank backside surrounded by dark backing: without the crop the
+    # backing pixels binarize to black and rescue the page from the blank
+    # drop; with page size auto the page must come out blank and dropped.
+    def bordered_page(*, with_ink: bool) -> bytes:
+        # 120x90 frame, paper spans columns 30-89 and rows 10-79; the content
+        # page carries a dark ink band inside the paper area.
+        rows = []
+        for y in range(90):
+            if 10 <= y <= 79:
+                paper = 30 if with_ink and 40 <= y <= 45 else 250
+                rows.append(bytes([110] * 30 + [paper] * 60 + [110] * 30))
+            else:
+                rows.append(bytes([110] * 120))
+        return b"P5\n120 90\n255\n" + b"".join(rows)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+    ) -> ScanResult:
+        content = work_dir / "page_0001.pnm"
+        content.write_bytes(bordered_page(with_ink=True))
+        blank = work_dir / "page_0002.pnm"
+        blank.write_bytes(bordered_page(with_ink=False))
+        assert callable(on_page)
+        on_page(content)
+        on_page(blank)
+        return ScanResult(
+            pages=[content, blank],
+            settings=EffectiveSettings(source=None, mode="Gray", resolution=None),
+        )
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        keep_images=keep_dir,
+    )
+    stream = io.StringIO()
+
+    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    scan_done = next(event for event in events if event["event"] == "scan_done")
+    assert scan_done == {"event": "scan_done", "total": 2, "kept": 1, "blanks": 1}
+    kept_page = keep_dir / "page_0001.pnm"
+    header = kept_page.read_bytes().split(b"\n", 2)
+    assert header[0] == b"P4"  # cropped, then binarized
+    width, height = map(int, header[1].split())
+    assert width < 120 and height < 90  # backing removed
+
+
 def test_from_images_are_never_binarized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
