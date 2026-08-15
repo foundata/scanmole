@@ -393,10 +393,10 @@ provides-extras = ["gui"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mypy" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pytest", specifier = ">=9.0" },
+    { name = "pytest-cov", specifier = ">=5.0.0" },
+    { name = "ruff", specifier = ">=0.12.7" },
 ]
 
 [[package]]
