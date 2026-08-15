@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
             "./2026-08-15_scan_001.pdf\n"
             "  scanmole invoice               -> ./invoice.pdf\n"
             "  scanmole '{YYYY}-{MM}_{preset}_{NN}'   -> "
-            "./2026-08_lineart-300_01.pdf\n"
+            "./2026-08_lineart-200_01.pdf\n"
             "  scanmole --source flatbed --mode gray -r 150 --no-ocr -o test.pdf\n"
             "  scanmole --from-images p1.png p2.png -o doc.pdf\n"
             "  scanmole --list-devices --json\n"
@@ -185,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-l",
         "--lang",
-        default="deu",
+        default="deu+eng",
         help="OCR language(s), e.g. deu or deu+eng (default: %(default)s)",
     )
     parser.add_argument(

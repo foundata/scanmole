@@ -72,8 +72,15 @@ def test_resolve_output_expands_templates_in_outbase(tmp_path: Path) -> None:
     resolved = _resolve_output(_parse([str(tmp_path / "{YYYY}-{MM}_{preset}_{NN}")]))
 
     assert resolved.parent == tmp_path
-    assert resolved.name.endswith("_lineart-300_01.pdf")
+    assert resolved.name.endswith("_lineart-200_01.pdf")
     assert resolved.name[:4].isdigit()
+
+
+def test_scan_defaults_are_300_dpi_and_mixed_language_ocr(tmp_path: Path) -> None:
+    config = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+
+    assert config.resolution == 300
+    assert config.lang == "deu+eng"
 
 
 def test_resolve_output_rejects_device_placeholder_with_from_images(

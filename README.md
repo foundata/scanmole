@@ -51,18 +51,18 @@ Brother devices: modern ones (e.g. ADS-4550W) work driverless via `sane-airscan`
 
 ```sh
 scanmole --list-devices        # what SANE sees (webcams/v4l are ignored)
-scanmole                       # ADF duplex, lineart, 300 dpi, auto size, German OCR
+scanmole                       # ADF duplex, lineart, 300 dpi, auto size, deu+eng OCR
                                #   -> ./2026-08-15_scan_001.pdf (auto-numbered)
-scanmole '{YYYY}-{MM}_{preset}_{NN}'   # template -> ./2026-08_lineart-300_01.pdf
+scanmole '{YYYY}-{MM}_{preset}_{NN}'   # template -> ./2026-08_lineart-200_01.pdf
 scanmole -o invoice.pdf --mode gray -r 300 -l deu+eng
 scanmole --source flatbed --no-ocr --keep-blanks draft
 scanmole --from-images pages/*.png -o rebuild.pdf   # pipeline without a scanner
 scanmole-gui                   # the GUI
 ```
 
-Output names may contain placeholders, in the CLI and the GUI alike: `{YYYY}`, `{MM}`, `{DD}` (date), `{hh}`, `{mm}`, `{ss}` (time), `{NN}`/`{NNN}` (zero-padded auto-increment, bumped until the name is free), `{preset}` (settings slug like `lineart-300`) and `{device}`; the default is `{YYYY}-{MM}-{DD}_scan_{NNN}.pdf`.
+Output names may contain placeholders, in the CLI and the GUI alike: `{YYYY}`, `{MM}`, `{DD}` (date), `{hh}`, `{mm}`, `{ss}` (time), `{NN}`/`{NNN}` (zero-padded auto-increment, bumped until the name is free), `{preset}` (settings slug like `lineart-200`) and `{device}`; the default is `{YYYY}-{MM}-{DD}_scan_{NNN}.pdf`.
 
-Key options: `-d/--device` (or `$SCANMOLE_DEVICE`; auto-picks the first real scanner otherwise), `--source adf-duplex|adf|adf-back|flatbed`, `--mode lineart|gray|color`, `-r/--resolution`, `--page-size auto|a4|a5|a6|letter|legal|WxH(mm)` (default `auto`: pages are cropped to the detected paper edges, so receipts come out receipt-sized), `-l/--lang` (Tesseract codes, `deu+eng` works), `--ocr/--no-ocr`, `--lineart-threshold` (software 1-bit cutoff for devices without a lineart mode; default 0.5, `0` keeps gray), `--blank-threshold` (default 0.995, `0` disables) / `--keep-blanks`, `--despeckle N`, `--deskew`, `--crop`, `--optimize 0..3`, `--pdfa/--no-pdfa` (PDF/A on by default; applies when OCR runs), `--keep-images DIR`, `--json`, `-v`. Run `scanmole --help` for the full list.
+Key options: `-d/--device` (or `$SCANMOLE_DEVICE`; auto-picks the first real scanner otherwise), `--source adf-duplex|adf|adf-back|flatbed`, `--mode lineart|gray|color`, `-r/--resolution`, `--page-size auto|a4|a5|a6|letter|legal|WxH(mm)` (default `auto`: pages are cropped to the detected paper edges, so receipts come out receipt-sized), `-l/--lang` (Tesseract codes, default `deu+eng`), `--ocr/--no-ocr`, `--lineart-threshold` (software 1-bit cutoff for devices without a lineart mode; default 0.5, `0` keeps gray), `--blank-threshold` (default 0.995, `0` disables) / `--keep-blanks`, `--despeckle N`, `--deskew`, `--crop`, `--optimize 0..3`, `--pdfa/--no-pdfa` (PDF/A on by default; applies when OCR runs), `--keep-images DIR`, `--json`, `-v`. Run `scanmole --help` for the full list.
 
 The GUI follows the usual locale environment, e.g. `LANGUAGE=de scanmole-gui`; German is included.
 

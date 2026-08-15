@@ -500,7 +500,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             upper=RESOLUTION_MAXIMUM,
             step_increment=10,
             page_increment=50,
-            value=300,
+            value=200,
         )
         self._res_spin = Gtk.SpinButton(adjustment=adjustment, numeric=True)
         self._res_spin.set_width_chars(5)
@@ -701,7 +701,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._sync_resolution_chips()
         combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
-        self._select_language(str(settings.get("lang", "deu")))
+        self._select_language(str(settings.get("lang", "deu+eng")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
         template = str(settings.get("filename_template") or "")
