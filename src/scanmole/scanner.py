@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -35,20 +36,45 @@ _SCANNED_PAGE = re.compile(r"^Scanned page \d+")
 _NO_DOCS_EXIT = 7
 
 
+@dataclass(frozen=True)
+class EffectiveSettings:
+    """The values actually negotiated with the backend for a scan.
+
+    A field is ``None`` when the device does not expose the option at all.
+    ``resolution`` is the dpi actually requested after capability snapping,
+    which may differ from the dpi the user asked for.
+    """
+
+    source: str | None
+    mode: str | None
+    resolution: int | None
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """The outcome of a completed batch scan.
+
+    Attributes:
+        pages: The produced page files, in delivery order.
+        settings: The settings the scan actually ran with.
+    """
+
+    pages: list[Path]
+    settings: EffectiveSettings
+
+
 def build_scan_command(
     config: ScanConfig,
     device: str,
     caps: dict[str, Capability],
     batch_pattern: str,
-) -> tuple[list[str], dict[str, str | int | None]]:
+) -> tuple[list[str], EffectiveSettings]:
     """Assemble the ``scanimage`` command for a batch scan.
 
     Only options the device actually advertises (per ``caps``) are included.
 
     Returns:
-        The command and the effective settings: the backend's source and mode
-        strings and the dpi actually requested. A setting is ``None`` when the
-        device does not expose the option at all.
+        The command and the settings the scan will actually run with.
     """
     command = ["scanimage", "-d", device]
 
@@ -88,12 +114,7 @@ def build_scan_command(
     command += ["--format=pnm", f"--batch={batch_pattern}", "--batch-print"]
     if config.source == "flatbed":
         command.append("--batch-count=1")  # a flatbed never reports "feeder empty"
-    effective: dict[str, str | int | None] = {
-        "source": source,
-        "mode": mode,
-        "resolution": resolution,
-    }
-    return command, effective
+    return command, EffectiveSettings(source=source, mode=mode, resolution=resolution)
 
 
 def run_scanimage(
@@ -182,9 +203,7 @@ def run_scanimage(
     if page_failure is not None:
         if isinstance(page_failure, ScanMoleError):
             raise page_failure
-        raise ScanMoleError(
-            f"page processing failed: {page_failure}"
-        ) from page_failure
+        raise ScanMoleError(f"page processing failed: {page_failure}") from page_failure
     return exit_code, "\n".join(lines)
 
 
@@ -194,13 +213,16 @@ def scan_to_files(
     work_dir: Path,
     events: EventWriter,
     on_page: Callable[[Path], None],
-) -> list[Path]:
-    """Scan into ``work_dir`` and return the produced page files, in order.
+) -> ScanResult:
+    """Scan into ``work_dir`` and return the pages plus the effective settings.
 
     Emits a ``settings`` event with the values negotiated with the backend
-    before the scan starts. Each page is delivered through ``on_page`` as soon
-    as scanimage finishes writing it; page files that scanimage wrote but did
-    not announce (defensive) are delivered after the batch, in name order.
+    before the scan starts; the same values are part of the returned
+    :class:`ScanResult` so later stages (PDF assembly) can use the dpi the
+    pages were actually scanned at. Each page is delivered through ``on_page``
+    as soon as scanimage finishes writing it; page files that scanimage wrote
+    but did not announce (defensive) are delivered after the batch, in name
+    order.
 
     Raises:
         DeviceError: If ``scanimage`` fails for a reason other than an empty
@@ -213,13 +235,19 @@ def scan_to_files(
     caps = probe_capabilities(device)
     pattern = str(work_dir / "page_%04d.pnm")
     command, effective = build_scan_command(config, device, caps, pattern)
-    events.emit("settings", device=device, **effective)
+    events.emit(
+        "settings",
+        device=device,
+        source=effective.source,
+        mode=effective.mode,
+        resolution=effective.resolution,
+    )
     LOGGER.info(
         "Scanning from %s (%s, %s, %d dpi) ...",
         device,
-        config.source,
-        config.mode,
-        config.resolution,
+        effective.source or config.source,
+        effective.mode or config.mode,
+        effective.resolution if effective.resolution is not None else config.resolution,
     )
     delivered: list[Path] = []
     seen: set[Path] = set()
@@ -245,4 +273,4 @@ def scan_to_files(
         raise DeviceError(f"scan failed: {tail}")
     if not delivered:
         raise NoPagesError("no pages were scanned -- is there paper in the feeder?")
-    return delivered
+    return ScanResult(pages=delivered, settings=effective)

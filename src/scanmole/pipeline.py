@@ -125,6 +125,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             if keep:
                 kept.append((total, page))
 
+        dpi: int | None = None
         if config.from_images is not None:
             LOGGER.info("Building PDF from %d image(s) ...", len(config.from_images))
             for image in config.from_images:  # keep the order given
@@ -132,7 +133,15 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         else:
             if device is None:  # unreachable: resolved above for scan runs
                 raise ScanMoleError("no device resolved for scanning")
-            scan_to_files(config, device, work_dir, events, handle_page)
+            scanned = scan_to_files(config, device, work_dir, events, handle_page)
+            # The backend may have snapped the requested dpi; the PDF must be
+            # stamped with what the pages were actually scanned at, or their
+            # geometry comes out wrong.
+            dpi = (
+                scanned.settings.resolution
+                if scanned.settings.resolution is not None
+                else config.resolution
+            )
 
         events.emit("scan_done", total=total, kept=len(kept), blanks=blanks)
         LOGGER.info("Scanned %d page(s), kept %d", total, len(kept))
@@ -145,7 +154,6 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             )
 
         raw_pdf = work_dir / "raw.pdf"
-        dpi = None if from_images else config.resolution
         build_pdf([page for _, page in kept], raw_pdf, dpi)
         if config.ocr:
             events.emit("ocr_start", lang=config.lang)

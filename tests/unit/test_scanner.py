@@ -13,7 +13,13 @@ import pytest
 from scanmole.config import ScanConfig
 from scanmole.errors import DeviceError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
-from scanmole.scanner import build_scan_command, run_scanimage, scan_to_files
+from scanmole.options import Capability
+from scanmole.scanner import (
+    EffectiveSettings,
+    build_scan_command,
+    run_scanimage,
+    scan_to_files,
+)
 
 
 def _config(**overrides: object) -> ScanConfig:
@@ -120,7 +126,39 @@ def test_build_scan_command_uses_batch_print(tmp_path: Path) -> None:
     )
 
     assert "--batch-print" in command
-    assert effective == {"source": None, "mode": None, "resolution": None}
+    assert effective == EffectiveSettings(source=None, mode=None, resolution=None)
+
+
+def test_build_scan_command_reports_the_snapped_resolution(tmp_path: Path) -> None:
+    caps = {"resolution": Capability(kind="enum", choices=["150", "600"])}
+
+    command, effective = build_scan_command(
+        _config(resolution=300), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert command[command.index("--resolution") + 1] == "150"
+    assert effective.resolution == 150
+
+
+def test_scan_to_files_returns_the_effective_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    caps = {"resolution": Capability(kind="enum", choices=["150", "600"])}
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", lambda device: caps)
+    monkeypatch.setattr(
+        "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
+    )
+
+    result = scan_to_files(
+        _config(resolution=300),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    assert result.settings.resolution == 150
 
 
 def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
@@ -134,12 +172,12 @@ def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
     )
     seen: list[Path] = []
 
-    pages = scan_to_files(
+    result = scan_to_files(
         _config(), "test:0", tmp_path, EventWriter(enabled=False), seen.append
     )
 
-    assert [page.name for page in pages] == ["page_0001.pnm", "page_0002.pnm"]
-    assert seen == pages
+    assert [page.name for page in result.pages] == ["page_0001.pnm", "page_0002.pnm"]
+    assert seen == result.pages
 
 
 def test_scan_to_files_raises_when_nothing_was_scanned(

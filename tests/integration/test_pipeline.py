@@ -17,7 +17,9 @@ import pytest
 from scanmole.config import ScanConfig
 from scanmole.errors import NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
+from scanmole.options import Capability
 from scanmole.pipeline import analyze_page, run_pipeline
+from scanmole.scanner import EffectiveSettings, ScanResult
 
 pytestmark = pytest.mark.integration
 
@@ -108,11 +110,14 @@ def test_processing_failure_preserves_scanned_pages(
         work_dir: Path,
         events: EventWriter,
         on_page: object,
-    ) -> list[Path]:
+    ) -> ScanResult:
         page = _gray_page(work_dir / "page_0001.pnm")
         assert callable(on_page)
         on_page(page)
-        return [page]
+        return ScanResult(
+            pages=[page],
+            settings=EffectiveSettings(source=None, mode=None, resolution=None),
+        )
 
     def failing_build_pdf(pages: object, output: Path, dpi: object) -> None:
         raise ProcessingError("img2pdf failed: boom")
@@ -146,7 +151,7 @@ def test_page_callback_failure_preserves_pages_and_reports_no_success(
         work_dir: Path,
         events: EventWriter,
         on_page: object,
-    ) -> list[Path]:
+    ) -> ScanResult:
         page = _gray_page(work_dir / "page_0001.pnm")
         assert callable(on_page)
         on_page(page)
@@ -188,6 +193,46 @@ def test_from_images_failure_does_not_claim_preserved_pages(
         run_pipeline(_config((page,), tmp_path / "out.pdf"), EventWriter(enabled=False))
 
     assert "kept in" not in info.value.message
+
+
+def test_snapped_resolution_reaches_pdf_assembly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The device offers 150 and 600 dpi; the requested 300 dpi snaps to 150,
+    # and img2pdf must be told the dpi the pages were actually scanned at.
+    caps = {"resolution": Capability(kind="enum", choices=["150", "600"])}
+
+    def fake_run_scanimage(command: list[str], on_page: object) -> tuple[int, str]:
+        assert "--resolution" in command
+        assert command[command.index("--resolution") + 1] == "150"
+        batch = next(a for a in command if a.startswith("--batch=")).split("=", 1)[1]
+        page = _gray_page(Path(batch % 1))
+        assert callable(on_page)
+        on_page(page)
+        return 7, ""
+
+    stamped: list[object] = []
+
+    def fake_build_pdf(pages: object, output: Path, dpi: object) -> None:
+        stamped.append(dpi)
+        output.write_bytes(b"%PDF-fake")
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", lambda device: caps)
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run_scanimage)
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", fake_build_pdf)
+    stream = io.StringIO()
+    config = _config(images=None, output=tmp_path / "out.pdf")
+
+    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
+
+    assert stamped == [150]
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    settings = next(event for event in events if event["event"] == "settings")
+    assert settings["resolution"] == 150
+    start = next(event for event in events if event["event"] == "start")
+    assert start["resolution"] == 300  # the requested value, per the contract
 
 
 def test_blank_threshold_zero_disables_blank_detection(tmp_path: Path) -> None:
