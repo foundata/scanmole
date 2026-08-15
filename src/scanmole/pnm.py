@@ -58,27 +58,48 @@ def pnm_mean(path: Path) -> float | None:
         when the file is not a raw PNM (so a caller can try another method).
 
     Raises:
-        ValueError: If the file starts as a PNM but the header is malformed.
+        ValueError: If the file starts as a PNM but the header is malformed,
+            the dimensions or maxval are invalid, or the raster is truncated.
     """
     buffer = path.read_bytes()
     if len(buffer) < 8 or buffer[:1] != b"P" or buffer[1:2] not in (b"4", b"5", b"6"):
         return None
     kind = buffer[1:2]
     tokens, offset = _read_header(buffer, 2 if kind == b"4" else 3)
-    width, height = int(tokens[0]), int(tokens[1])
+    try:
+        width, height = int(tokens[0]), int(tokens[1])
+    except ValueError as exc:
+        raise ValueError("bad PNM dimensions") from exc
     if width <= 0 or height <= 0:
         raise ValueError("bad PNM dimensions")
 
     if kind == b"4":  # 1 bit per pixel, rows byte-padded, a set bit is black
         row_bytes = (width + 7) // 8
         data = buffer[offset : offset + row_bytes * height]
+        if len(data) < row_bytes * height:
+            raise ValueError("truncated PNM raster")
         black = int.from_bytes(data, "big").bit_count()
+        if width % 8:
+            # The spec declares row-padding bits don't-care and some producers
+            # leave garbage there; subtract any set bits in the pad positions.
+            pad_mask = 0xFF >> (width % 8)
+            black -= sum(
+                (byte & pad_mask).bit_count()
+                for byte in data[row_bytes - 1 :: row_bytes]
+            )
         return max(0.0, 1.0 - black / (width * height))
 
-    maxval = int(tokens[2])
+    try:
+        maxval = int(tokens[2])
+    except ValueError as exc:
+        raise ValueError("bad PNM maxval") from exc
+    if not 0 < maxval < 65536:
+        raise ValueError("bad PNM maxval")
     channels = 3 if kind == b"6" else 1
     deep = maxval > 255
     row_bytes = width * channels * (2 if deep else 1)
+    if len(buffer) - offset < row_bytes * height:
+        raise ValueError("truncated PNM raster")
     raster = memoryview(buffer)[offset : offset + row_bytes * height]
     if deep:  # 16-bit big-endian: approximate with the high bytes
         raster, row_bytes, maxval = raster[0::2], width * channels, maxval >> 8
