@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scanmole.pnm import image_mean, pnm_mean
+from scanmole.pnm import binarize_image, binarize_pnm, image_mean, pnm_mean
 
 
 def _write(path: Path, data: bytes) -> Path:
@@ -107,6 +107,63 @@ def test_pnm_mean_rejects_truncated_header(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="truncated PNM header"):
         pnm_mean(page)
+
+
+def test_binarize_pnm_thresholds_gray_to_p4(tmp_path: Path) -> None:
+    # 8x1: four dark pixels (below 50% of 255 = cut 128), four bright ones.
+    page = _write(
+        tmp_path / "gray.pgm",
+        b"P5\n8 1\n255\n" + bytes([0, 50, 100, 127, 128, 200, 255, 255]),
+    )
+
+    assert binarize_pnm(page, 0.5) is True
+    assert page.read_bytes() == b"P4\n8 1\n" + bytes([0b11110000])
+
+
+def test_binarize_pnm_pads_non_aligned_rows_with_white(tmp_path: Path) -> None:
+    # 10x2 all black: padding bits must stay zero so pnm_mean sees pure black.
+    page = _write(tmp_path / "wide.pgm", b"P5\n10 2\n255\n" + bytes(20))
+
+    assert binarize_pnm(page, 0.5) is True
+    assert page.read_bytes() == b"P4\n10 2\n" + bytes([0xFF, 0xC0, 0xFF, 0xC0])
+    assert pnm_mean(page) == pytest.approx(0.0)
+
+
+def test_binarize_pnm_uses_the_green_channel_for_color(tmp_path: Path) -> None:
+    # Pixel 1: dark green -> black; pixel 2: bright green -> white. The other
+    # channels are set to mislead a naive average.
+    page = _write(
+        tmp_path / "c.ppm", b"P6\n2 1\n255\n" + bytes([255, 10, 255, 0, 250, 0])
+    )
+
+    assert binarize_pnm(page, 0.5) is True
+    assert page.read_bytes() == b"P4\n2 1\n" + bytes([0b10000000])
+
+
+def test_binarize_pnm_leaves_p4_and_non_pnm_alone(tmp_path: Path) -> None:
+    p4 = _write(tmp_path / "already.pbm", b"P4\n8 1\n\x00")
+    png = _write(tmp_path / "not.png", b"\x89PNG\r\n\x1a\n" + bytes(16))
+
+    assert binarize_pnm(p4, 0.5) is False
+    assert binarize_pnm(png, 0.5) is False
+    assert p4.read_bytes() == b"P4\n8 1\n\x00"
+
+
+def test_binarize_pnm_rejects_truncated_raster(tmp_path: Path) -> None:
+    page = _write(tmp_path / "short.pgm", b"P5\n4 2\n255\n" + bytes(7))
+
+    with pytest.raises(ValueError, match="truncated PNM raster"):
+        binarize_pnm(page, 0.5)
+
+
+def test_binarize_image_keeps_a_malformed_page_with_a_warning(
+    tmp_path: Path,
+) -> None:
+    original = b"P5\n4 2\n255\n" + bytes(7)
+    page = _write(tmp_path / "short.pgm", original)
+
+    assert binarize_image(page, 0.5) is False
+    assert page.read_bytes() == original
 
 
 def test_image_mean_skips_non_pnm_files(tmp_path: Path) -> None:

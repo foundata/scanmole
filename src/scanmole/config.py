@@ -43,3 +43,5 @@ class ScanConfig:
     from_images: tuple[Path, ...] | None
     keep_images: Path | None
     output: Path
+    # Defaulted so the record stays constructible from older call sites.
+    lineart_threshold: float = 0.5

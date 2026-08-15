@@ -115,6 +115,84 @@ def pnm_mean(path: Path) -> float | None:
     return (total / (counted * maxval)) if counted else 0.0
 
 
+def binarize_pnm(path: Path, threshold: float) -> bool:
+    """Convert a raw gray or color PNM into a 1-bit ``P4`` file, in place.
+
+    A pixel darker than ``threshold`` (a fraction of full brightness) becomes
+    black. Color (``P6``) input is reduced through its green channel first,
+    an adequate luma proxy for documents. 16-bit samples use their high byte.
+
+    Args:
+        path: Image file to convert.
+        threshold: Black/white cutoff in (0, 1), relative to full brightness.
+
+    Returns:
+        Whether the file was rewritten. ``False`` means the file is already
+        1-bit or not a raw PNM at all, so there is nothing to convert.
+
+    Raises:
+        ValueError: If the file starts as a PNM but is malformed or truncated.
+    """
+    buffer = path.read_bytes()
+    if len(buffer) < 8 or buffer[:1] != b"P" or buffer[1:2] not in (b"5", b"6"):
+        return False
+    kind = buffer[1:2]
+    tokens, offset = _read_header(buffer, 3)
+    try:
+        width, height, maxval = int(tokens[0]), int(tokens[1]), int(tokens[2])
+    except ValueError as exc:
+        raise ValueError("bad PNM header") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError("bad PNM dimensions")
+    if not 0 < maxval < 65536:
+        raise ValueError("bad PNM maxval")
+
+    channels = 3 if kind == b"6" else 1
+    deep = maxval > 255
+    row_bytes = width * channels * (2 if deep else 1)
+    if len(buffer) - offset < row_bytes * height:
+        raise ValueError("truncated PNM raster")
+    raster = buffer[offset : offset + row_bytes * height]
+    if deep:  # 16-bit big-endian: the high bytes carry the significant part
+        raster, maxval = raster[0::2], maxval >> 8
+    if channels == 3:
+        raster = raster[1::3]  # green channel
+
+    cut = min(maxval, max(1, round(threshold * maxval)))
+    row_out = (width + 7) // 8
+    pad = row_out * 8 - width
+    if pad:  # pad rows with white so the padding bits stay zero
+        raster = b"".join(
+            raster[y * width : (y + 1) * width] + b"\xff" * pad for y in range(height)
+        )
+
+    # Pack at C speed: byte i of every 8-byte group contributes bit 7-i of one
+    # output byte. Each translate maps "darker than cut" to that bit's weight;
+    # the big-integer additions cannot carry because the weights are disjoint.
+    packed = 0
+    for bit in range(8):
+        table = bytes(128 >> bit if value < cut else 0 for value in range(256))
+        packed += int.from_bytes(raster[bit::8].translate(table), "big")
+    data = packed.to_bytes(row_out * height, "big")
+
+    path.write_bytes(b"P4\n%d %d\n" % (width, height) + data)
+    return True
+
+
+def binarize_image(path: Path, threshold: float) -> bool:
+    """Best-effort in-place 1-bit conversion; never fails the page.
+
+    Returns:
+        Whether the file was converted. A malformed file is left untouched
+        with a warning, so the page still reaches the rest of the pipeline.
+    """
+    try:
+        return binarize_pnm(path, threshold)
+    except (ValueError, OSError) as exc:
+        LOGGER.warning("cannot binarize %s: %s", path, exc)
+        return False
+
+
 def image_mean(path: Path) -> float | None:
     """Return the mean brightness (0..1) of an image, or ``None`` if unknown.
 

@@ -187,6 +187,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="produce archival PDF/A output; only applies with OCR (default: on)",
     )
     parser.add_argument(
+        "--lineart-threshold",
+        type=float,
+        default=0.5,
+        metavar="F",
+        help=(
+            "black/white cutoff (fraction of full brightness) for converting "
+            "pages in software when the device cannot scan 1-bit lineart "
+            "itself; 0 keeps the device's gray/color output (default: "
+            "%(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--blank-threshold",
         type=float,
         default=0.995,
@@ -292,11 +304,17 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
     """Translate parsed arguments into a :class:`ScanConfig`.
 
     Raises:
-        InputError: If ``--from-images`` is combined with an explicit device.
+        InputError: If ``--from-images`` is combined with an explicit device,
+            or ``--lineart-threshold`` is out of range.
     """
     if args.from_images is not None and args.device is not None:
         raise InputError(
             "--from-images does not scan; do not combine it with -d/--device"
+        )
+    if not 0 <= args.lineart_threshold < 1:
+        raise InputError(
+            "--lineart-threshold must be 0 (off) or a fraction below 1, "
+            f"got {args.lineart_threshold}"
         )
     from_images = (
         tuple(Path(image) for image in args.from_images)
@@ -323,6 +341,7 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         from_images=from_images,
         keep_images=keep_images,
         output=_resolve_output(args),
+        lineart_threshold=args.lineart_threshold,
     )
 
 

@@ -146,6 +146,25 @@ def test_build_config_maps_flags(tmp_path: Path) -> None:
     assert config.output == (tmp_path / "out.pdf").resolve()
 
 
+def test_lineart_threshold_defaults_to_half(tmp_path: Path) -> None:
+    config = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+
+    assert config.lineart_threshold == 0.5
+
+
+def test_lineart_threshold_rejects_values_of_one_or_more(tmp_path: Path) -> None:
+    args = _parse(["--lineart-threshold", "1.5", "-o", str(tmp_path / "a.pdf")])
+
+    with pytest.raises(InputError, match="--lineart-threshold"):
+        _build_config(args)
+
+
+def test_lineart_threshold_zero_is_accepted_as_off(tmp_path: Path) -> None:
+    args = _parse(["--lineart-threshold", "0", "-o", str(tmp_path / "a.pdf")])
+
+    assert _build_config(args).lineart_threshold == 0
+
+
 def test_pdfa_defaults_on_and_can_be_disabled(tmp_path: Path) -> None:
     default = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
     disabled = _build_config(_parse(["--no-pdfa", "-o", str(tmp_path / "b.pdf")]))

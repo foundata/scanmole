@@ -21,7 +21,7 @@ from scanmole.events import EventWriter
 from scanmole.external import require_tools
 from scanmole.options import parse_page_size
 from scanmole.pdf import build_pdf, run_ocr
-from scanmole.pnm import image_mean
+from scanmole.pnm import binarize_image, image_mean
 from scanmole.scanner import scan_to_files
 
 LOGGER = logging.getLogger(__name__)
@@ -141,12 +141,32 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             output=str(config.output),
         )
 
+        binarized = False
+
         def handle_page(page: Path) -> None:
             # Called per page as it lands: from the scanner's reader thread
             # during a batch, or inline for --from-images. Frontends see the
             # page event while the rest of the batch is still scanning.
-            nonlocal total, blanks
+            nonlocal total, blanks, binarized
             total += 1
+            # Backends without a 1-bit mode (eSCL offers only Gray/Color)
+            # degrade a lineart request to gray; restore the asked-for 1-bit
+            # output in software, before blank detection so the 0.995 default
+            # keeps its lineart-tuned meaning. --from-images input is
+            # user-curated and never touched.
+            if (
+                not from_images
+                and config.mode == "lineart"
+                and config.lineart_threshold > 0
+            ):
+                converted = binarize_image(page, config.lineart_threshold)
+                if converted and not binarized:
+                    binarized = True
+                    LOGGER.info(
+                        "Device delivered gray/color pages; converting to "
+                        "1-bit lineart in software (threshold %d%%)",
+                        round(config.lineart_threshold * 100),
+                    )
             keep, blank = analyze_page(page, total, config, events)
             if blank:
                 blanks += 1

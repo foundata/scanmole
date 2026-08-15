@@ -87,3 +87,36 @@ def test_flatbed_scan_produces_a_pdf_and_the_event_stream(
     assert "settings" in kinds
     assert "page" in kinds
     assert kinds[-1] == "done"
+
+
+@_NEEDS_TEST_BACKEND
+@_NEEDS_IMG2PDF
+def test_lineart_request_produces_one_bit_pages_on_a_gray_backend(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The test backend offers only Gray and Color, so a lineart request
+    # degrades to gray and the pipeline's software binarization must restore
+    # 1-bit pages. --keep-images exposes what went into the PDF.
+    kept = tmp_path / "kept"
+    argv = [
+        "-d",
+        "test:0",
+        "--source",
+        "flatbed",
+        "--mode",
+        "lineart",
+        "--no-ocr",
+        "--blank-threshold",
+        "0",
+        "--keep-images",
+        str(kept),
+        "-o",
+        str(tmp_path / "out.pdf"),
+    ]
+
+    assert main(argv) == 0
+
+    pages = sorted(kept.glob("page_*.pnm"))
+    assert pages
+    for page in pages:
+        assert page.read_bytes().startswith(b"P4\n")

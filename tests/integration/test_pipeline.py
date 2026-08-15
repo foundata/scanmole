@@ -259,6 +259,94 @@ def test_publish_pdf_failure_raises_processing_error(tmp_path: Path) -> None:
         publish_pdf(source, tmp_path / "missing-dir" / "out.pdf")
 
 
+def _fake_gray_scan(
+    config: ScanConfig,
+    device: str,
+    work_dir: Path,
+    events: EventWriter,
+    on_page: object,
+) -> ScanResult:
+    # Emulates a backend without a 1-bit mode: it delivers a gray page even
+    # though lineart was requested (dark text pixels on a bright background).
+    page = work_dir / "page_0001.pnm"
+    page.write_bytes(b"P5\n4 4\n255\n" + bytes([20] * 8 + [250] * 8))
+    assert callable(on_page)
+    on_page(page)
+    return ScanResult(
+        pages=[page],
+        settings=EffectiveSettings(source=None, mode="Gray", resolution=None),
+    )
+
+
+def test_lineart_request_binarizes_gray_scanner_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _fake_gray_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"), keep_images=keep_dir
+    )
+    stream = io.StringIO()
+
+    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
+
+    kept = keep_dir / "page_0001.pnm"
+    assert kept.read_bytes().startswith(b"P4\n")
+    page_event = next(
+        json.loads(line)
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["event"] == "page"
+    )
+    assert page_event["mean"] == pytest.approx(0.5)  # measured after conversion
+
+
+def test_lineart_threshold_zero_keeps_the_gray_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _fake_gray_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        keep_images=keep_dir,
+        lineart_threshold=0.0,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    assert (keep_dir / "page_0001.pnm").read_bytes().startswith(b"P5\n")
+
+
+def test_from_images_are_never_binarized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # _config requests lineart, but user-supplied images must stay untouched.
+    original = b"P5\n4 4\n255\n" + bytes([120] * 16)
+    page = tmp_path / "input.pgm"
+    page.write_bytes(original)
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    config = _config((page,), tmp_path / "out.pdf")
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    assert page.read_bytes() == original
+
+
 def test_blank_threshold_zero_disables_blank_detection(tmp_path: Path) -> None:
     page = _white_page(tmp_path / "white.pgm")
     config = dataclasses.replace(
