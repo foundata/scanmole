@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: scanmole\n"
 "Report-Msgid-Bugs-To: office@foundata.com\n"
-"POT-Creation-Date: 2026-08-15 23:26+0200\n"
+"POT-Creation-Date: 2026-08-16 00:05+0200\n"
 "PO-Revision-Date: 2026-07-26 06:15+0200\n"
 "Last-Translator: foundata <office@foundata.com>\n"
 "Language-Team: German\n"
@@ -130,75 +130,35 @@ msgstr "Abbrechen"
 msgid "Scanner"
 msgstr "Scanner"
 
-#: src/scanmole/gui/app.py:328
+#: src/scanmole/gui/app.py:331
 msgid "Device"
 msgstr "Gerät"
 
-#: src/scanmole/gui/app.py:330 src/scanmole/gui/app.py:583
+#: src/scanmole/gui/app.py:332 src/scanmole/gui/app.py:596
 msgid "Searching for scanners…"
 msgstr "Suche nach Scannern…"
 
-#: src/scanmole/gui/app.py:338
+#: src/scanmole/gui/app.py:340
 msgid "Refresh devices"
 msgstr "Geräte neu suchen"
 
-#: src/scanmole/gui/app.py:344
+#: src/scanmole/gui/app.py:346
 msgid "Source"
 msgstr "Quelle"
 
-#: src/scanmole/gui/app.py:347
-msgid "Document"
-msgstr "Dokument"
-
 #: src/scanmole/gui/app.py:349
-msgid "Color mode"
-msgstr "Farbmodus"
-
-#: src/scanmole/gui/app.py:352
-msgid "Resolution"
-msgstr "Auflösung"
-
-#: src/scanmole/gui/app.py:354
-msgid "Page size"
-msgstr "Seitengröße"
-
-#: src/scanmole/gui/app.py:361
-msgid "Processing"
-msgstr "Verarbeitung"
-
-#: src/scanmole/gui/app.py:363
-msgid "OCR"
-msgstr "Texterkennung (OCR)"
-
-#: src/scanmole/gui/app.py:364
-msgid "Make the PDF text-searchable (PDF/A)"
-msgstr "PDF durchsuchbar machen (PDF/A)"
-
-#: src/scanmole/gui/app.py:369
-msgid "Language"
-msgstr "Sprache"
-
-#: src/scanmole/gui/app.py:375
-msgid "Skip blank pages"
-msgstr "Leere Seiten überspringen"
-
-#: src/scanmole/gui/app.py:376
-msgid "Removes pages detected as empty"
-msgstr "Als leer erkannte Seiten entfernen"
-
-#: src/scanmole/gui/app.py:382
 msgid "Output"
 msgstr "Ausgabe"
 
-#: src/scanmole/gui/app.py:383
+#: src/scanmole/gui/app.py:350
 msgid "Folder"
 msgstr "Ordner"
 
-#: src/scanmole/gui/app.py:395
+#: src/scanmole/gui/app.py:362
 msgid "File name"
 msgstr "Dateiname"
 
-#: src/scanmole/gui/app.py:410
+#: src/scanmole/gui/app.py:377
 #, python-brace-format
 msgid ""
 "placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} · {NN} (auto-number) · "
@@ -207,102 +167,142 @@ msgstr ""
 "Platzhalter: {YYYY} {MM} {DD} {hh} {mm} {ss} · {NN} (automatische "
 "Nummerierung) · {preset} {device}"
 
-#: src/scanmole/gui/app.py:428
+#: src/scanmole/gui/app.py:392
+msgid "Document"
+msgstr "Dokument"
+
+#: src/scanmole/gui/app.py:394
+msgid "Color mode"
+msgstr "Farbmodus"
+
+#: src/scanmole/gui/app.py:397
+msgid "Resolution"
+msgstr "Auflösung"
+
+#: src/scanmole/gui/app.py:399
+msgid "Page size"
+msgstr "Seitengröße"
+
+#: src/scanmole/gui/app.py:406
+msgid "Processing"
+msgstr "Verarbeitung"
+
+#: src/scanmole/gui/app.py:408
+msgid "OCR"
+msgstr "Texterkennung (OCR)"
+
+#: src/scanmole/gui/app.py:409
+msgid "Make the PDF text-searchable (PDF/A)"
+msgstr "PDF durchsuchbar machen (PDF/A)"
+
+#: src/scanmole/gui/app.py:414
+msgid "OCR Language"
+msgstr "OCR-Sprache"
+
+#: src/scanmole/gui/app.py:420
+msgid "Skip blank pages"
+msgstr "Leere Seiten überspringen"
+
+#: src/scanmole/gui/app.py:421
+msgid "Removes pages detected as empty"
+msgstr "Als leer erkannte Seiten entfernen"
+
+#: src/scanmole/gui/app.py:433
 msgid "Log"
 msgstr "Protokoll"
 
-#: src/scanmole/gui/app.py:449
+#: src/scanmole/gui/app.py:438
 msgid "Copy"
 msgstr "Kopieren"
 
-#: src/scanmole/gui/app.py:479
+#: src/scanmole/gui/app.py:492
 msgid "Ready."
 msgstr "Bereit."
 
-#: src/scanmole/gui/app.py:490
+#: src/scanmole/gui/app.py:503
 msgid "Show"
 msgstr "Anzeigen"
 
-#: src/scanmole/gui/app.py:495
+#: src/scanmole/gui/app.py:508
 msgid "Open"
 msgstr "Öffnen"
 
-#: src/scanmole/gui/app.py:616
+#: src/scanmole/gui/app.py:629
 #, python-format
 msgid "Device search failed (exit %(code)d)."
 msgstr "Gerätesuche fehlgeschlagen (Exit-Code %(code)d)."
 
-#: src/scanmole/gui/app.py:620
+#: src/scanmole/gui/app.py:633
 msgid "scanmole CLI not found — install it or add it to PATH."
 msgstr ""
 "scanmole wurde nicht gefunden – bitte installieren oder zu PATH hinzufügen."
 
-#: src/scanmole/gui/app.py:622
+#: src/scanmole/gui/app.py:635
 msgid "Device search timed out."
 msgstr "Zeitüberschreitung bei der Gerätesuche."
 
-#: src/scanmole/gui/app.py:624
+#: src/scanmole/gui/app.py:637
 #, python-format
 msgid "Device search failed: %(error)s"
 msgstr "Gerätesuche fehlgeschlagen: %(error)s"
 
-#: src/scanmole/gui/app.py:639
+#: src/scanmole/gui/app.py:652
 msgid "Unknown device"
 msgstr "Unbekanntes Gerät"
 
-#: src/scanmole/gui/app.py:651
+#: src/scanmole/gui/app.py:665
 #, python-format
 msgid "Found %d scanner."
 msgid_plural "Found %d scanners."
 msgstr[0] "%d Scanner gefunden."
 msgstr[1] "%d Scanner gefunden."
 
-#: src/scanmole/gui/app.py:657
+#: src/scanmole/gui/app.py:670
 msgid "No scanners found — connect one and press Refresh."
 msgstr "Keine Scanner gefunden – bitte anschließen und erneut suchen."
 
-#: src/scanmole/gui/app.py:659
+#: src/scanmole/gui/app.py:672
 msgid "No scanners found."
 msgstr "Keine Scanner gefunden."
 
-#: src/scanmole/gui/app.py:697
+#: src/scanmole/gui/app.py:710
 #, python-format
 msgid "%(dpi)d dpi · approx. %(size).1f MB per page"
 msgstr "%(dpi)d dpi · ca. %(size).1f MB pro Seite"
 
-#: src/scanmole/gui/app.py:752
+#: src/scanmole/gui/app.py:765
 msgid "Cannot Create Output Folder"
 msgstr "Ausgabeordner kann nicht erstellt werden"
 
-#: src/scanmole/gui/app.py:778
+#: src/scanmole/gui/app.py:791
 msgid "Could Not Start scanmole"
 msgstr "scanmole konnte nicht gestartet werden"
 
-#: src/scanmole/gui/app.py:779
+#: src/scanmole/gui/app.py:792
 msgid "Install the scanmole CLI somewhere in PATH."
 msgstr "Installieren Sie das scanmole-Kommandozeilenprogramm in PATH."
 
-#: src/scanmole/gui/app.py:783
+#: src/scanmole/gui/app.py:796
 msgid "Starting scanmole…"
 msgstr "scanmole wird gestartet…"
 
-#: src/scanmole/gui/app.py:837
+#: src/scanmole/gui/app.py:850
 msgid "Scanning…"
 msgstr "Scanvorgang läuft…"
 
-#: src/scanmole/gui/app.py:842
+#: src/scanmole/gui/app.py:855
 #, python-format
 msgid "Page %d scanned"
 msgstr "Seite %d gescannt"
 
-#: src/scanmole/gui/app.py:846
+#: src/scanmole/gui/app.py:859
 #, python-format
 msgid " (%d blank skipped)"
 msgid_plural " (%d blanks skipped)"
 msgstr[0] " (%d leere Seite übersprungen)"
 msgstr[1] " (%d leere Seiten übersprungen)"
 
-#: src/scanmole/gui/app.py:857
+#: src/scanmole/gui/app.py:870
 #, python-format
 msgid "Scan finished — keeping %(kept)d of %(total)d page…"
 msgid_plural "Scan finished — keeping %(kept)d of %(total)d pages…"
@@ -310,57 +310,57 @@ msgstr[0] "Scan abgeschlossen – %(kept)d von %(total)d Seite wird übernommen�
 msgstr[1] ""
 "Scan abgeschlossen – %(kept)d von %(total)d Seiten werden übernommen…"
 
-#: src/scanmole/gui/app.py:864
+#: src/scanmole/gui/app.py:877
 msgid "Running OCR…"
 msgstr "Texterkennung läuft…"
 
-#: src/scanmole/gui/app.py:868
+#: src/scanmole/gui/app.py:881
 msgid "Unknown error"
 msgstr "Unbekannter Fehler"
 
-#: src/scanmole/gui/app.py:888
+#: src/scanmole/gui/app.py:901
 msgid "Scan cancelled."
 msgstr "Scan abgebrochen."
 
-#: src/scanmole/gui/app.py:898
+#: src/scanmole/gui/app.py:911
 #, python-format
 msgid "%d page saved"
 msgid_plural "%d pages saved"
 msgstr[0] "%d Seite gespeichert"
 msgstr[1] "%d Seiten gespeichert"
 
-#: src/scanmole/gui/app.py:901
+#: src/scanmole/gui/app.py:914
 #, python-format
 msgid "%d blank skipped"
 msgid_plural "%d blanks skipped"
 msgstr[0] "%d leere Seite übersprungen"
 msgstr[1] "%d leere Seiten übersprungen"
 
-#: src/scanmole/gui/app.py:906
+#: src/scanmole/gui/app.py:919
 msgid "Finished."
 msgstr "Fertig."
 
-#: src/scanmole/gui/app.py:911
+#: src/scanmole/gui/app.py:924
 msgid "Scan Failed"
 msgstr "Scan fehlgeschlagen"
 
-#: src/scanmole/gui/app.py:912
+#: src/scanmole/gui/app.py:925
 #, python-format
 msgid "scanmole exited with status %(code)d. See the log for details."
 msgstr "scanmole wurde mit Status %(code)d beendet. Details siehe Protokoll."
 
-#: src/scanmole/gui/app.py:917
+#: src/scanmole/gui/app.py:930
 msgid "Details:"
 msgstr "Details:"
 
-#: src/scanmole/gui/app.py:930
+#: src/scanmole/gui/app.py:943
 msgid "Cancelling…"
 msgstr "Wird abgebrochen…"
 
-#: src/scanmole/gui/app.py:982
+#: src/scanmole/gui/app.py:995
 msgid "OK"
 msgstr "OK"
 
-#: src/scanmole/gui/app.py:991
+#: src/scanmole/gui/app.py:1004
 msgid "Choose Output Folder"
 msgstr "Ausgabeordner wählen"

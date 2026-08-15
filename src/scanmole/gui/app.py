@@ -324,9 +324,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         clamp.set_child(box)
 
         scanner_grp = Adw.PreferencesGroup(title=_("Scanner"))
+        # Never make this row insensitive: the refresh button is one of its
+        # suffix children, and a disabled row would take the only way to
+        # recover from an empty device list down with it.
         self._device_row = Adw.ComboRow(
             title=_("Device"),
-            sensitive=False,
             subtitle=_("Searching for scanners…"),
         )
         self._device_row.connect("notify::selected", self._on_device_selected)
@@ -343,41 +345,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         scanner_grp.add(self._device_row)
         self._source_row = ChoiceRow(scanner_grp, _("Source"), SOURCES)
         box.append(scanner_grp)
-
-        doc_grp = Adw.PreferencesGroup(title=_("Document"))
-        self._mode_row = ChoiceRow(
-            doc_grp, _("Color mode"), MODES, self._on_document_changed
-        )
-        self._res_row = ChoiceRow(
-            doc_grp, _("Resolution"), RESOLUTIONS, self._on_document_changed
-        )
-        self._size_row = Adw.ComboRow(title=_("Page size"))
-        self._size_row.set_model(
-            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
-        )
-        doc_grp.add(self._size_row)
-        box.append(doc_grp)
-
-        proc_grp = Adw.PreferencesGroup(title=_("Processing"))
-        self._ocr_row = Adw.SwitchRow(
-            title=_("OCR"),
-            subtitle=_("Make the PDF text-searchable (PDF/A)"),
-            active=True,
-        )
-        self._ocr_row.connect("notify::active", self._on_ocr_toggled)
-        proc_grp.add(self._ocr_row)
-        self._lang_row = Adw.ComboRow(title=_("Language"))
-        self._lang_row.set_model(
-            Gtk.StringList.new([label for label, _value in self._languages])
-        )
-        proc_grp.add(self._lang_row)
-        self._blank_row = Adw.SwitchRow(
-            title=_("Skip blank pages"),
-            subtitle=_("Removes pages detected as empty"),
-            active=True,
-        )
-        proc_grp.add(self._blank_row)
-        box.append(proc_grp)
 
         out_grp = Adw.PreferencesGroup(title=_("Output"))
         self._folder_row = Adw.ActionRow(title=_("Folder"))
@@ -422,11 +389,61 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         out_grp.add(self._name_row)
         box.append(out_grp)
 
+        doc_grp = Adw.PreferencesGroup(title=_("Document"))
+        self._mode_row = ChoiceRow(
+            doc_grp, _("Color mode"), MODES, self._on_document_changed
+        )
+        self._res_row = ChoiceRow(
+            doc_grp, _("Resolution"), RESOLUTIONS, self._on_document_changed
+        )
+        self._size_row = Adw.ComboRow(title=_("Page size"))
+        self._size_row.set_model(
+            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
+        )
+        doc_grp.add(self._size_row)
+        box.append(doc_grp)
+
+        proc_grp = Adw.PreferencesGroup(title=_("Processing"))
+        self._ocr_row = Adw.SwitchRow(
+            title=_("OCR"),
+            subtitle=_("Make the PDF text-searchable (PDF/A)"),
+            active=True,
+        )
+        self._ocr_row.connect("notify::active", self._on_ocr_toggled)
+        proc_grp.add(self._ocr_row)
+        self._lang_row = Adw.ComboRow(title=_("OCR Language"))
+        self._lang_row.set_model(
+            Gtk.StringList.new([label for label, _value in self._languages])
+        )
+        proc_grp.add(self._lang_row)
+        self._blank_row = Adw.SwitchRow(
+            title=_("Skip blank pages"),
+            subtitle=_("Removes pages detected as empty"),
+            active=True,
+        )
+        proc_grp.add(self._blank_row)
+        box.append(proc_grp)
+
         # Collapsed, copyable log below the form (mockup rule: the log is
-        # diagnostics, not part of the flow).
-        log_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        expander = Gtk.Expander(label=_("Log"), hexpand=True)
-        log_scroller = Gtk.ScrolledWindow(min_content_height=170, has_frame=True)
+        # diagnostics, not part of the flow). The text area sits under the
+        # header line, full width, so it never collides with the Copy button.
+        log_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        log_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._log_expander = Gtk.Expander(
+            label=_("Log"), hexpand=True, valign=Gtk.Align.CENTER
+        )
+        log_header.append(self._log_expander)
+        copy_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        copy_btn.set_child(
+            Adw.ButtonContent(icon_name="edit-copy-symbolic", label=_("Copy"))
+        )
+        copy_btn.add_css_class("flat")
+        copy_btn.connect("clicked", self._on_copy_log)
+        log_header.append(copy_btn)
+        log_area.append(log_header)
+        log_scroller = Gtk.ScrolledWindow(
+            min_content_height=170, has_frame=True, visible=False
+        )
         self._log_view = Gtk.TextView(
             editable=False,
             cursor_visible=False,
@@ -442,16 +459,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             None, self._log_buf.get_end_iter(), False
         )
         log_scroller.set_child(self._log_view)
-        expander.set_child(log_scroller)
-        log_box.append(expander)
-        copy_btn = Gtk.Button(valign=Gtk.Align.START)
-        copy_btn.set_child(
-            Adw.ButtonContent(icon_name="edit-copy-symbolic", label=_("Copy"))
+        self._log_expander.connect(
+            "notify::expanded",
+            lambda *_a: log_scroller.set_visible(self._log_expander.get_expanded()),
         )
-        copy_btn.add_css_class("flat")
-        copy_btn.connect("clicked", self._on_copy_log)
-        log_box.append(copy_btn)
-        box.append(log_box)
+        log_area.append(log_scroller)
+        box.append(log_area)
 
         self._form_groups = (scanner_grp, doc_grp, proc_grp, out_grp)
 
@@ -639,8 +652,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 or device.get("device", _("Unknown device"))
             )
         self._device_row.set_model(Gtk.StringList.new(names))
+        # The row itself must stay sensitive either way: disabling it would
+        # also disable its refresh-button suffix, leaving no way to rescan.
         if devices:
-            self._device_row.set_sensitive(True)
             index = next(
                 (i for i, d in enumerate(devices) if d.get("device") == prefer), 0
             )
@@ -652,7 +666,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 % len(devices),
             )
         else:
-            self._device_row.set_sensitive(False)
             self._device_row.set_subtitle(
                 err or _("No scanners found — connect one and press Refresh.")
             )
