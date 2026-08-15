@@ -1,5 +1,7 @@
 # ScanMole
 
+<img src="src/scanmole/gui/scanmole-logo.svg" alt="ScanMole logo: a mole with glasses holding a scanned document" width="110" align="right">
+
 Paperless-office document scanning for Linux: ADF duplex batches in, searchable (OCRed) PDFs out. Replaces our ad-hoc `scanimage | img2pdf | ocrmypdf` bash script with a proper CLI and a GTK4 GUI on top of it.
 
 - **`scanmole`**: CLI scanning engine (Python 3, stdlib only). Scans via SANE (`scanimage`), drops blank pages, assembles a PDF with `img2pdf`, runs Tesseract OCR via `ocrmypdf`.
