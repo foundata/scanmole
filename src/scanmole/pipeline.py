@@ -257,11 +257,11 @@ def _check_input_images(images: tuple[Path, ...]) -> None:
     """Validate ``--from-images`` inputs before doing any work.
 
     Raises:
-        NoPagesError: If no images were given.
-        InputError: If a named image does not exist.
+        InputError: If no images were given (argparse already enforces this
+            for CLI calls) or a named image does not exist.
     """
     if not images:
-        raise NoPagesError("--from-images needs at least one file")
+        raise InputError("--from-images needs at least one file")
     for image in images:
         if not image.is_file():
             raise InputError(f"input image not found: {image}")

@@ -30,9 +30,14 @@ class InputError(ScanMoleError):
 
 
 class NoPagesError(ScanMoleError):
-    """Report that scanning produced no usable pages (empty feeder or all blank)."""
+    """Report that there was nothing to scan: empty feeder, or every page blank.
 
-    exit_code = 2
+    Deliberately distinct from :class:`InputError`: the invocation was fine and
+    nothing malfunctioned, there just was no content. Automation can retry or
+    ignore this, while a usage error means the calling script has a bug.
+    """
+
+    exit_code = 6
 
 
 class DeviceError(ScanMoleError):

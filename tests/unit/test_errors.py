@@ -15,7 +15,7 @@ from scanmole.errors import (
 def test_exit_codes_match_contract() -> None:
     assert ScanMoleError("x").exit_code == 1
     assert InputError("x").exit_code == 2
-    assert NoPagesError("x").exit_code == 2
+    assert NoPagesError("x").exit_code == 6
     assert DeviceError("x").exit_code == 3
     assert MissingDependencyError("x").exit_code == 4
     assert ProcessingError("x").exit_code == 5

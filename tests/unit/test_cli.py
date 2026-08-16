@@ -12,7 +12,7 @@ import pytest
 from scanmole import __version__
 from scanmole.cli import _build_config, _resolve_output, _Terminated, build_parser, main
 from scanmole.config import ScanConfig
-from scanmole.errors import InputError, ProcessingError
+from scanmole.errors import InputError, NoPagesError, ProcessingError
 
 
 def _raiser(exc: BaseException) -> object:
@@ -303,6 +303,20 @@ def test_main_maps_domain_errors_to_their_exit_code(
 
     event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert event == {"event": "error", "message": "ocrmypdf failed", "code": 5}
+
+
+def test_main_maps_nothing_to_scan_to_exit_code_6(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "scanmole.cli.run_pipeline",
+        _raiser(NoPagesError("no pages were scanned -- is there paper in the feeder?")),
+    )
+
+    assert main(["--json"]) == 6
+
+    event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert event["code"] == 6
 
 
 def test_main_returns_130_on_keyboard_interrupt(

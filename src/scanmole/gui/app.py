@@ -90,7 +90,7 @@ _SIZE_BASE_MB = {"lineart": 0.1, "gray": 0.3, "color": 0.5}
 
 # Friendly texts for the CLI's documented exit codes.
 EXIT_HINTS: dict[int, tuple[str, str]] = {
-    2: (
+    6: (
         _("No Pages Scanned"),
         _(
             "No pages were scanned — is the ADF (Automatic Document Feeder) "
