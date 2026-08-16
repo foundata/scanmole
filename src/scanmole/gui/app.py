@@ -140,17 +140,50 @@ def find_scanmole() -> str:
     return shutil.which("scanmole") or "scanmole"
 
 
-def ensure_desktop_integration() -> None:
-    """Install or refresh the user-level desktop entry and icon.
+def ensure_app_icon() -> None:
+    """Copy or refresh the mascot icon in the user icon theme.
 
-    GNOME's window switcher and app grid show an application's name and logo
-    only when a desktop file matches the application id. A uv-managed
-    install has no packaging step to place one, so the GUI registers itself
-    (phase 1; the future RPM ships system-wide files instead).
+    The non-intrusive half of the desktop integration: the icon alone
+    changes nothing until a desktop entry exists, but keeps an installed
+    entry's icon current across package updates.
     """
     try:
+        if not LOGO_FILE.is_file():
+            return
+        target = (
+            Path(GLib.get_user_data_dir())
+            / "icons"
+            / "hicolor"
+            / "scalable"
+            / "apps"
+            / f"{APP_ID}.svg"
+        )
+        icon_data = LOGO_FILE.read_bytes()
+        if not target.is_file() or target.read_bytes() != icon_data:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(icon_data)
+    except OSError:
+        pass  # a convenience; never block startup
+
+
+def desktop_entry_path() -> Path:
+    """Return the user-level desktop entry location."""
+    return Path(GLib.get_user_data_dir()) / "applications" / f"{APP_ID}.desktop"
+
+
+def install_desktop_entry() -> bool:
+    """Write the user-level desktop entry pinning the current executable.
+
+    GNOME's window switcher and app grid show an application's name and
+    logo only when a desktop file matches the application id. Installing it
+    is a deliberate action in the settings dialog, not a startup side
+    effect: with uv-managed environments the executable path is not stable,
+    so pinning it (and refreshing it after the environment moved) should be
+    the user's call. The future RPM ships system-wide files instead.
+    """
+    try:
+        ensure_app_icon()
         executable = shutil.which("scanmole-gui") or str(Path(sys.argv[0]).resolve())
-        data_home = Path(GLib.get_user_data_dir())
         desktop_entry = (
             "[Desktop Entry]\n"
             "Type=Application\n"
@@ -165,23 +198,13 @@ def ensure_desktop_integration() -> None:
             "StartupNotify=true\n"
             "Categories=Office;Scanning;\n"
         )
-        icon_target = (
-            data_home / "icons" / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
-        )
-        if LOGO_FILE.is_file():
-            icon_data = LOGO_FILE.read_bytes()
-            if not icon_target.is_file() or icon_target.read_bytes() != icon_data:
-                icon_target.parent.mkdir(parents=True, exist_ok=True)
-                icon_target.write_bytes(icon_data)
-        desktop_target = data_home / "applications" / f"{APP_ID}.desktop"
-        if (
-            not desktop_target.is_file()
-            or desktop_target.read_text(encoding="utf-8") != desktop_entry
-        ):
-            desktop_target.parent.mkdir(parents=True, exist_ok=True)
-            desktop_target.write_text(desktop_entry, encoding="utf-8")
+        target = desktop_entry_path()
+        if not target.is_file() or target.read_text(encoding="utf-8") != desktop_entry:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(desktop_entry, encoding="utf-8")
+        return True
     except OSError:
-        pass  # desktop integration is a convenience; never block startup
+        return False
 
 
 def default_folder() -> str:
@@ -1208,6 +1231,29 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         group.add(lang_row)
 
+        desktop_row = Adw.ActionRow(
+            title=_("Desktop entry"),
+            subtitle=_("Show ScanMole in the app grid and window switcher"),
+        )
+        desktop_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        desktop_btn.set_label(
+            _("Update") if desktop_entry_path().is_file() else _("Install")
+        )
+
+        def install_clicked(*_a: object) -> None:
+            if install_desktop_entry():
+                desktop_btn.set_label(_("Update"))
+                dialog.add_toast(Adw.Toast(title=_("Desktop entry installed.")))
+            else:
+                dialog.add_toast(
+                    Adw.Toast(title=_("Could not install the desktop entry."))
+                )
+
+        desktop_btn.connect("clicked", install_clicked)
+        desktop_row.add_suffix(desktop_btn)
+        desktop_row.set_activatable_widget(desktop_btn)
+        group.add(desktop_row)
+
         reset_row = Adw.ActionRow(
             title=_("Reset settings"),
             subtitle=_("Restore all options to their defaults"),
@@ -1730,7 +1776,7 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
 
     def _on_activate(self, app: Adw.Application) -> None:
         """Present the main window, creating it on first activation."""
-        ensure_desktop_integration()
+        ensure_app_icon()
         # Make the packaged mascot icon resolvable by name (About dialog).
         display = Gdk.Display.get_default()
         if display is not None:
