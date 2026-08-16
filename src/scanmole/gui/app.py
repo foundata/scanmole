@@ -1520,12 +1520,17 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             pass
 
     def _on_close_request(self, *_args: object) -> bool:
-        """Persist the window geometry and stop any running scan on close."""
+        """Persist the form and window geometry, stop any running scan.
+
+        The form is snapshotted here as well as at scan start, so changed
+        values (mode, resolution, page size, ...) survive a restart even
+        when no scan ran in between.
+        """
         self._settings["window_maximized"] = bool(self.is_maximized())
         if not self.is_maximized():
             self._settings["window_width"] = int(self.get_width())
             self._settings["window_height"] = int(self.get_height())
-        store_settings(self._settings)
+        self._save_settings()
         if self._proc is not None and self._proc.poll() is None:
             self._signal_group(self._proc, signal.SIGTERM)
         return False  # allow the window to close
