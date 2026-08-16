@@ -66,7 +66,7 @@ Key options: `-d/--device` (or `$SCANMOLE_DEVICE`; auto-picks the first real sca
 
 The GUI follows the usual locale environment, e.g. `LANGUAGE=de scanmole-gui`; German is included.
 
-What if my scanner makes problems, for example wrong page sizes in `auto` mode, surviving blank pages, or a badly mapped mode? Every device behaves a little differently at the edges of a scan, and we can usually fix it from a few captured files alone: see [reporting scanner problems and device quirks](CONTRIBUTING.md#scanner-quirks) for exactly what to include.
+What if my scanner acts up, for example wrong page sizes in `auto` mode, surviving blank pages, or a badly mapped mode? Every device behaves a little differently at the edges of a scan, and we can usually fix it from a few captured files alone: see [reporting scanner problems and device quirks](CONTRIBUTING.md#scanner-quirks) for exactly what to include.
 
 ### Exit codes<a id="usage-exit-codes"></a>
 
