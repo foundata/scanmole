@@ -307,6 +307,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._folder = str(self._settings.get("folder") or default_folder())
         self._languages: list[tuple[str, str]] = list(LANGUAGES)
         self._cli_version: str | None = None
+        self._settings_dialog: Adw.PreferencesDialog | None = None
         self._res_syncing = False
 
         self._build_ui()
@@ -332,12 +333,24 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         title_label.add_css_class("heading")
         title_box.append(title_label)
         header.set_title_widget(title_box)
-        about_btn = Gtk.Button(
-            icon_name="help-about-symbolic", tooltip_text=_("About ScanMole")
+        # The orthodox GNOME primary menu: Settings and About live behind the
+        # hamburger button instead of standalone header actions.
+        menu = Gio.Menu()
+        menu.append(_("Settings"), "win.settings")
+        menu.append(_("About ScanMole"), "win.about")
+        menu_btn = Gtk.MenuButton(
+            icon_name="open-menu-symbolic",
+            menu_model=menu,
+            tooltip_text=_("Main menu"),
         )
-        about_btn.add_css_class("flat")
-        about_btn.connect("clicked", self._on_about_clicked)
-        header.pack_end(about_btn)
+        header.pack_end(menu_btn)
+        for name, callback in (
+            ("settings", self._on_settings_action),
+            ("about", self._on_about_clicked),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
         toolbar.add_top_bar(header)
 
         scroller = Gtk.ScrolledWindow(
@@ -372,7 +385,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._build_output_group()
         self._build_document_group()
         self._build_processing_group()
-        self._build_application_group()
         self._build_log_area()
 
         self._form_groups = (
@@ -380,7 +392,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._doc_grp,
             self._proc_grp,
             self._out_grp,
-            self._app_grp,
         )
 
         toolbar.add_bottom_bar(self._build_result_bar())
@@ -405,8 +416,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             (self._scanner_grp, 0, 0),
             (self._out_grp, 1, 0),
             (self._doc_grp, 0, 1),
-            (self._app_grp, 1, 1),
-            (self._proc_grp, 0, 2),
+            (self._proc_grp, 1, 1),
             (self._log_area, 1, 2),
         )
         sections_narrow = (
@@ -414,7 +424,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._out_grp,
             self._doc_grp,
             self._proc_grp,
-            self._app_grp,
             self._log_area,
         )
         for section in sections_narrow:
@@ -668,41 +677,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         self._proc_grp.add(self._lang_row)
 
-    def _build_application_group(self) -> None:
-        """Build the Application group (color scheme, language, reset)."""
-        self._app_grp = Adw.PreferencesGroup(title=_("Application"))
-        self._scheme_row = Adw.ComboRow(title=_("Color scheme"))
-        self._scheme_row.set_model(
-            Gtk.StringList.new([label for label, _value in COLOR_SCHEMES])
-        )
-        self._scheme_row.connect("notify::selected", self._on_color_scheme_changed)
-        self._app_grp.add(self._scheme_row)
-        self._ui_lang_row = Adw.ComboRow(
-            title=_("Interface language"),
-            subtitle=_("Restart required"),
-        )
-        self._ui_lang_row.set_model(
-            Gtk.StringList.new([label for label, _value in UI_LANGUAGES])
-        )
-        self._ui_lang_row.connect("notify::selected", self._on_ui_language_changed)
-        self._app_grp.add(self._ui_lang_row)
-
-        reset_row = Adw.ActionRow(
-            title=_("Reset settings"),
-            subtitle=_("Restore all options to their defaults"),
-        )
-        reset_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        reset_btn.set_child(
-            Adw.ButtonContent(
-                icon_name="edit-undo-symbolic", label=_("Reset to defaults")
-            )
-        )
-        reset_btn.add_css_class("destructive-action")
-        reset_btn.connect("clicked", self._on_reset_clicked)
-        reset_row.add_suffix(reset_btn)
-        reset_row.set_activatable_widget(reset_btn)
-        self._app_grp.add(reset_row)
-
     def _build_log_area(self) -> None:
         """Build the collapsed, copyable log below the form."""
         self._log_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -831,13 +805,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._name_entry.set_text(
             "" if template in ("", DEFAULT_OUTPUT_TEMPLATE) else template
         )
-        combo_select(
-            self._ui_lang_row, UI_LANGUAGES, str(settings.get("ui_language") or "")
-        )
-        combo_select(
-            self._scheme_row, COLOR_SCHEMES, str(settings.get("color_scheme") or "")
-        )
-        self._on_color_scheme_changed()
+        self._apply_color_scheme(str(settings.get("color_scheme") or ""))
         self._folder_btn.set_child(
             Adw.ButtonContent(
                 icon_name="folder-symbolic", label=abbreviate_home(self._folder)
@@ -874,8 +842,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "lang": self._selected_language(),
             "skip_blanks": self._blank_row.get_active(),
             "filename_template": self._current_template(),
-            "ui_language": combo_value(self._ui_lang_row, UI_LANGUAGES),
-            "color_scheme": combo_value(self._scheme_row, COLOR_SCHEMES),
             "folder": self._folder,
         }
         store_settings(self._settings)
@@ -1113,9 +1079,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     # ------------------------------------------------------- application
 
-    def _on_color_scheme_changed(self, *_args: object) -> None:
-        """Apply and persist the chosen color scheme immediately."""
-        value = combo_value(self._scheme_row, COLOR_SCHEMES)
+    def _apply_color_scheme(self, value: str) -> None:
+        """Apply a color scheme value (``""``/``light``/``dark``) globally."""
         schemes = {
             "light": Adw.ColorScheme.FORCE_LIGHT,
             "dark": Adw.ColorScheme.FORCE_DARK,
@@ -1123,14 +1088,72 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         Adw.StyleManager.get_default().set_color_scheme(
             schemes.get(value, Adw.ColorScheme.DEFAULT)
         )
-        self._settings["color_scheme"] = value
+
+    def _store_pref(self, key: str, value: str) -> None:
+        """Persist one settings-dialog preference immediately."""
+        self._settings[key] = value
         store_settings(self._settings)
 
-    def _on_ui_language_changed(self, *_args: object) -> None:
-        """Persist the interface language (applied at the next start)."""
-        value = combo_value(self._ui_lang_row, UI_LANGUAGES)
-        self._settings["ui_language"] = value
-        store_settings(self._settings)
+    def _on_settings_action(self, *_args: object) -> None:
+        """Open the settings dialog (color scheme, language, reset)."""
+        dialog = Adw.PreferencesDialog(title=_("Settings"))
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup()
+
+        scheme_row = Adw.ComboRow(title=_("Color scheme"))
+        scheme_row.set_model(
+            Gtk.StringList.new([label for label, _value in COLOR_SCHEMES])
+        )
+        combo_select(
+            scheme_row, COLOR_SCHEMES, str(self._settings.get("color_scheme") or "")
+        )
+
+        def scheme_changed(*_a: object) -> None:
+            value = combo_value(scheme_row, COLOR_SCHEMES)
+            self._apply_color_scheme(value)
+            self._store_pref("color_scheme", value)
+
+        scheme_row.connect("notify::selected", scheme_changed)
+        group.add(scheme_row)
+
+        lang_row = Adw.ComboRow(
+            title=_("Interface language"), subtitle=_("Restart required")
+        )
+        lang_row.set_model(
+            Gtk.StringList.new([label for label, _value in UI_LANGUAGES])
+        )
+        combo_select(
+            lang_row, UI_LANGUAGES, str(self._settings.get("ui_language") or "")
+        )
+        lang_row.connect(
+            "notify::selected",
+            lambda *_a: self._store_pref(
+                "ui_language", combo_value(lang_row, UI_LANGUAGES)
+            ),
+        )
+        group.add(lang_row)
+
+        reset_row = Adw.ActionRow(
+            title=_("Reset settings"),
+            subtitle=_("Restore all options to their defaults"),
+        )
+        reset_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        reset_btn.set_child(
+            Adw.ButtonContent(
+                icon_name="edit-undo-symbolic", label=_("Reset to defaults")
+            )
+        )
+        reset_btn.add_css_class("destructive-action")
+        reset_btn.connect("clicked", self._on_reset_clicked)
+        reset_row.add_suffix(reset_btn)
+        reset_row.set_activatable_widget(reset_btn)
+        group.add(reset_row)
+
+        page.add(group)
+        dialog.add(page)
+        self._settings_dialog = dialog
+        dialog.connect("closed", lambda *_a: setattr(self, "_settings_dialog", None))
+        dialog.present(self)
 
     def _on_reset_clicked(self, *_args: object) -> None:
         """Ask for confirmation, then reset the GUI settings to defaults."""
@@ -1159,7 +1182,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         store_settings(self._settings)
         self._folder = default_folder()
         self._apply_saved_settings()
-        self._on_ui_language_changed()
+        # The open settings dialog still shows the pre-reset selections;
+        # close it, the next open rebuilds from the defaults.
+        if self._settings_dialog is not None:
+            self._settings_dialog.close()
         self._set_result_bar("idle", _("Settings reset to defaults."))
 
     def _on_about_clicked(self, *_args: object) -> None:
