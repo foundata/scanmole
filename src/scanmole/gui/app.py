@@ -323,6 +323,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._languages: list[tuple[str, str]] = list(LANGUAGES)
         self._cli_version: str | None = None
         self._settings_dialog: Adw.PreferencesDialog | None = None
+        # The language this process actually runs with; a differing persisted
+        # value means a restart is pending.
+        self._startup_ui_language = str(self._settings.get("ui_language") or "")
         self._res_syncing = False
 
         self._build_ui()
@@ -1148,12 +1151,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         combo_select(
             lang_row, UI_LANGUAGES, str(self._settings.get("ui_language") or "")
         )
-        lang_row.connect(
-            "notify::selected",
-            lambda *_a: self._store_pref(
-                "ui_language", combo_value(lang_row, UI_LANGUAGES)
-            ),
-        )
         group.add(lang_row)
 
         reset_row = Adw.ActionRow(
@@ -1172,11 +1169,55 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         reset_row.set_activatable_widget(reset_btn)
         group.add(reset_row)
 
+        # Inactive until a change actually needs a restart (the interface
+        # language differs from what this process started with).
+        restart_row = Adw.ActionRow(
+            title=_("Restart now"),
+            subtitle=_("Apply changes that require a restart"),
+        )
+        restart_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        restart_btn.set_child(
+            Adw.ButtonContent(icon_name="view-refresh-symbolic", label=_("Restart"))
+        )
+        restart_btn.add_css_class("suggested-action")
+        restart_btn.connect("clicked", self._on_restart_clicked)
+        restart_row.add_suffix(restart_btn)
+        restart_row.set_activatable_widget(restart_btn)
+        group.add(restart_row)
+
+        def update_restart_row() -> None:
+            pending = (
+                str(self._settings.get("ui_language") or "")
+                != self._startup_ui_language
+            )
+            restart_row.set_sensitive(pending)
+
+        def language_changed(*_a: object) -> None:
+            self._store_pref("ui_language", combo_value(lang_row, UI_LANGUAGES))
+            update_restart_row()
+
+        lang_row.connect("notify::selected", language_changed)
+        update_restart_row()
+
         page.add(group)
         dialog.add(page)
         self._settings_dialog = dialog
         dialog.connect("closed", lambda *_a: setattr(self, "_settings_dialog", None))
         dialog.present(self)
+
+    def _on_restart_clicked(self, *_args: object) -> None:
+        """Quit and re-execute the application (see ``main``)."""
+        application = self.get_application()
+        if application is not None:
+            application.restart_requested = True
+        dialog = self._settings_dialog
+        if dialog is not None:
+            # An open dialog swallows the window's close(); close the dialog
+            # first and chain the window close onto its closed signal.
+            dialog.connect("closed", lambda *_a: self.close())
+            dialog.close()
+        else:
+            self.close()
 
     def _on_reset_clicked(self, *_args: object) -> None:
         """Ask for confirmation, then reset the GUI settings to defaults."""
@@ -1627,6 +1668,9 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
     def __init__(self) -> None:
         """Register the activation handler."""
         super().__init__(application_id=APP_ID)
+        # Set by the settings dialog's Restart row; main() re-executes the
+        # process after the main loop ends.
+        self.restart_requested: bool = False
         self.connect("activate", self._on_activate)
 
     def _on_activate(self, app: Adw.Application) -> None:
@@ -1649,7 +1693,20 @@ def main(argv: list[str] | None = None) -> int:
     """Run the ScanMole GUI and return the application exit code."""
     GLib.set_application_name("ScanMole")
     app = ScanMoleApp()
-    return int(app.run(sys.argv if argv is None else argv))  # untyped GTK call
+    code = int(app.run(sys.argv if argv is None else argv))  # untyped GTK call
+    if app.restart_requested:
+        # Re-execute the process so the launcher re-applies the persisted
+        # interface language before gettext binds. The stale LANGUAGE from
+        # this process must not leak into the replacement.
+        from scanmole.gui import preferred_ui_language
+
+        language = preferred_ui_language()
+        if language:
+            os.environ["LANGUAGE"] = language
+        else:
+            os.environ.pop("LANGUAGE", None)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+    return code
 
 
 if __name__ == "__main__":
