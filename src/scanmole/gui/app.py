@@ -85,15 +85,18 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
     2: (
         _("No Pages Scanned"),
         _(
-            "No pages were scanned — is the ADF loaded?\n"
+            "No pages were scanned — is the ADF (Automatic Document Feeder) "
+            "loaded?\n"
             "(All pages may also have been detected as blank.)"
         ),
     ),
     3: (
         _("Scanner Error"),
         _(
-            "The scanner reported an error. Make sure it is connected, powered "
-            "on and not in use by another application, then try again."
+            "The scanner reported an error.\n"
+            "\n"
+            "Make sure it is connected, powered on and not in use by another "
+            "application, then try again."
         ),
     ),
     4: (
