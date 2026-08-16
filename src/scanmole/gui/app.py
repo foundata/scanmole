@@ -399,6 +399,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._last_output: Path | None = None
         self._folder = str(self._settings.get("folder") or default_folder())
         self._languages: list[tuple[str, str]] = list(LANGUAGES)
+        self._current_language = "deu+eng"
         self._cli_version: str | None = None
         self._settings_dialog: Adw.PreferencesDialog | None = None
         # The language this process actually runs with; a differing persisted
@@ -786,9 +787,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # Same 20-character default-factory cap as the device row: without a
         # plain-label factory, "German + English (deu+eng)" gets ellipsized.
         self._lang_row.set_factory(plain_string_factory())
-        self._lang_row.set_model(
-            Gtk.StringList.new([label for label, _value in self._languages])
-        )
+        self._set_language_model()
+        self._lang_row.connect("notify::selected", self._on_language_selected)
         self._proc_grp.add(self._lang_row)
 
     def _build_log_area(self) -> None:
@@ -928,17 +928,70 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         self._on_document_changed()
 
+    def _set_language_model(self) -> None:
+        """Rebuild the language dropdown: known languages plus "Add more…"."""
+        labels = [label for label, _value in self._languages]
+        labels.append(_("Add more…"))
+        self._lang_row.set_model(Gtk.StringList.new(labels))
+
     def _select_language(self, lang: str) -> None:
         """Select ``lang`` in the language list, adding a custom entry if new."""
         if lang and lang not in [value for _label, value in self._languages]:
             self._languages.append((lang, lang))
-            self._lang_row.set_model(
-                Gtk.StringList.new([label for label, _value in self._languages])
-            )
+            self._set_language_model()
         for index, (_label, value) in enumerate(self._languages):
             if value == lang:
                 self._lang_row.set_selected(index)
+                self._current_language = lang
                 return
+
+    def _on_language_selected(self, *_args: object) -> None:
+        """Track real selections; "Add more…" opens the language help."""
+        index = int(self._lang_row.get_selected())  # untyped GTK call
+        if 0 <= index < len(self._languages):
+            self._current_language = self._languages[index][1]
+            return
+        # The "Add more…" pseudo item: revert to the previous selection and
+        # explain how additional Tesseract languages are managed.
+        self._select_language(self._current_language)
+        self._on_more_languages()
+
+    def _on_more_languages(self) -> None:
+        """Explain OCR language management and take a custom code to use."""
+        dialog = Adw.AlertDialog(
+            heading=_("More OCR Languages"),
+            body=_(
+                "OCR languages are Tesseract language packs, installed and "
+                "removed with the distribution's package manager. The codes "
+                "are three-letter ISO 639-2/T codes (deu, eng, fra, ...).\n"
+                "\n"
+                "Fedora: sudo dnf install tesseract-langpack-fra\n"
+                "Debian/Ubuntu: sudo apt install tesseract-ocr-fra\n"
+                "(remove instead of install to uninstall)\n"
+                "\n"
+                "To use installed languages here, enter the codes below; "
+                "combine several with +."
+            ),
+        )
+        # Roughly double the default alert width so the install commands fit
+        # on one line; the extra child's minimum width backs the request up.
+        dialog.set_content_width(680)
+        entry = Gtk.Entry(placeholder_text="deu+fra")
+        entry.set_size_request(440, -1)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("use", _("Use language"))
+        dialog.set_response_appearance("use", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("use")
+        dialog.set_close_response("cancel")
+
+        def on_response(_dialog: object, response: str) -> None:
+            code = entry.get_text().strip()
+            if response == "use" and code:
+                self._select_language(code)
+
+        dialog.connect("response", on_response)
+        dialog.present(self)
 
     def _save_settings(self) -> None:
         """Snapshot the current form into the settings file.
@@ -1091,7 +1144,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         index = int(self._lang_row.get_selected())  # untyped GTK call
         if 0 <= index < len(self._languages):
             return self._languages[index][1]
-        return self._languages[0][1]
+        return self._current_language  # "Add more…" is never a language
 
     def _current_template(self) -> str:
         """Return the filename template from the form, with .pdf ensured."""
