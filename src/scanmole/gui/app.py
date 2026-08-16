@@ -441,6 +441,16 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         container.append(self._narrow_box)
         container.append(self._grid)
+        # Credit line below the form, outside the layout switching so it
+        # always spans the full width.
+        credit = Gtk.Label(halign=Gtk.Align.CENTER, margin_top=8)
+        credit.set_markup(
+            _('ScanMole %(version)s by <a href="%(url)s">foundata</a>')
+            % {"version": __version__, "url": PROJECT_URL}
+        )
+        credit.add_css_class("caption")
+        credit.add_css_class("dim-label")
+        container.append(credit)
         self._clamp.set_child(container)
 
         self._build_scanner_group()
