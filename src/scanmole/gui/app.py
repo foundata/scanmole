@@ -174,12 +174,15 @@ def desktop_entry_path() -> Path:
 def install_desktop_entry() -> bool:
     """Write the user-level desktop entry pinning the current executable.
 
-    GNOME's window switcher and app grid show an application's name and
-    logo only when a desktop file matches the application id. Installing it
-    is a deliberate action in the settings dialog, not a startup side
-    effect: with uv-managed environments the executable path is not stable,
-    so pinning it (and refreshing it after the environment moved) should be
-    the user's call. The future RPM ships system-wide files instead.
+    Desktop entries are a freedesktop.org standard: launchers and window
+    switchers on GNOME, KDE Plasma and the other XDG desktops show an
+    application's name and logo only when a desktop file matches the
+    application id (environments without the concept ignore the file).
+    Installing it is a deliberate action in the settings dialog, not a
+    startup side effect: with uv-managed environments the executable path
+    is not stable, so pinning it (and refreshing it after the environment
+    moved) should be the user's call. The future RPM ships system-wide
+    files instead.
     """
     try:
         ensure_app_icon()
@@ -202,6 +205,15 @@ def install_desktop_entry() -> bool:
         if not target.is_file() or target.read_text(encoding="utf-8") != desktop_entry:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(desktop_entry, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def remove_desktop_entry() -> bool:
+    """Delete the user-level desktop entry (the icon may stay; it is inert)."""
+    try:
+        desktop_entry_path().unlink(missing_ok=True)
         return True
     except OSError:
         return False
@@ -1233,23 +1245,38 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
         desktop_row = Adw.ActionRow(
             title=_("Desktop entry"),
-            subtitle=_("Show ScanMole in the app grid and window switcher"),
+            subtitle=_("Show ScanMole in the application launcher and window switcher"),
         )
+        installed = desktop_entry_path().is_file()
+        remove_btn = Gtk.Button(label=_("Remove"), valign=Gtk.Align.CENTER)
+        remove_btn.add_css_class("destructive-action")
+        remove_btn.set_sensitive(installed)
         desktop_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        desktop_btn.set_label(
-            _("Update") if desktop_entry_path().is_file() else _("Install")
-        )
+        desktop_btn.set_label(_("Update") if installed else _("Install"))
 
         def install_clicked(*_a: object) -> None:
             if install_desktop_entry():
                 desktop_btn.set_label(_("Update"))
+                remove_btn.set_sensitive(True)
                 dialog.add_toast(Adw.Toast(title=_("Desktop entry installed.")))
             else:
                 dialog.add_toast(
                     Adw.Toast(title=_("Could not install the desktop entry."))
                 )
 
+        def remove_clicked(*_a: object) -> None:
+            if remove_desktop_entry():
+                desktop_btn.set_label(_("Install"))
+                remove_btn.set_sensitive(False)
+                dialog.add_toast(Adw.Toast(title=_("Desktop entry removed.")))
+            else:
+                dialog.add_toast(
+                    Adw.Toast(title=_("Could not remove the desktop entry."))
+                )
+
         desktop_btn.connect("clicked", install_clicked)
+        remove_btn.connect("clicked", remove_clicked)
+        desktop_row.add_suffix(remove_btn)
         desktop_row.add_suffix(desktop_btn)
         desktop_row.set_activatable_widget(desktop_btn)
         group.add(desktop_row)
