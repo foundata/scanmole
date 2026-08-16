@@ -38,6 +38,29 @@ def preferred_ui_language() -> str:
     return language if language in ("en", "de") else ""
 
 
+def incompatible_cli(gui_version: str, cli_version: str | None) -> str | None:
+    """Return the version the GUI needs when ``cli_version`` cannot be driven.
+
+    Returns ``None`` when the CLI is compatible. Per the contract in
+    ``ARCHITECTURE.md``, GUI and CLI are compatible from 1.0.0 on if and only
+    if their SemVer majors match; before 1.0.0 no such promise exists, so the
+    exact GUI version is required. A missing or unparsable ``cli_version``
+    (a CLI predating the ``hello`` handshake) is always incompatible.
+    """
+    try:
+        gui_major = int(gui_version.split(".")[0])
+    except ValueError:
+        gui_major = 0
+    if gui_major < 1:
+        return None if cli_version == gui_version else gui_version
+    needed = f"{gui_major}.x"
+    try:
+        cli_major = int((cli_version or "").split(".")[0])
+    except ValueError:
+        return needed
+    return None if cli_major == gui_major else needed
+
+
 def main(argv: list[str] | None = None) -> int:
     """Launch the GUI, or report missing GTK bindings and exit non-zero."""
     arguments = sys.argv[1:] if argv is None else argv

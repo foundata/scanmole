@@ -38,6 +38,7 @@ from gi.repository import (  # noqa: E402  # after require_version
 )
 
 from scanmole import __version__  # noqa: E402
+from scanmole.gui import incompatible_cli  # noqa: E402
 from scanmole.gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 
 # The GUI holds no pipeline logic; this pure helper is imported only so the
@@ -401,6 +402,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._languages: list[tuple[str, str]] = list(LANGUAGES)
         self._current_language = "deu+eng"
         self._cli_version: str | None = None
+        # Set from the hello handshake: a truthy value blocks scanning because
+        # the CLI's major version does not match this GUI (see ARCHITECTURE.md).
+        self._cli_blocked = False
+        self._version_alert_shown = False
         self._settings_dialog: Adw.PreferencesDialog | None = None
         # The language this process actually runs with; a differing persisted
         # value means a restart is pending.
@@ -1053,11 +1058,14 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 timeout=120,
                 check=False,
             )
+            hello_version: str | None = None
             for raw in result.stdout.splitlines():
                 try:
                     event = json.loads(raw)
                 except ValueError:
                     continue
+                if event.get("event") == "hello":
+                    hello_version = str(event.get("version") or "") or None
                 if event.get("event") == "devices":
                     # Hide virtual devices (webcams, SANE test backend).
                     devices = [
@@ -1067,7 +1075,24 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                     ]
             if result.stderr.strip():
                 GLib.idle_add(self._append_log, result.stderr.strip())
-            if result.returncode != 0 and not devices:
+            if hello_version is not None:
+                self._cli_version = hello_version
+            # Refuse a CLI whose major does not match instead of guessing: a
+            # mismatched protocol rendering silently wrong state is worse
+            # than a hard stop. A run without hello predates the handshake.
+            needed = (
+                incompatible_cli(__version__, hello_version)
+                if hello_version is not None or result.returncode == 0
+                else None
+            )
+            self._cli_blocked = needed is not None
+            if needed is not None:
+                devices = []
+                err = _(
+                    "Incompatible scanmole CLI: found version %(found)s, "
+                    "but this GUI needs %(needed)s."
+                ) % {"found": hello_version or _("unknown"), "needed": needed}
+            elif result.returncode != 0 and not devices:
                 err = _("Device search failed (exit %(code)d).") % {
                     "code": result.returncode
                 }
@@ -1100,6 +1125,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     ) -> None:
         """Populate the device dropdown on the main loop."""
         self._refresh_btn.set_sensitive(self._proc is None)
+        self._scan_btn.set_sensitive(self._proc is None and not self._cli_blocked)
+        if self._cli_blocked and err and not self._version_alert_shown:
+            self._version_alert_shown = True
+            self._alert(_("Incompatible scanmole CLI"), err)
         self._devices = devices
         names = []
         for device in devices:
