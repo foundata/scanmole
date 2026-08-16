@@ -1897,6 +1897,20 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
         # process after the main loop ends.
         self.restart_requested: bool = False
         self.connect("activate", self._on_activate)
+        self.connect("shutdown", self._on_shutdown)
+
+    def _on_shutdown(self, *_args: object) -> None:
+        """Persist state when the application quits without a window close.
+
+        Ctrl+C (PyGObject's SIGINT fallback calls ``quit()``) ends the main
+        loop directly, bypassing the window's ``close-request`` handler; run
+        the same persistence while the window is still alive. On the normal
+        close path the window is already gone here, or a second identical
+        save is harmless.
+        """
+        window = self.props.active_window
+        if isinstance(window, MainWindow):
+            window._on_close_request()
 
     def _on_activate(self, app: Adw.Application) -> None:
         """Present the main window, creating it on first activation."""
@@ -1919,7 +1933,13 @@ def main(argv: list[str] | None = None) -> int:
     """Run the ScanMole GUI and return the application exit code."""
     GLib.set_application_name("ScanMole")
     app = ScanMoleApp()
-    code = int(app.run(sys.argv if argv is None else argv))  # untyped GTK call
+    try:
+        code = int(app.run(sys.argv if argv is None else argv))  # untyped GTK call
+    except KeyboardInterrupt:
+        # PyGObject's SIGINT fallback quits the main loop cleanly, then
+        # re-raises so the caller learns about the interrupt; map it to the
+        # conventional exit code instead of a traceback.
+        return 130
     if app.restart_requested:
         # Re-execute the process so the launcher re-applies the persisted
         # interface language before gettext binds. The stale LANGUAGE from
