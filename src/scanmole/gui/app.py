@@ -75,6 +75,7 @@ LANGUAGES = (
 )
 # Endonyms on purpose: a language name is most recognizable in itself.
 UI_LANGUAGES = ((_("System default"), ""), ("English", "en"), ("Deutsch", "de"))
+COLOR_SCHEMES = ((_("System default"), ""), (_("Light"), "light"), (_("Dark"), "dark"))
 
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
@@ -116,6 +117,15 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
 }
 
 SIGKILL_GRACE_SECONDS = 3  # between SIGTERM and SIGKILL on cancel
+
+# App-level styling: a slightly deeper canvas in light mode (shaded from the
+# named color so dark mode and high-contrast settings stay intact) and
+# compact resolution preset chips.
+_APP_CSS = """
+window.background { background-color: shade(@window_bg_color, 0.96); }
+button.chip { min-height: 20px; padding: 0px 8px; font-size: 0.85em; }
+entry.dpi { min-width: 0px; padding-left: 8px; padding-right: 8px; }
+"""
 
 
 def find_scanmole() -> str:
@@ -169,6 +179,25 @@ def combo_select(
         if item_value == value:
             row.set_selected(index)
             return
+
+
+def plain_string_factory() -> Gtk.SignalListItemFactory:
+    """A dropdown item factory whose labels take their natural width.
+
+    The default ``Adw.ComboRow`` factory caps labels at about 20 characters
+    and ellipsizes, which truncates device names like "Brother ADS-4550W".
+    """
+    factory = Gtk.SignalListItemFactory()
+
+    def setup(_factory: object, list_item: Gtk.ListItem) -> None:
+        list_item.set_child(Gtk.Label(xalign=0.0))
+
+    def bind(_factory: object, list_item: Gtk.ListItem) -> None:
+        list_item.get_child().set_label(list_item.get_item().get_string())
+
+    factory.connect("setup", setup)
+    factory.connect("bind", bind)
+    return factory
 
 
 def as_int(value: object, fallback: int) -> int:
@@ -278,7 +307,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._folder = str(self._settings.get("folder") or default_folder())
         self._languages: list[tuple[str, str]] = list(LANGUAGES)
         self._cli_version: str | None = None
-        self._startup_ui_language = str(self._settings.get("ui_language") or "")
         self._res_syncing = False
 
         self._build_ui()
@@ -298,7 +326,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         if LOGO_FILE.is_file():
             logo = Gtk.Image.new_from_file(str(LOGO_FILE))
-            logo.set_pixel_size(24)
+            logo.set_pixel_size(28)
             title_box.append(logo)
         title_label = Gtk.Label(label="ScanMole")
         title_label.add_css_class("heading")
@@ -320,24 +348,25 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._clamp = Adw.Clamp(maximum_size=1080, tightening_threshold=900)
         scroller.set_child(self._clamp)
 
-        columns = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            spacing=24,
+        container = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
             margin_top=18,
             margin_bottom=18,
             margin_start=16,
             margin_end=16,
         )
-        self._left_column = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=18, hexpand=True
+        self._narrow_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=18, visible=False
         )
-        self._right_column = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=18, hexpand=True
+        # A grid (not two independent columns) so paired sections start at
+        # the same height: Scanner|Output, Document|Application,
+        # Processing|Log each share a grid row.
+        self._grid = Gtk.Grid(
+            column_spacing=24, row_spacing=18, column_homogeneous=True
         )
-        columns.append(self._left_column)
-        columns.append(self._right_column)
-        self._columns = columns
-        self._clamp.set_child(columns)
+        container.append(self._narrow_box)
+        container.append(self._grid)
+        self._clamp.set_child(container)
 
         self._build_scanner_group()
         self._build_output_group()
@@ -371,9 +400,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._on_document_changed()
 
     def _apply_layout(self, *, wide: bool) -> None:
-        """Arrange the form sections in one or two columns."""
-        sections_wide_left = (self._scanner_grp, self._doc_grp, self._proc_grp)
-        sections_wide_right = (self._out_grp, self._app_grp, self._log_area)
+        """Arrange the form sections in one column or a two-column grid."""
+        grid_cells = (
+            (self._scanner_grp, 0, 0),
+            (self._out_grp, 1, 0),
+            (self._doc_grp, 0, 1),
+            (self._app_grp, 1, 1),
+            (self._proc_grp, 0, 2),
+            (self._log_area, 1, 2),
+        )
         sections_narrow = (
             self._scanner_grp,
             self._out_grp,
@@ -387,15 +422,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             if parent is not None:
                 parent.remove(section)
         if wide:
-            for section in sections_wide_left:
-                self._left_column.append(section)
-            for section in sections_wide_right:
-                self._right_column.append(section)
+            for section, column, row in grid_cells:
+                self._grid.attach(section, column, row, 1, 1)
         else:
             for section in sections_narrow:
-                self._left_column.append(section)
-        self._right_column.set_visible(wide)
-        self._columns.set_homogeneous(wide)
+                self._narrow_box.append(section)
+        self._grid.set_visible(wide)
+        self._narrow_box.set_visible(not wide)
         self._clamp.set_maximum_size(1080 if wide else 640)
         self._clamp.set_tightening_threshold(900 if wide else 480)
 
@@ -409,6 +442,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             title=_("Device"),
             subtitle=_("Searching for scanners…"),
         )
+        self._device_row.set_factory(plain_string_factory())
         self._device_row.connect("notify::selected", self._on_device_selected)
         # The rescan action sits beside the device list, not in the header:
         # the action lives where its object is (mockup rule).
@@ -473,34 +507,65 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._folder_row.set_activatable_widget(self._folder_btn)
         self._out_grp.add(self._folder_row)
 
-        self._name_row = Adw.ActionRow(title=_("File name"))
+        # Deliberately about twice a default row: entry, placeholder helper
+        # and preview stack so the Output group lines up with the Scanner
+        # group's Device/Source/Scan rows in the two-column grid. A custom
+        # row (not Adw.ActionRow) so the title can align with the entry at
+        # the top instead of centering over the whole stack.
+        name_row_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=12,
+            margin_start=12,
+            margin_end=12,
+        )
+        name_title = Gtk.Label(
+            label=_("File name"),
+            xalign=0.0,
+            valign=Gtk.Align.START,
+            margin_top=18,
+        )
+        name_row_box.append(name_title)
         name_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
-            spacing=3,
+            spacing=4,
             valign=Gtk.Align.CENTER,
             hexpand=True,
-            margin_top=6,
-            margin_bottom=6,
+            margin_top=10,
+            margin_bottom=10,
         )
         self._name_entry = Gtk.Entry(
-            placeholder_text=DEFAULT_OUTPUT_TEMPLATE, width_chars=22, hexpand=True
+            placeholder_text=DEFAULT_OUTPUT_TEMPLATE, width_chars=34, hexpand=True
         )
         self._name_entry.connect("changed", self._update_name_preview)
+        # Focusing the empty field materializes the default template so it
+        # can be edited instead of retyped; leaving it unchanged still counts
+        # as "use the default" (the save logic normalizes it back).
+        name_focus = Gtk.EventControllerFocus()
+        name_focus.connect("enter", self._on_name_entry_focus)
+        self._name_entry.add_controller(name_focus)
         name_box.append(self._name_entry)
         hint = Gtk.Label(
             label=_(
-                "placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} · "
+                "Placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} · "
                 "{NN} (auto-number) · {preset} {device}"
             ),
             xalign=1.0,
             wrap=True,
             justify=Gtk.Justification.RIGHT,
-            max_width_chars=34,
+            max_width_chars=44,
         )
         hint.add_css_class("caption")
         hint.add_css_class("dim-label")
         name_box.append(hint)
-        self._name_row.add_suffix(name_box)
+        self._name_preview = Gtk.Label(xalign=1.0)
+        self._name_preview.add_css_class("caption")
+        self._name_preview.add_css_class("dim-label")
+        self._name_preview.set_ellipsize(3)  # Pango.EllipsizeMode.END
+        name_box.append(self._name_preview)
+        name_row_box.append(name_box)
+        self._name_row = Gtk.ListBoxRow(
+            child=name_row_box, activatable=False, selectable=False
+        )
         self._out_grp.add(self._name_row)
 
     def _build_document_group(self) -> None:
@@ -510,9 +575,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._doc_grp, _("Color mode"), MODES, self._on_document_changed
         )
 
-        # Hybrid resolution control: a numeric dpi entry plus preset chips.
-        # The static bounds are a sanity clamp only; the CLI snaps the value
-        # to what the device actually supports during capability negotiation.
+        # Hybrid resolution control, composed as entry / unit / stepper so
+        # the unit sits between the number and the buttons (GtkSpinButton
+        # cannot render a unit suffix). The static bounds are a sanity clamp
+        # only; the CLI snaps the value to what the device actually supports
+        # during capability negotiation.
         self._res_row = Adw.ActionRow(title=_("Resolution"))
         res_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -521,29 +588,51 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             margin_top=6,
             margin_bottom=6,
         )
-        spin_box = Gtk.Box(
+        entry_box = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL, spacing=6, halign=Gtk.Align.END
         )
-        adjustment = Gtk.Adjustment(
-            lower=RESOLUTION_MINIMUM,
-            upper=RESOLUTION_MAXIMUM,
-            step_increment=10,
-            page_increment=50,
-            value=200,
+        self._res_value = 300
+        self._res_entry = Gtk.Entry(
+            text="300",
+            width_chars=4,
+            max_width_chars=4,
+            max_length=4,
+            xalign=1.0,
+            input_purpose=Gtk.InputPurpose.DIGITS,
         )
-        self._res_spin = Gtk.SpinButton(adjustment=adjustment, numeric=True)
-        self._res_spin.set_width_chars(5)
-        self._res_spin.connect("value-changed", self._on_resolution_changed)
-        spin_box.append(self._res_spin)
+        self._res_entry.add_css_class("dpi")
+        self._res_entry.connect("activate", self._on_resolution_commit)
+        res_focus = Gtk.EventControllerFocus()
+        res_focus.connect("leave", self._on_resolution_commit)
+        self._res_entry.add_controller(res_focus)
+        res_keys = Gtk.EventControllerKey()
+        res_keys.connect("key-pressed", self._on_resolution_key)
+        self._res_entry.add_controller(res_keys)
+        res_scroll = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL
+        )
+        res_scroll.connect("scroll", self._on_resolution_scroll)
+        self._res_entry.add_controller(res_scroll)
+        entry_box.append(self._res_entry)
         dpi_label = Gtk.Label(label="dpi")
         dpi_label.add_css_class("dim-label")
-        spin_box.append(dpi_label)
-        res_box.append(spin_box)
+        entry_box.append(dpi_label)
+        stepper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        stepper.add_css_class("linked")
+        minus_btn = Gtk.Button(icon_name="list-remove-symbolic")
+        minus_btn.connect("clicked", lambda *_a: self._step_resolution(-10))
+        stepper.append(minus_btn)
+        plus_btn = Gtk.Button(icon_name="list-add-symbolic")
+        plus_btn.connect("clicked", lambda *_a: self._step_resolution(10))
+        stepper.append(plus_btn)
+        entry_box.append(stepper)
+        res_box.append(entry_box)
         chips = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END)
         chips.add_css_class("linked")
         self._res_chips: list[tuple[Gtk.ToggleButton, int]] = []
         for preset in RESOLUTION_PRESETS:
             chip = Gtk.ToggleButton(label=str(preset))
+            chip.add_css_class("chip")
             chip.connect("toggled", self._on_resolution_chip, preset)
             chips.append(chip)
             self._res_chips.append((chip, preset))
@@ -580,11 +669,17 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._proc_grp.add(self._lang_row)
 
     def _build_application_group(self) -> None:
-        """Build the Application group (interface language, reset)."""
+        """Build the Application group (color scheme, language, reset)."""
         self._app_grp = Adw.PreferencesGroup(title=_("Application"))
+        self._scheme_row = Adw.ComboRow(title=_("Color scheme"))
+        self._scheme_row.set_model(
+            Gtk.StringList.new([label for label, _value in COLOR_SCHEMES])
+        )
+        self._scheme_row.connect("notify::selected", self._on_color_scheme_changed)
+        self._app_grp.add(self._scheme_row)
         self._ui_lang_row = Adw.ComboRow(
             title=_("Interface language"),
-            subtitle=_("Only the GUI is translated"),
+            subtitle=_("Restart required"),
         )
         self._ui_lang_row.set_model(
             Gtk.StringList.new([label for label, _value in UI_LANGUAGES])
@@ -726,8 +821,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             resolution = int(str(settings.get("resolution", "300")))
         except ValueError:
             resolution = 300
-        self._res_spin.set_value(resolution)
-        self._sync_resolution_chips()
+        self._set_resolution(resolution)
         combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
         self._select_language(str(settings.get("lang", "deu+eng")))
@@ -740,6 +834,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         combo_select(
             self._ui_lang_row, UI_LANGUAGES, str(settings.get("ui_language") or "")
         )
+        combo_select(
+            self._scheme_row, COLOR_SCHEMES, str(settings.get("color_scheme") or "")
+        )
+        self._on_color_scheme_changed()
         self._folder_btn.set_child(
             Adw.ButtonContent(
                 icon_name="folder-symbolic", label=abbreviate_home(self._folder)
@@ -770,13 +868,14 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "device": self._selected_device() or "",
             "source": self._source_row.value(),
             "mode": self._mode_row.value(),
-            "resolution": str(int(self._res_spin.get_value())),
+            "resolution": str(self._current_resolution()),
             "page_size": combo_value(self._size_row, PAGE_SIZES),
             "ocr": self._ocr_row.get_active(),
             "lang": self._selected_language(),
             "skip_blanks": self._blank_row.get_active(),
             "filename_template": self._current_template(),
             "ui_language": combo_value(self._ui_lang_row, UI_LANGUAGES),
+            "color_scheme": combo_value(self._scheme_row, COLOR_SCHEMES),
             "folder": self._folder,
         }
         store_settings(self._settings)
@@ -872,13 +971,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 (i for i, d in enumerate(devices) if d.get("device") == prefer), 0
             )
             self._device_row.set_selected(index)
-            self._device_row.set_subtitle(devices[index].get("device", ""))
+            self._device_row.set_subtitle("")
+            self._device_row.set_tooltip_text(devices[index].get("device", ""))
             self._set_result_bar(
                 "idle",
                 ngettext("Found %d scanner.", "Found %d scanners.", len(devices))
                 % len(devices),
             )
         else:
+            self._device_row.set_tooltip_text("")
             self._device_row.set_subtitle(
                 err or _("No scanners found — connect one and press Refresh.")
             )
@@ -894,8 +995,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         return None
 
     def _on_device_selected(self, *_args: object) -> None:
-        """Show the selected device's SANE id as the row subtitle."""
-        self._device_row.set_subtitle(self._selected_device() or "")
+        """Expose the selected device's SANE id as a tooltip.
+
+        As a tooltip (not a subtitle) the diagnostic id costs no row width,
+        so the selected model name renders without ellipses.
+        """
+        self._device_row.set_tooltip_text(self._selected_device() or "")
         self._update_name_preview()
 
     # ------------------------------------------------- live consequences
@@ -916,7 +1021,47 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _current_resolution(self) -> int:
         """Return the dpi from the hybrid resolution control."""
-        return int(self._res_spin.get_value())
+        return self._res_value
+
+    def _set_resolution(self, value: int) -> None:
+        """Clamp and apply a dpi value to the entry, chips and previews."""
+        value = max(RESOLUTION_MINIMUM, min(RESOLUTION_MAXIMUM, value))
+        self._res_value = value
+        if self._res_entry.get_text() != str(value):
+            self._res_entry.set_text(str(value))
+            self._res_entry.set_position(-1)
+        self._sync_resolution_chips()
+        self._on_document_changed()
+
+    def _on_resolution_commit(self, *_args: object) -> None:
+        """Validate the typed dpi on Enter or focus-out; revert if invalid."""
+        text = self._res_entry.get_text().strip()
+        try:
+            self._set_resolution(int(text))
+        except ValueError:
+            self._set_resolution(self._res_value)
+
+    def _step_resolution(self, delta: int) -> None:
+        """Step the dpi by ``delta`` from the stepper, keys or scroll wheel."""
+        self._on_resolution_commit()  # honor a value typed but not committed
+        self._set_resolution(self._res_value + delta)
+
+    def _on_resolution_key(
+        self, _controller: object, keyval: int, _keycode: int, _state: object
+    ) -> bool:
+        """Handle Up/Down arrows in the dpi entry."""
+        if keyval == Gdk.KEY_Up:
+            self._step_resolution(10)
+            return True
+        if keyval == Gdk.KEY_Down:
+            self._step_resolution(-10)
+            return True
+        return False
+
+    def _on_resolution_scroll(self, _controller: object, _dx: float, dy: float) -> bool:
+        """Handle scroll-wheel stepping over the dpi entry."""
+        self._step_resolution(-10 if dy > 0 else 10)
+        return True
 
     def _sync_resolution_chips(self) -> None:
         """Highlight the preset chip matching the entry, or none."""
@@ -931,16 +1076,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if self._res_syncing:
             return
         if chip.get_active():
-            self._res_spin.set_value(preset)
+            self._set_resolution(preset)
         else:
             # Clicking the active chip again keeps it active; the "no chip"
             # state is reached by typing a custom value, not by unselecting.
             self._sync_resolution_chips()
-
-    def _on_resolution_changed(self, *_args: object) -> None:
-        """React to any dpi change from the entry or a chip."""
-        self._sync_resolution_chips()
-        self._on_document_changed()
 
     def _on_document_changed(self, *_args: object) -> None:
         """Refresh the size estimate and the filename preview."""
@@ -953,6 +1093,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         self._update_name_preview()
 
+    def _on_name_entry_focus(self, *_args: object) -> None:
+        """Prefill the default template on focus so it can be edited."""
+        if not self._name_entry.get_text():
+            self._name_entry.set_text(DEFAULT_OUTPUT_TEMPLATE)
+            self._name_entry.set_position(-1)
+
     def _update_name_preview(self, *_args: object) -> None:
         """Render the template with the current form values as an example."""
         preset = f"{self._mode_row.value()}-{self._current_resolution()}"
@@ -963,23 +1109,28 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             device=self._selected_device() or "device",
             preset=preset,
         )
-        self._name_row.set_subtitle(example)
+        self._name_preview.set_text(_("Preview: %(name)s") % {"name": example})
 
     # ------------------------------------------------------- application
 
+    def _on_color_scheme_changed(self, *_args: object) -> None:
+        """Apply and persist the chosen color scheme immediately."""
+        value = combo_value(self._scheme_row, COLOR_SCHEMES)
+        schemes = {
+            "light": Adw.ColorScheme.FORCE_LIGHT,
+            "dark": Adw.ColorScheme.FORCE_DARK,
+        }
+        Adw.StyleManager.get_default().set_color_scheme(
+            schemes.get(value, Adw.ColorScheme.DEFAULT)
+        )
+        self._settings["color_scheme"] = value
+        store_settings(self._settings)
+
     def _on_ui_language_changed(self, *_args: object) -> None:
-        """Persist the interface language and hint at the required restart."""
+        """Persist the interface language (applied at the next start)."""
         value = combo_value(self._ui_lang_row, UI_LANGUAGES)
         self._settings["ui_language"] = value
         store_settings(self._settings)
-        # gettext is bound at startup (module-level strings), so a change
-        # honestly needs a restart; say so instead of pretending otherwise.
-        if value != self._startup_ui_language:
-            self._ui_lang_row.set_subtitle(
-                _("Only the GUI is translated · takes effect after the next start")
-            )
-        else:
-            self._ui_lang_row.set_subtitle(_("Only the GUI is translated"))
 
     def _on_reset_clicked(self, *_args: object) -> None:
         """Ask for confirmation, then reset the GUI settings to defaults."""
@@ -1428,8 +1579,14 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
         """Present the main window, creating it on first activation."""
         # Make the packaged mascot icon resolvable by name (About dialog).
         display = Gdk.Display.get_default()
-        if display is not None and ICON_DIR.is_dir():
-            Gtk.IconTheme.get_for_display(display).add_search_path(str(ICON_DIR))
+        if display is not None:
+            if ICON_DIR.is_dir():
+                Gtk.IconTheme.get_for_display(display).add_search_path(str(ICON_DIR))
+            provider = Gtk.CssProvider()
+            provider.load_from_string(_APP_CSS)
+            Gtk.StyleContext.add_provider_for_display(
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
         win = self.props.active_window or MainWindow(application=app)
         win.present()
 
