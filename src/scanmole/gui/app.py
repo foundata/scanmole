@@ -252,10 +252,18 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """Build the UI, restore settings and start device discovery."""
         super().__init__(**kwargs)
         self.set_title("ScanMole")
-        self.set_default_size(720, 900)
 
         self._scanmole = find_scanmole()
         self._settings = load_settings()
+
+        # Restore the remembered window geometry; the default width starts in
+        # the two-column layout (above the breakpoint).
+        self.set_default_size(
+            as_int(self._settings.get("window_width"), 960),
+            as_int(self._settings.get("window_height"), 730),
+        )
+        if bool(self._settings.get("window_maximized")):
+            self.maximize()
 
         # Runtime state
         self._proc: subprocess.Popen[str] | None = None
@@ -348,11 +356,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
         toolbar.add_bottom_bar(self._build_result_bar())
 
-        # Responsive layout: two columns by default (720 px wide window), one
-        # column below 700 px via a breakpoint.
+        # Responsive layout: two columns only when each column can give the
+        # form fields their full width (~430 px per column, matching the
+        # mockup); below that, one column. The default window width starts
+        # above the breakpoint.
         self._apply_layout(wide=True)
         breakpoint = Adw.Breakpoint.new(
-            Adw.BreakpointCondition.parse("max-width: 700sp")
+            Adw.BreakpointCondition.parse("max-width: 920sp")
         )
         breakpoint.connect("apply", lambda *_a: self._apply_layout(wide=False))
         breakpoint.connect("unapply", lambda *_a: self._apply_layout(wide=True))
@@ -532,8 +542,14 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._doc_grp.add(self._size_row)
 
     def _build_processing_group(self) -> None:
-        """Build the Processing group (OCR, language, blank pages)."""
+        """Build the Processing group (blank pages, OCR, language)."""
         self._proc_grp = Adw.PreferencesGroup(title=_("Processing"))
+        self._blank_row = Adw.SwitchRow(
+            title=_("Skip blank pages"),
+            subtitle=_("Removes pages detected as empty"),
+            active=True,
+        )
+        self._proc_grp.add(self._blank_row)
         self._ocr_row = Adw.SwitchRow(
             title=_("OCR"),
             subtitle=_("Make the PDF text-searchable (PDF/A)"),
@@ -546,12 +562,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             Gtk.StringList.new([label for label, _value in self._languages])
         )
         self._proc_grp.add(self._lang_row)
-        self._blank_row = Adw.SwitchRow(
-            title=_("Skip blank pages"),
-            subtitle=_("Removes pages detected as empty"),
-            active=True,
-        )
-        self._proc_grp.add(self._blank_row)
 
     def _build_application_group(self) -> None:
         """Build the Application group (interface language, reset)."""
@@ -734,8 +744,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 return
 
     def _save_settings(self) -> None:
-        """Snapshot the current form into the settings file."""
+        """Snapshot the current form into the settings file.
+
+        Merges over the loaded settings so keys written elsewhere (window
+        geometry) survive the snapshot.
+        """
         self._settings = {
+            **self._settings,
             "device": self._selected_device() or "",
             "source": self._source_row.value(),
             "mode": self._mode_row.value(),
@@ -1289,7 +1304,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             pass
 
     def _on_close_request(self, *_args: object) -> bool:
-        """Terminate any running scan before letting the window close."""
+        """Persist the window geometry and stop any running scan on close."""
+        self._settings["window_maximized"] = bool(self.is_maximized())
+        if not self.is_maximized():
+            self._settings["window_width"] = int(self.get_width())
+            self._settings["window_height"] = int(self.get_height())
+        store_settings(self._settings)
         if self._proc is not None and self._proc.poll() is None:
             self._signal_group(self._proc, signal.SIGTERM)
         return False  # allow the window to close
