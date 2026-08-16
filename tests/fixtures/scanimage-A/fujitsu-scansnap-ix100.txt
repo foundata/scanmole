@@ -1,17 +1,17 @@
 
-All options specific to device `fujitsu:ScanSnap iX500:1548816':
+All options specific to device `fujitsu:ScanSnap iX100:1306726':
   Standard:
-    --source ADF Front|ADF Back|ADF Duplex [ADF Front]
+    --source ADF Front [ADF Front]
         Selects the scan source (such as a document-feeder).
     --mode Lineart|Gray|Color [Lineart]
         Selects the scan mode (e.g., lineart, monochrome, or color).
     --resolution 50..600dpi (in steps of 1) [600]
         Sets the resolution of the scanned image.
   Geometry:
-    --page-width 0..221.121mm (in steps of 0.0211639) [215.872]
+    --page-width 0..219.428mm (in steps of 0.0211639) [215.872]
         Specifies the width of the media.  Required for automatic centering of
         sheet-fed scans.
-    --page-height 0..876.695mm (in steps of 0.0211639) [279.364]
+    --page-height 0..895.362mm (in steps of 0.0211639) [279.364]
         Specifies the height of the media.
     -l 0..215.872mm (in steps of 0.0211639) [0]
         Top-left x position of scan area.
@@ -102,7 +102,7 @@ All options specific to device `fujitsu:ScanSnap iX500:1548816':
         OMR or double feed detected
     --cover-open[=(yes|no)] [no] [hardware]
         Cover open
-    --power-save[=(yes|no)] [no] [hardware]
+    --power-save[=(yes|no)] [yes] [hardware]
         Scanner in power saving mode
     --email[=(yes|no)] [no] [hardware]
         Email button

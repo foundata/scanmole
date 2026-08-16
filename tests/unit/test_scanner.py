@@ -145,6 +145,46 @@ def test_build_scan_command_auto_size_requests_the_full_window(
     assert command[command.index("-y") + 1] == "3098.8"
 
 
+def test_build_scan_command_auto_size_clamps_the_area_to_the_page_limits(
+    tmp_path: Path,
+) -> None:
+    # fujitsu backends advertise the -x/-y ranges of the *current* window
+    # (A4 height) and only extend them once --page-width/--page-height are
+    # raised, so the true limits are the page geometry maxima.
+    caps = {
+        "page-width": Capability(kind="range", minimum=0.0, maximum=221.121),
+        "page-height": Capability(kind="range", minimum=0.0, maximum=876.695),
+        "x": Capability(kind="range", minimum=0.0, maximum=215.872),
+        "y": Capability(kind="range", minimum=0.0, maximum=279.364),
+    }
+
+    command, _effective = build_scan_command(
+        _config(page_size="auto"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert command[command.index("-x") + 1] == "221.121"
+    assert command[command.index("-y") + 1] == "876.695"
+    assert command.index("--page-height") < command.index("-y")
+
+
+def test_build_scan_command_fixed_size_may_exceed_the_bare_axis_range(
+    tmp_path: Path,
+) -> None:
+    caps = {
+        "page-width": Capability(kind="range", minimum=0.0, maximum=221.121),
+        "page-height": Capability(kind="range", minimum=0.0, maximum=876.695),
+        "x": Capability(kind="range", minimum=0.0, maximum=215.872),
+        "y": Capability(kind="range", minimum=0.0, maximum=279.364),
+    }
+
+    command, _effective = build_scan_command(
+        _config(page_size="legal"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert command[command.index("--page-height") + 1] == "355.6"
+    assert command[command.index("-y") + 1] == "355.6"
+
+
 def test_build_scan_command_auto_size_omits_geometry_without_ranges(
     tmp_path: Path,
 ) -> None:

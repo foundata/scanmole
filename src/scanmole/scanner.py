@@ -63,6 +63,17 @@ class ScanResult:
     settings: EffectiveSettings
 
 
+def _window_cap(page: Capability | None, axis: Capability | None) -> Capability | None:
+    """Pick the capability that carries the device's true window limit.
+
+    Prefers the page geometry capability when it is a range with a known
+    maximum, falling back to the axis (``-x``/``-y``) capability otherwise.
+    """
+    if page is not None and page.kind == "range" and page.maximum is not None:
+        return page
+    return axis
+
+
 def build_scan_command(
     config: ScanConfig,
     device: str,
@@ -95,11 +106,17 @@ def build_scan_command(
         width, height = float("inf"), float("inf")
     else:
         width, height = size
+    # Some backends cap the advertised -x/-y ranges at the current window
+    # (fujitsu reports A4 height until --page-height is raised), so the scan
+    # area is clamped against the page geometry maxima where the backend has
+    # them; --page-width/--page-height are emitted first to extend the window.
+    width_cap = _window_cap(caps.get("page-width"), caps.get("x"))
+    height_cap = _window_cap(caps.get("page-height"), caps.get("y"))
     for option, value, capability in (
         ("--page-width", width, caps.get("page-width")),
         ("--page-height", height, caps.get("page-height")),
-        ("-x", width, caps.get("x")),
-        ("-y", height, caps.get("y")),
+        ("-x", width, width_cap if "x" in caps else None),
+        ("-y", height, height_cap if "y" in caps else None),
     ):
         if capability is None:
             continue

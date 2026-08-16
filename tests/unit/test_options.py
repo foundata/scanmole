@@ -108,7 +108,7 @@ def test_snap_resolution_none_without_option() -> None:
 # ---- fixture-pinned parsing and mapping (see tests/fixtures/scanimage-A/) ---
 
 
-def test_fujitsu_fixture_maps_the_proven_bash_settings() -> None:
+def test_fujitsu_fixture_maps_the_reference_settings() -> None:
     caps = _fixture_caps("fujitsu-scansnap-ix500.txt")
 
     assert map_source("adf-duplex", caps) == "ADF Duplex"
@@ -118,7 +118,7 @@ def test_fujitsu_fixture_maps_the_proven_bash_settings() -> None:
     assert caps["swdespeck"].kind == "range"
     assert caps["swdespeck"].maximum == 9
     assert caps["page-width"].kind == "range"
-    assert caps["page-width"].maximum == pytest.approx(224.846)
+    assert caps["page-width"].maximum == pytest.approx(221.121)
 
 
 def test_brother_fixture_maps_long_source_and_mode_strings() -> None:
