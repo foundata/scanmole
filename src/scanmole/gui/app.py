@@ -425,8 +425,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
         # One primary action: Scan is the only accented control, full width at
         # the bottom of the Scanner group (mockup rule); Cancel swaps in while
-        # a scan runs.
-        self._scan_btn = Gtk.Button(margin_top=6)
+        # a scan runs. The buttons are wrapped in list rows because a plain
+        # widget given to PreferencesGroup.add() lands below the card, not in
+        # it.
+        self._scan_btn = Gtk.Button(
+            margin_top=8, margin_bottom=8, margin_start=8, margin_end=8
+        )
         self._scan_btn.set_child(
             Adw.ButtonContent(
                 icon_name="media-playback-start-symbolic", label=_("Scan")
@@ -435,12 +439,24 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._scan_btn.add_css_class("suggested-action")
         self._scan_btn.add_css_class("pill")
         self._scan_btn.connect("clicked", self._on_scan_clicked)
-        self._scanner_grp.add(self._scan_btn)
-        self._cancel_btn = Gtk.Button(label=_("Cancel"), visible=False, margin_top=6)
+        self._scan_row = Gtk.ListBoxRow(
+            child=self._scan_btn, activatable=False, selectable=False
+        )
+        self._scanner_grp.add(self._scan_row)
+        self._cancel_btn = Gtk.Button(
+            label=_("Cancel"),
+            margin_top=8,
+            margin_bottom=8,
+            margin_start=8,
+            margin_end=8,
+        )
         self._cancel_btn.add_css_class("destructive-action")
         self._cancel_btn.add_css_class("pill")
         self._cancel_btn.connect("clicked", self._on_cancel_clicked)
-        self._scanner_grp.add(self._cancel_btn)
+        self._cancel_row = Gtk.ListBoxRow(
+            child=self._cancel_btn, activatable=False, selectable=False, visible=False
+        )
+        self._scanner_grp.add(self._cancel_row)
 
     def _build_output_group(self) -> None:
         """Build the Output group (folder, filename template)."""
@@ -1318,8 +1334,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _set_running(self, running: bool) -> None:
         """Toggle the form and the primary action for a running scan."""
-        self._scan_btn.set_visible(not running)
-        self._cancel_btn.set_visible(running)
+        self._scan_row.set_visible(not running)
+        self._cancel_row.set_visible(running)
         self._cancel_btn.set_sensitive(True)
         self._refresh_btn.set_sensitive(not running)
         for group in self._form_groups:
