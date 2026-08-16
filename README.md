@@ -11,6 +11,9 @@ Paperless-office document scanning for Linux: ADF duplex batches in, searchable 
 ## Table of contents<a id="toc"></a>
 
 - [Installation](#installation)
+  - [Debian/Ubuntu](#installation-debian)
+  - [Fedora](#installation-fedora)
+  - [Device-specific notes](#installation-devices)
 - [Usage](#usage)
   - [Command Line Interface (CLI)](#usage-cli)
   - [The GUI](#usage-gui)
@@ -19,7 +22,7 @@ Paperless-office document scanning for Linux: ADF duplex batches in, searchable 
 - [FAQ](#faq)
   - [What to do if my scanner is not listed?](#faq-scanner-not-listed)
   - [What to do if my scanner isn't working as expected?](#faq-scanner-quirks)
-  - [Why is my PDF so large?](#faq-file-size)
+  - [How can I optimize the PDF file size?](#faq-file-size)
   - [Why is a page missing from my PDF, or a blank page kept?](#faq-blank-pages)
 - [Contributing](#contributing)
 - [Licensing, copyright](#licensing-copyright)
@@ -29,23 +32,7 @@ Paperless-office document scanning for Linux: ADF duplex batches in, searchable 
 
 ## Installation<a id="installation"></a>
 
-ScanMole is a Python package installed into a [uv](https://docs.astral.sh/uv/)-managed virtualenv. Its runtime shells out to external tools, which come from distribution packages. On Fedora:
-
-```sh
-sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf \
-                 tesseract tesseract-langpack-deu \
-                 python3-gobject gtk4 libadwaita
-```
-
-On Debian 13+ and Ubuntu 24.04+, only the package names differ (older releases lack the required Python ≥ 3.12):
-
-```sh
-sudo apt install sane-utils sane-airscan img2pdf ocrmypdf \
-                 tesseract-ocr tesseract-ocr-deu \
-                 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
-```
-
-The ScanMole package itself is installed via uv, not the system package manager:
+ScanMole is a Python package installed into a [uv](https://docs.astral.sh/uv/)-managed virtualenv:
 
 ```sh
 uv venv --system-site-packages # venv that can see the distribution's PyGObject
@@ -54,7 +41,60 @@ uv sync                        # installs the scanmole and scanmole-gui commands
 
 The `--system-site-packages` flag matters for the GUI only; the CLI is pure stdlib and works in any venv.
 
-Brother devices: modern ones (e.g. the Brother ADS-4550W) work driverless via `sane-airscan` (eSCL) and need no Brother driver. Older ones need Brother's `brscan4`/`brscan5` RPMs. ScanSnap devices (e.g. the ScanSnap iX500; formerly sold under the Fujitsu brand, Ricoh products today) use the stock SANE `fujitsu` backend over USB.
+ScanMole's runtime shells out to external tools, which come from distribution packages. Install them as follows:
+
+
+### Debian/Ubuntu<a id="installation-debian"></a>
+
+Only Debian 13+ and Ubuntu 24.04+ are supported (older releases lack the required Python ≥ 3.12):
+
+```sh
+sudo apt install sane-utils sane-airscan img2pdf ocrmypdf \
+                 tesseract-ocr tesseract-ocr-deu jbig2enc \
+                 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+```
+
+
+### Fedora<a id="installation-fedora"></a>
+
+```sh
+sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf \
+                 tesseract tesseract-langpack-deu \
+                 python3-gobject gtk4 libadwaita
+```
+
+For smaller PDFs, it is highly recommended to also install `jbig2enc` (ocrmypdf picks it up automatically). Fedora does not package it (last checked: Fedora 44, 2026-Q3; a leftover of the long-expired JBIG2 encoding patents), so build it from source:
+
+```sh
+sudo dnf install gcc-c++ automake libtool leptonica-devel zlib-devel
+git clone https://github.com/agl/jbig2enc.git /tmp/jbig2enc
+cd /tmp/jbig2enc
+./autogen.sh && ./configure && make
+sudo make install   # installs the jbig2 binary under /usr/local/bin
+```
+
+Updating works the same way; the leading line reuses the clone when it still exists and starts fresh otherwise (`/tmp` does not survive a reboot):
+
+```sh
+git -C /tmp/jbig2enc pull || git clone https://github.com/agl/jbig2enc.git /tmp/jbig2enc
+cd /tmp/jbig2enc
+./autogen.sh && ./configure && make
+sudo make install
+```
+
+
+### Device-specific notes<a id="installation-devices"></a>
+
+#### Brother<a id="installation-brother"></a>
+
+Modern Brother devices (e.g. the Brother ADS-4550W) work driverless via `sane-airscan` (eSCL) and need no additional packages or configuration beyond the dependencies above.
+
+Older devices without eSCL support (e.g. the Brother ADS-2600W) need Brother's proprietary `brscan4`/`brscan5` driver packages from the [Brother support site](https://support.brother.com/g/s/id/linux/en/index.html); network devices must additionally be registered with `brsaneconfig4`/`brsaneconfig5`.
+
+
+#### ScanSnap<a id="installation-scansnap"></a>
+
+ScanSnap devices (e.g. the ScanSnap iX500; formerly sold under the Fujitsu brand, Ricoh products today) use the stock SANE `fujitsu` backend over USB. They need no additional packages or configuration beyond the dependencies above.
 
 
 ## Usage<a id="usage"></a>
@@ -152,9 +192,15 @@ If a USB scanner does not show up in `scanimage -L`:
 See [`CONTRIBUTING.md: Report scanner problems and device quirks`](CONTRIBUTING.md#issues-scanner-quirks).
 
 
-### Why is my PDF so large?<a id="faq-file-size"></a>
+### How can I optimize the PDF file size?<a id="faq-file-size"></a>
 
-The defaults produce small files: 1-bit lineart at 300 dpi compresses losslessly to roughly 100 KB per A4 text page; `-r 200` halves that again where quality matters less. Sizes explode with `--mode gray` or `--mode color` (8 or 24 bits per pixel instead of 1) and with high resolutions (`-r`; data grows quadratically with dpi), so use those only when the originals need them. Keep `--optimize` at its default of `1` or raise it. Devices without a native 1-bit mode (eSCL scanners offer only Color and Gray) need no special handling: ScanMole converts their gray output to 1-bit in software automatically. Installing `jbig2enc` shrinks 1-bit pages even further; ocrmypdf picks it up automatically when present.
+The defaults are already tuned for small files: 1-bit black-and-white (lineart) at 300 dpi compresses losslessly to roughly 100 KB per A4 text page. Devices without a native 1-bit mode need no special handling; ScanMole converts their gray output in software automatically.
+
+To keep files small:
+
+1. Stay with the 300 dpi black-and-white default for usual documents. Use `--mode gray` or `--mode color` only when a document really needs it (photos, stamps, faint or colored originals): they store 8 or 24 bits per pixel instead of 1, and sizes explode. The same goes for resolutions above 300 dpi, since data grows quadratically with dpi.
+2. Use `-r 200` for documents where quality matters less; it roughly halves the data. Where no text layer is needed either, `--no-ocr` skips OCR entirely.
+3. Highly recommended: make sure `jbig2enc` is installed. ocrmypdf detects it automatically during its optimization pass and recodes 1-bit pages losslessly to a fraction of their size. `command -v jbig2` shows whether it is present; if it prints nothing, follow the [installation instructions](#installation).
 
 
 ### Why is a page missing from my PDF, or a blank page kept?<a id="faq-blank-pages"></a>
