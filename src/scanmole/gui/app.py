@@ -662,8 +662,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         name_box.append(self._name_entry)
         hint = Gtk.Label(
             label=_(
-                "Placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} · "
-                "{NN} (auto-number) · {preset} {device}"
+                "Placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} {device}\n"
+                "{N} (auto-no., 0-padded, repeatable)"
             ),
             xalign=1.0,
             wrap=True,
@@ -1181,13 +1181,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _update_name_preview(self, *_args: object) -> None:
         """Render the template with the current form values as an example."""
-        preset = f"{self._mode_row.value()}-{self._current_resolution()}"
         example = expand_template(
             self._current_template(),
             when=datetime.now().astimezone(),
             counter=1,
             device=self._selected_device() or "device",
-            preset=preset,
         )
         self._name_preview.set_text(_("Preview: %(name)s") % {"name": example})
 

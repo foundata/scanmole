@@ -17,9 +17,7 @@ WHEN = datetime(2026, 8, 15, 20, 26, 7)
 
 
 def _expand(template: str, counter: int = 1, device: str | None = "test:0") -> str:
-    return expand_template(
-        template, when=WHEN, counter=counter, device=device, preset="lineart-300"
-    )
+    return expand_template(template, when=WHEN, counter=counter, device=device)
 
 
 def test_default_template_expands_to_dated_counter_name() -> None:
@@ -35,6 +33,7 @@ def test_adjacent_tokens_expand() -> None:
 
 
 def test_counter_width_follows_the_number_of_ns() -> None:
+    assert _expand("scan_{N}.pdf", counter=7) == "scan_7.pdf"
     assert _expand("scan_{NN}.pdf", counter=7) == "scan_07.pdf"
     assert _expand("scan_{NNN}.pdf", counter=7) == "scan_007.pdf"
     assert _expand("scan_{NN}.pdf", counter=123) == "scan_123.pdf"
@@ -44,10 +43,6 @@ def test_unbraced_tokens_stay_literal() -> None:
     # Only braced placeholders expand; plain text is always safe.
     assert _expand("YYYY-MM-DD_scan_NNN.pdf") == "YYYY-MM-DD_scan_NNN.pdf"
     assert _expand("Kasse_Sommer_SCANNER.pdf") == "Kasse_Sommer_SCANNER.pdf"
-
-
-def test_preset_placeholder_expands_to_the_settings_slug() -> None:
-    assert _expand("{preset}_{NN}.pdf") == "lineart-300_01.pdf"
 
 
 def test_device_placeholder_is_sanitized() -> None:
@@ -62,10 +57,11 @@ def test_device_placeholder_without_a_device_raises() -> None:
 
 
 def test_unknown_braced_tokens_stay_literal() -> None:
-    assert _expand("{foo}_{N}_{NN}.pdf") == "{foo}_{N}_01.pdf"
+    assert _expand("{foo}_{NX}_{NN}.pdf") == "{foo}_{NX}_01.pdf"
 
 
 def test_has_counter_matches_braced_counters_only() -> None:
+    assert has_counter("scan_{N}.pdf") is True
     assert has_counter("scan_{NN}.pdf") is True
     assert has_counter("{YYYY}_{NNN}.pdf") is True
     assert has_counter("scan_NN.pdf") is False

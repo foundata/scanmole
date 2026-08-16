@@ -69,10 +69,10 @@ def test_resolve_output_default_template_claims_the_next_free_number(
 
 
 def test_resolve_output_expands_templates_in_outbase(tmp_path: Path) -> None:
-    resolved = _resolve_output(_parse([str(tmp_path / "{YYYY}-{MM}_{preset}_{NN}")]))
+    resolved = _resolve_output(_parse([str(tmp_path / "{YYYY}-{MM}_scan_{NN}")]))
 
     assert resolved.parent == tmp_path
-    assert resolved.name.endswith("_lineart-200_01.pdf")
+    assert resolved.name.endswith("_scan_01.pdf")
     assert resolved.name[:4].isdigit()
 
 

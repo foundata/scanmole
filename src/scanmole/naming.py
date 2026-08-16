@@ -14,8 +14,8 @@ from datetime import datetime
 DEFAULT_OUTPUT_TEMPLATE = "{YYYY}-{MM}-{DD}_scan_{NNN}.pdf"
 """The output name used when neither ``-o`` nor ``OUTBASE`` is given."""
 
-_TOKEN = re.compile(r"\{(YYYY|MM|DD|hh|mm|ss|N{2,}|preset|device)\}")
-_COUNTER = re.compile(r"\{N{2,}\}")
+_TOKEN = re.compile(r"\{(YYYY|MM|DD|hh|mm|ss|N+|device)\}")
+_COUNTER = re.compile(r"\{N+\}")
 
 _STRFTIME = {
     "YYYY": "%Y",
@@ -34,7 +34,7 @@ def sanitize_component(text: str) -> str:
 
 
 def has_counter(template: str) -> bool:
-    """Return whether ``template`` contains a ``{NN}``/``{NNN}`` counter."""
+    """Return whether ``template`` contains a ``{N}``/``{NN}``/... counter."""
     return _COUNTER.search(template) is not None
 
 
@@ -44,22 +44,19 @@ def expand_template(
     when: datetime,
     counter: int,
     device: str | None,
-    preset: str,
 ) -> str:
     """Expand all placeholders in ``template``.
 
     Args:
         template: The file name or path containing placeholders. ``{YYYY}``,
             ``{MM}``, ``{DD}`` expand to the date, ``{hh}``, ``{mm}``,
-            ``{ss}`` to the time, ``{NN}``/``{NNN}`` (any run of two or more
-            ``N``) to the zero-padded ``counter``, ``{preset}`` to the
-            sanitized ``preset`` slug and ``{device}`` to the sanitized
-            ``device`` id. Unbraced tokens and unknown braced tokens stay
-            literal.
+            ``{ss}`` to the time, ``{N}``/``{NN}``/... (any run of ``N``) to
+            the ``counter`` zero-padded to the number of ``N``, and
+            ``{device}`` to the sanitized ``device`` id. Unbraced tokens and
+            unknown braced tokens stay literal.
         when: Timestamp the date and time tokens are rendered from.
-        counter: Value for the ``{NN}``/``{NNN}`` auto-increment tokens.
+        counter: Value for the ``{N}``... auto-increment tokens.
         device: SANE device id for ``{device}``.
-        preset: Slug describing the scan settings for ``{preset}``.
 
     Raises:
         ValueError: If ``template`` uses ``{device}`` but no device is known.
@@ -71,8 +68,6 @@ def expand_template(
             if device is None:
                 raise ValueError("the template uses {device} but no device is known")
             return sanitize_component(device)
-        if token == "preset":
-            return sanitize_component(preset)
         if token.startswith("N"):
             return str(counter).zfill(len(token))
         return when.strftime(_STRFTIME[token])

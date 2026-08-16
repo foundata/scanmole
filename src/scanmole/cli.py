@@ -90,14 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
             "  scanmole                       scan ADF duplex -> "
             "./2026-08-15_scan_001.pdf\n"
             "  scanmole invoice               -> ./invoice.pdf\n"
-            "  scanmole '{YYYY}-{MM}_{preset}_{NN}'   -> "
-            "./2026-08_lineart-200_01.pdf\n"
+            "  scanmole '{YYYY}-{MM}_scan_{NN}'       -> ./2026-08_scan_01.pdf\n"
             "  scanmole --source flatbed --mode gray -r 150 --no-ocr -o test.pdf\n"
             "  scanmole --from-images p1.png p2.png -o doc.pdf\n"
             "  scanmole --list-devices --json\n"
             "\n"
             "filename placeholders: {YYYY} {MM} {DD} (date), {hh} {mm} {ss} "
-            "(time), {NN}/{NNN} (auto-number), {preset}, {device}"
+            "(time), {N}/{NN}/... (zero-padded auto-number), {device}"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -337,14 +336,11 @@ def _resolve_output(args: argparse.Namespace) -> Path:
                 "--from-images has no device"
             )
         device = pick_default_device()
-    preset = f"{args.mode}-{args.resolution}"
     when = datetime.now().astimezone()
 
     def expand(counter: int) -> Path:
         try:
-            name = expand_template(
-                template, when=when, counter=counter, device=device, preset=preset
-            )
+            name = expand_template(template, when=when, counter=counter, device=device)
         except ValueError as exc:  # unreachable: {device} was resolved above
             raise InputError(str(exc)) from exc
         return _as_pdf_path(name)
