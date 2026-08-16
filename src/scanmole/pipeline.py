@@ -137,7 +137,6 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
     try:
         events.emit(
             "start",
-            protocol=1,
             device=device,
             source=config.source,
             mode=config.mode,

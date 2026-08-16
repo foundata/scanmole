@@ -83,7 +83,8 @@ def test_flatbed_scan_produces_a_pdf_and_the_event_stream(
     assert output.is_file()
     events = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
     kinds = [event["event"] for event in events]
-    assert kinds[0] == "start"
+    assert kinds[0] == "hello"
+    assert kinds[1] == "start"
     assert "settings" in kinds
     assert "page" in kinds
     assert kinds[-1] == "done"

@@ -83,7 +83,7 @@ def test_from_images_drops_blank_and_builds_pdf(tmp_path: Path) -> None:
     scan_done = next(event for event in events if event["event"] == "scan_done")
     assert scan_done == {"event": "scan_done", "total": 2, "kept": 1, "blanks": 1}
     start = next(event for event in events if event["event"] == "start")
-    assert start["protocol"] == 1
+    assert "protocol" not in start  # versioning lives in the CLI's hello event
     assert start["source"] == "adf-duplex"
     done = next(event for event in events if event["event"] == "done")
     assert done["pages"] == 1

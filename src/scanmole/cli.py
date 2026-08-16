@@ -433,6 +433,9 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(verbose=args.verbose)
     _install_sigterm_handler()
     events = EventWriter(enabled=args.json)
+    # The contract guarantees hello as the first event of every run that emits
+    # events; consumers decide compatibility from its version (SemVer major).
+    events.emit("hello", version=__version__)
     output: Path | None = None
     try:
         if args.list_devices:

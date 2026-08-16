@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from scanmole import __version__
 from scanmole.cli import _build_config, _resolve_output, _Terminated, build_parser, main
 from scanmole.config import ScanConfig
 from scanmole.errors import InputError, ProcessingError
@@ -255,6 +256,40 @@ def test_from_images_ignores_the_device_environment_variable(
     )
 
     assert config.device is None
+
+
+def test_json_runs_emit_hello_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("scanmole.cli.run_pipeline", lambda config, events: 0)
+
+    assert main(["--json", "-o", str(tmp_path / "a.pdf")]) == 0
+
+    first = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert first == {"event": "hello", "version": __version__}
+
+
+def test_json_error_runs_still_open_with_hello(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # -o plus a positional is an input error; even then the stream must start
+    # with hello so consumers can classify the error against a known version.
+    code = main(["--json", "-o", str(tmp_path / "a.pdf"), "base"])
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert code == 2
+    assert lines[0]["event"] == "hello"
+    assert lines[-1]["event"] == "error"
+
+
+def test_runs_without_json_stay_silent_on_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("scanmole.cli.run_pipeline", lambda config, events: 0)
+
+    assert main(["-o", str(tmp_path / "a.pdf")]) == 0
+
+    assert capsys.readouterr().out == ""
 
 
 def test_main_maps_domain_errors_to_their_exit_code(

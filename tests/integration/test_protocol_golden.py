@@ -1,22 +1,19 @@
 """Golden test freezing the ``--json`` protocol (the CLI contract).
 
-Runs the pipeline on fixed inputs and compares the normalized event stream
-against a committed transcript. A failing golden test is a compatibility
-break for every frontend, not a test to update casually.
+Runs the real CLI entry point on fixed inputs and compares the normalized
+event stream against a committed transcript. A failing golden test is a
+compatibility break for every frontend, not a test to update casually.
 """
 
 from __future__ import annotations
 
-import io
 import json
 import shutil
 from pathlib import Path
 
 import pytest
 
-from scanmole.config import ScanConfig
-from scanmole.events import EventWriter
-from scanmole.pipeline import run_pipeline
+from scanmole.cli import main
 
 pytestmark = pytest.mark.integration
 
@@ -41,42 +38,44 @@ def _normalize(event: dict[str, object]) -> dict[str, object]:
     if "seconds" in normalized:
         assert isinstance(normalized["seconds"], int | float)
         normalized["seconds"] = "<SECONDS>"
+    if "version" in normalized:
+        assert isinstance(normalized["version"], str)
+        assert normalized["version"]
+        normalized["version"] = "<VERSION>"
     return normalized
 
 
 @_NEEDS_IMG2PDF
-def test_json_stream_matches_the_golden_transcript(tmp_path: Path) -> None:
+def test_json_stream_matches_the_golden_transcript(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     gray = tmp_path / "page1.pgm"
     gray.write_bytes(b"P5\n4 4\n255\n" + bytes([120] * 16))
     white = tmp_path / "page2.pgm"
     white.write_bytes(b"P5\n4 4\n255\n" + bytes([255] * 16))
-    stream = io.StringIO()
-    config = ScanConfig(
-        device=None,
-        source="adf-duplex",
-        mode="lineart",
-        resolution=300,
-        page_size="a4",
-        despeckle=1,
-        deskew=False,
-        crop=False,
-        ocr=False,
-        lang="deu",
-        rotate_pages=True,
-        optimize=1,
-        pdfa=True,
-        blank_threshold=0.995,
-        keep_blanks=False,
-        from_images=(gray, white),
-        keep_images=None,
-        output=tmp_path / "result.pdf",
+
+    exit_code = main(
+        [
+            "--json",
+            "--from-images",
+            str(gray),
+            str(white),
+            "--no-ocr",
+            "-r",
+            "300",
+            "--page-size",
+            "a4",
+            "-l",
+            "deu",
+            "-o",
+            str(tmp_path / "result.pdf"),
+        ]
     )
 
-    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
-
+    assert exit_code == 0
     got = [
         json.dumps(_normalize(json.loads(line)), sort_keys=True)
-        for line in stream.getvalue().splitlines()
+        for line in capsys.readouterr().out.splitlines()
     ]
     want = [
         json.dumps(json.loads(line), sort_keys=True)
