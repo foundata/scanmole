@@ -56,7 +56,14 @@ SOURCES = (
     (_("ADF Duplex"), "adf-duplex"),
     (_("ADF Back"), "adf-back"),
 )
+SOURCE_TOOLTIPS = (
+    _("Single page from the flatbed glass"),
+    _("Automatic Document Feeder — front sides only"),
+    _("Automatic Document Feeder — both sides of every sheet"),
+    _("Automatic Document Feeder — back sides only"),
+)
 MODES = ((_("B/W"), "lineart"), (_("Gray"), "gray"), (_("Color"), "color"))
+MODE_TOOLTIPS = (_("Black and white (1-bit)"), "", "")
 RESOLUTION_PRESETS = (150, 200, 300, 600)
 RESOLUTION_MINIMUM = 50
 RESOLUTION_MAXIMUM = 1200
@@ -223,15 +230,23 @@ class ChoiceRow:
         title: str,
         items: tuple[tuple[str, str], ...],
         on_change: Callable[[], None] | None = None,
+        tooltips: tuple[str, ...] | None = None,
     ) -> None:
-        """Build the row inside ``group``."""
+        """Build the row inside ``group``.
+
+        ``tooltips`` explains the items one by one (empty string = none);
+        the dropdown fallback has no per-item tooltips.
+        """
         self._items = items
         self._on_change = on_change
         if hasattr(Adw, "ToggleGroup"):
             self.row: Adw.ActionRow = Adw.ActionRow(title=title)
             self._toggles = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
-            for label, _value in items:
-                self._toggles.add(Adw.Toggle(label=label))
+            for index, (label, _value) in enumerate(items):
+                toggle = Adw.Toggle(label=label)
+                if tooltips is not None and tooltips[index]:
+                    toggle.set_tooltip(tooltips[index])
+                self._toggles.add(toggle)
             self._toggles.connect("notify::active", self._changed)
             self.row.add_suffix(self._toggles)
             self._combo: Adw.ComboRow | None = None
@@ -413,11 +428,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _apply_layout(self, *, wide: bool) -> None:
         """Arrange the form sections in one column or a two-column grid."""
         grid_cells = (
-            (self._scanner_grp, 0, 0),
-            (self._out_grp, 1, 0),
-            (self._doc_grp, 0, 1),
-            (self._proc_grp, 1, 1),
-            (self._log_area, 1, 2),
+            (self._scanner_grp, 0, 0, 1),
+            (self._out_grp, 1, 0, 1),
+            (self._doc_grp, 0, 1, 1),
+            (self._proc_grp, 1, 1, 1),
+            (self._log_area, 0, 2, 2),  # spans both columns
         )
         sections_narrow = (
             self._scanner_grp,
@@ -431,8 +446,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             if parent is not None:
                 parent.remove(section)
         if wide:
-            for section, column, row in grid_cells:
-                self._grid.attach(section, column, row, 1, 1)
+            for section, column, row, width in grid_cells:
+                self._grid.attach(section, column, row, width, 1)
         else:
             for section in sections_narrow:
                 self._narrow_box.append(section)
@@ -464,7 +479,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._refresh_btn.connect("clicked", self._refresh_devices)
         self._device_row.add_suffix(self._refresh_btn)
         self._scanner_grp.add(self._device_row)
-        self._source_row = ChoiceRow(self._scanner_grp, _("Source"), SOURCES)
+        self._source_row = ChoiceRow(
+            self._scanner_grp, _("Source"), SOURCES, tooltips=SOURCE_TOOLTIPS
+        )
 
         # One primary action: Scan is the only accented control, full width at
         # the bottom of the Scanner group (mockup rule); Cancel swaps in while
@@ -523,7 +540,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # the top instead of centering over the whole stack.
         name_row_box = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL,
-            spacing=12,
+            spacing=17,
             margin_start=12,
             margin_end=12,
         )
@@ -578,11 +595,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._out_grp.add(self._name_row)
 
     def _build_document_group(self) -> None:
-        """Build the Document group (color mode, resolution, page size)."""
+        """Build the Document group (color mode, page size, resolution)."""
         self._doc_grp = Adw.PreferencesGroup(title=_("Document"))
         self._mode_row = ChoiceRow(
-            self._doc_grp, _("Color mode"), MODES, self._on_document_changed
+            self._doc_grp,
+            _("Color mode"),
+            MODES,
+            self._on_document_changed,
+            tooltips=MODE_TOOLTIPS,
         )
+        self._size_row = Adw.ComboRow(title=_("Page size"))
+        self._size_row.set_model(
+            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
+        )
+        self._doc_grp.add(self._size_row)
 
         # Hybrid resolution control, composed as entry / unit / stepper so
         # the unit sits between the number and the buttons (GtkSpinButton
@@ -649,12 +675,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._res_row.add_suffix(res_box)
         self._doc_grp.add(self._res_row)
 
-        self._size_row = Adw.ComboRow(title=_("Page size"))
-        self._size_row.set_model(
-            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
-        )
-        self._doc_grp.add(self._size_row)
-
     def _build_processing_group(self) -> None:
         """Build the Processing group (blank pages, OCR, language)."""
         self._proc_grp = Adw.PreferencesGroup(title=_("Processing"))
@@ -672,6 +692,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._ocr_row.connect("notify::active", self._on_ocr_toggled)
         self._proc_grp.add(self._ocr_row)
         self._lang_row = Adw.ComboRow(title=_("OCR Language"))
+        # Same 20-character default-factory cap as the device row: without a
+        # plain-label factory, "German + English (deu+eng)" gets ellipsized.
+        self._lang_row.set_factory(plain_string_factory())
         self._lang_row.set_model(
             Gtk.StringList.new([label for label, _value in self._languages])
         )
@@ -694,7 +717,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         log_header.append(copy_btn)
         self._log_area.append(log_header)
         log_scroller = Gtk.ScrolledWindow(
-            min_content_height=170, has_frame=True, visible=False
+            min_content_height=210, has_frame=True, visible=False
         )
         self._log_view = Gtk.TextView(
             editable=False,
@@ -724,7 +747,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             spacing=10,
             margin_top=8,
             margin_bottom=8,
-            margin_start=12,
+            margin_start=18,
             margin_end=12,
         )
         self._status_spinner = Gtk.Spinner(visible=False)
