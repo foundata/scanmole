@@ -344,11 +344,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._scanmole = find_scanmole()
         self._settings = load_settings()
 
-        # Restore the remembered window geometry; the default width starts in
-        # the two-column layout (above the breakpoint).
+        # Restore the remembered window geometry; the default starts in the
+        # single-column layout.
         self.set_default_size(
-            as_int(self._settings.get("window_width"), 960),
-            as_int(self._settings.get("window_height"), 730),
+            as_int(self._settings.get("window_width"), 650),
+            as_int(self._settings.get("window_height"), 810),
         )
         if bool(self._settings.get("window_maximized")):
             self.maximize()
