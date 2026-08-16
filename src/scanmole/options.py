@@ -80,15 +80,23 @@ def _strip_default_marker(spec: str) -> str:
     return spec
 
 
-def probe_capabilities(device: str) -> dict[str, Capability]:
+def probe_capabilities(device: str, source: str | None = None) -> dict[str, Capability]:
     """Parse ``scanimage -d DEV -A`` into a capability per option name.
+
+    Some backends advertise option constraints relative to the currently
+    selected source (eSCL devices report a different scan window per source),
+    so ``source`` applies a backend source name before the listing is read.
 
     Raises:
         DeviceError: If the device cannot be queried.
     """
+    command = ["scanimage", "-d", device]
+    if source is not None:
+        command += ["--source", source]
+    command.append("-A")
     try:
         result = run_command(
-            ["scanimage", "-d", device, "-A"],
+            command,
             timeout_seconds=PROBE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:

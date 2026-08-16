@@ -7,16 +7,16 @@ All options specific to device `airscan:e0:Brother ADS-4550W (USB)':
         Selects the scan mode (e.g., lineart, monochrome, or color).
     --scan-intent *unset*|Document|Text and Graphic|Photo|Preview [*unset*]
         Optimize scan for Text/Photo/etc.
-    --source ADF|ADF Duplex [ADF]
+    --source ADF|ADF Duplex [ADF Duplex]
         Selects the scan source (such as a document-feeder).
   Geometry:
     -l 0..215.9mm [0]
         Top-left x position of scan area.
-    -t 0..3098.8mm [0]
+    -t 0..355.6mm [0]
         Top-left y position of scan area.
     -x 0..215.9mm [215.9]
         Width of scan-area.
-    -y 0..3098.8mm [3098.8]
+    -y 0..355.6mm [355.6]
         Height of scan-area.
   Enhancement:
     --brightness -100..100% (in steps of 1) [0]

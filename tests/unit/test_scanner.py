@@ -214,7 +214,9 @@ def test_scan_to_files_returns_the_effective_settings(
 ) -> None:
     (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
     caps = {"resolution": Capability(kind="enum", choices=["150", "600"])}
-    monkeypatch.setattr("scanmole.scanner.probe_capabilities", lambda device: caps)
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, source=None: caps
+    )
     monkeypatch.setattr(
         "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
     )
@@ -230,12 +232,41 @@ def test_scan_to_files_returns_the_effective_settings(
     assert result.settings.resolution == 150
 
 
+def test_scan_to_files_reprobes_with_the_mapped_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    caps = {"source": Capability(kind="enum", choices=["ADF", "ADF Duplex"])}
+    probes: list[str | None] = []
+
+    def fake_probe(device: str, source: str | None = None) -> dict[str, Capability]:
+        probes.append(source)
+        return caps
+
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+    monkeypatch.setattr(
+        "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
+    )
+
+    scan_to_files(
+        _config(),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    assert probes == [None, "ADF Duplex"]
+
+
 def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for name in ("page_0002.pnm", "page_0001.pnm"):
         (tmp_path / name).write_bytes(b"P4\n1 1\n\x00")
-    monkeypatch.setattr("scanmole.scanner.probe_capabilities", lambda device: {})
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, source=None: {}
+    )
     monkeypatch.setattr(
         "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
     )
@@ -252,7 +283,9 @@ def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
 def test_scan_to_files_raises_when_nothing_was_scanned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("scanmole.scanner.probe_capabilities", lambda device: {})
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, source=None: {}
+    )
     monkeypatch.setattr(
         "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
     )
@@ -266,7 +299,9 @@ def test_scan_to_files_raises_when_nothing_was_scanned(
 def test_scan_to_files_reports_scan_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("scanmole.scanner.probe_capabilities", lambda device: {})
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, source=None: {}
+    )
     monkeypatch.setattr(
         "scanmole.scanner.run_scanimage",
         lambda command, on_page: (1, "scanimage: sane_start failed"),

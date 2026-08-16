@@ -255,6 +255,13 @@ def scan_to_files(
             (keep acquired pages, name the path) applies.
     """
     caps = probe_capabilities(device)
+    source = map_source(config.source, caps)
+    if source is not None:
+        # Option constraints can depend on the selected source (eSCL devices
+        # advertise a different scan window per source: the ADS-4550W reports
+        # a 3098.8 mm height for simplex ADF but 355.6 mm for ADF Duplex), so
+        # re-read the listing with the mapped source applied.
+        caps = probe_capabilities(device, source=source)
     pattern = str(work_dir / "page_%04d.pnm")
     command, effective = build_scan_command(config, device, caps, pattern)
     events.emit(

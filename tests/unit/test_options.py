@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from scanmole.options import (
     map_source,
     parse_capabilities,
     parse_page_size,
+    probe_capabilities,
     snap_resolution,
 )
 
@@ -148,6 +150,38 @@ def test_airscan_fixture_degrades_lineart_to_gray() -> None:
     assert map_mode("lineart", caps) == "Gray"
     assert map_source("adf-duplex", caps) == "ADF Duplex"
     assert snap_resolution(300, caps) == 300
+
+
+def test_airscan_fixture_windows_differ_per_source() -> None:
+    # eSCL devices advertise the scan window of the *selected* source; the
+    # bare listing (simplex ADF) and the duplex listing disagree wildly, so
+    # geometry must come from a probe with the mapped source applied.
+    bare = _fixture_caps("sane-airscan-escl.txt")
+    duplex = _fixture_caps("sane-airscan-escl-adf-duplex.txt")
+
+    assert bare["y"].maximum == pytest.approx(3098.8)
+    assert duplex["y"].maximum == pytest.approx(355.6)
+    assert map_source("adf-duplex", duplex) == "ADF Duplex"
+
+
+def test_probe_capabilities_applies_the_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], timeout_seconds: float
+    ) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("scanmole.options.run_command", fake_run)
+
+    probe_capabilities("test:0", source="ADF Duplex")
+    probe_capabilities("test:0")
+
+    assert seen[0] == ["scanimage", "-d", "test:0", "--source", "ADF Duplex", "-A"]
+    assert seen[1] == ["scanimage", "-d", "test:0", "-A"]
 
 
 def test_sane_test_backend_fixture_has_no_duplex_source() -> None:
