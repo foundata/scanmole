@@ -125,6 +125,14 @@ def build_scan_command(
         ):
             continue  # no known maximum: let the backend's default window apply
         command += [option, format_mm(value, capability, option)]
+    if size is None and "ald" in caps:
+        # Auto page size: let the scanner detect the paper's lower edge, so
+        # frames come back at true paper length instead of the padded window.
+        # Essential for native lineart, where the padding below the paper is
+        # bit-identical to the page's own white margin and software cropping
+        # cannot tell them apart (verified on the iX100: 297 mm instead of
+        # an 895 mm frame).
+        command.append("--ald=yes")
 
     if config.despeckle > 0 and "swdespeck" in caps:
         command.append(f"--swdespeck={config.despeckle}")

@@ -205,8 +205,10 @@ def autocrop_pnm(path: Path, trim_px: int) -> bool:
     blank drop). Printed content never sits at the physical paper edge, so
     the shave is safe.
 
-    Already-1-bit (``P4``) and non-PNM files are left alone: devices that
-    scan real lineart size their pages in hardware.
+    Already-1-bit (``P4``) and non-PNM files are left alone: 1-bit padding is
+    indistinguishable from the page's own white margin, so native-lineart
+    devices rely on hardware lower-edge detection instead (``--ald``, see the
+    scan command assembly).
 
     Returns:
         Whether the file was rewritten. ``False`` also covers "no backing

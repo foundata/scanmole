@@ -167,6 +167,26 @@ def test_build_scan_command_auto_size_clamps_the_area_to_the_page_limits(
     assert command.index("--page-height") < command.index("-y")
 
 
+def test_build_scan_command_auto_size_enables_lower_edge_detection(
+    tmp_path: Path,
+) -> None:
+    caps = {"ald": Capability(kind="bool")}
+
+    auto_command, _ = build_scan_command(
+        _config(page_size="auto"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+    fixed_command, _ = build_scan_command(
+        _config(page_size="a4"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+    no_ald_command, _ = build_scan_command(
+        _config(page_size="auto"), "test:0", {}, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert "--ald=yes" in auto_command
+    assert "--ald=yes" not in fixed_command
+    assert "--ald=yes" not in no_ald_command
+
+
 def test_build_scan_command_fixed_size_may_exceed_the_bare_axis_range(
     tmp_path: Path,
 ) -> None:

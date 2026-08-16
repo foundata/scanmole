@@ -225,11 +225,11 @@ For the Fujitsu iX100 (portable single-side unit: native lineart, but no duplex)
 ```bash
 scanimage -d 'fujitsu:ScanSnap iX100:…' --source 'ADF Front' --mode Lineart \
           --resolution 300 --page-width 219.428 --page-height 895.362 \
-          -x 219.428 -y 895.362 --swdespeck=1 \
+          -x 219.428 -y 895.362 --ald=yes --swdespeck=1 \
           --batch=<workdir>/page_%04d.pnm --batch-print
 ```
 
-(`--page-width`/`--page-height` come first: on fujitsu backends they extend the `-x`/`-y` ranges, see [automatic page size](#pipeline-autosize).)
+(`--page-width`/`--page-height` come first: on fujitsu backends they extend the `-x`/`-y` ranges. `--ald=yes` makes the scanner detect the paper's lower edge, so frames come back at true paper length; see [automatic page size](#pipeline-autosize).)
 
 For the Brother ADS-4550W (sane-airscan/eSCL: duplex ADF, but only Color and Gray, no vendor extras), the same default request keeps duplex and degrades the mode to gray; the pipeline restores the requested 1-bit output in software (see [software lineart fallback](#pipeline-lineart)):
 
@@ -290,6 +290,8 @@ Office intake is overwhelmingly machine-printed text. The default is 1-bit linea
 Mechanics: acquisition requests the device's maximum window. The maximum comes from the probed `--page-width`/`--page-height` ranges where the backend has them, falling back to the `-x`/`-y` ranges otherwise; the distinction matters on sheet-fed fujitsu devices, whose `-A` output caps the `-y` range at the current (A4) window and only extends it once `--page-height` is raised, so clamping against `-y` alone would silently cut legal paper and long receipts at 297 mm. The capability probe must also be read with the mapped `--source` applied, because eSCL/airscan devices advertise different geometry ranges per source (the ADS-4550W reports a 3098.8 mm window height for simplex ADF but 355.6 mm for ADF Duplex). Per page, before the [lineart fallback](#pipeline-lineart) and [blank detection](#pipeline-blank), the pipeline walks the column and row mean-brightness profiles inward from each edge until they cross the paper cutoff (0.7 of full brightness; ADF backing and end-of-paper padding measure ~0.35 to 0.55 on real hardware, paper >0.9), then crops the PNM in place to that box, shaved inward by ~1/3 mm so half-gray transition pixels cannot survive as a dark rim. `img2pdf` then sizes every PDF page from its own pixel dimensions, so each page gets its true paper size, like the ScanSnap reference output. Cost: well under 100 ms per A4/300 dpi page, stdlib only.
 
 End-of-paper padding needs a second signal: devices can pad past the paper end with pure white (the Brother ADS-4550W does for color and back-side passes), which brightness alone cannot tell from paper. That padding is synthetic and bit-perfectly uniform, while real scanned paper always carries sensor noise, so rows identical to a perfectly uniform bottom row are stripped before the brightness walk.
+
+Native-lineart devices are the exception to the software crop: a 1-bit frame carries no sensor noise, so padding below or beside the paper is bit-identical to the page's own white margin and cannot be cropped in software. Auto page size therefore enables hardware lower-edge detection where the backend has it (`--ald=yes` on fujitsu; verified on the iX100: a 297 mm frame instead of the 895 mm window), and the width keeps the window's small white overhang as a cosmetic limitation.
 
 Fallbacks and limitations: if no side shows backing (borderless scan, white backing), the page is kept whole; an all-dark frame (full-bleed photo, jam) is also kept whole rather than cropped to nothing. Skewed pages crop to their rotated bounding box; deskew where needed. Fixed sizes (`a4`, ...) bypass all of this and behave as before.
 
