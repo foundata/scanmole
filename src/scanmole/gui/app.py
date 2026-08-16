@@ -877,12 +877,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._status_detail.set_ellipsize(3)
         labels.append(self._status_detail)
         bar.append(labels)
-        self._show_btn = Gtk.Button(label=_("Show"), visible=False)
+        self._show_btn = Gtk.Button(visible=False)
+        self._show_btn.set_child(
+            Adw.ButtonContent(icon_name="folder-open-symbolic", label=_("Show"))
+        )
         self._show_btn.connect("clicked", lambda *_a: self._show_in_folder())
         bar.append(self._show_btn)
         self._open_btn = Gtk.Button(visible=False)
         self._open_btn.set_child(
-            Adw.ButtonContent(icon_name="document-open-symbolic", label=_("Open"))
+            Adw.ButtonContent(icon_name="x-office-document-symbolic", label=_("Open"))
         )
         self._open_btn.connect("clicked", lambda *_a: self._open_output())
         bar.append(self._open_btn)
