@@ -20,7 +20,7 @@ Paperless-office document scanning for Linux: ADF duplex batches in, searchable 
 
 ## Installation<a id="installation"></a>
 
-ScanMole is a Python package installed into a [uv](https://docs.astral.sh/uv/)-managed virtualenv. Its runtime shells out to external tools, which come from distribution packages. Fedora is the primary platform:
+ScanMole is a Python package installed into a [uv](https://docs.astral.sh/uv/)-managed virtualenv. Its runtime shells out to external tools, which come from distribution packages. On Fedora:
 
 ```sh
 sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf \
@@ -28,7 +28,7 @@ sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf \
                  python3-gobject gtk4 libadwaita
 ```
 
-Debian 13+ and Ubuntu 24.04+ are secondary platforms; the code is identical, only the package names differ (older releases lack the required Python ≥ 3.12):
+On Debian 13+ and Ubuntu 24.04+, only the package names differ (older releases lack the required Python ≥ 3.12):
 
 ```sh
 sudo apt install sane-utils sane-airscan img2pdf ocrmypdf \
