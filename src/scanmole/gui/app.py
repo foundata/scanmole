@@ -789,21 +789,22 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _build_result_bar(self) -> Gtk.Box:
         """Build the persistent bottom bar showing progress and the result."""
+        # Centered as a whole: with mixed icon, two-line text and buttons a
+        # left-aligned bar never lines up optically with the groups above.
         bar = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL,
             spacing=10,
+            halign=Gtk.Align.CENTER,
             margin_top=8,
             margin_bottom=8,
-            margin_start=18,
+            margin_start=12,
             margin_end=12,
         )
         self._status_spinner = Gtk.Spinner(visible=False)
         bar.append(self._status_spinner)
         self._status_icon = Gtk.Image(icon_name="object-select-symbolic", visible=False)
         bar.append(self._status_icon)
-        labels = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True
-        )
+        labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
         self._status_title = Gtk.Label(xalign=0.0, label=_("Ready."))
         self._status_title.add_css_class("heading")
         self._status_title.set_ellipsize(3)  # Pango.EllipsizeMode.END
