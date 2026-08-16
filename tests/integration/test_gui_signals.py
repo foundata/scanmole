@@ -8,6 +8,7 @@ skips itself on headless machines.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -17,11 +18,15 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
+# The gi check matters for the release matrix: its isolated venvs have a
+# scanmole-gui on PATH, but no PyGObject, so the launcher (correctly) exits
+# with the install hint instead of starting a GUI.
 _NEEDS_DESKTOP = pytest.mark.skipif(
     shutil.which("dbus-run-session") is None
     or shutil.which("scanmole-gui") is None
+    or importlib.util.find_spec("gi") is None
     or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")),
-    reason="needs dbus-run-session, scanmole-gui and a display",
+    reason="needs dbus-run-session, scanmole-gui, PyGObject and a display",
 )
 
 
