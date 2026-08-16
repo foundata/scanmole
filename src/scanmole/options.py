@@ -1,8 +1,8 @@
 """Map ScanMole's abstract options onto a device's actual ``scanimage`` options.
 
-Backends describe their capabilities differently (Fujitsu's ``ADF Duplex`` vs.
-Brother's longer strings), so every option is discovered from ``scanimage -A``
-and fuzzy-matched rather than hardcoded.
+Backends describe their capabilities differently (the ``fujitsu`` backend's
+``ADF Duplex`` vs. Brother's longer strings), so every option is discovered
+from ``scanimage -A`` and fuzzy-matched rather than hardcoded.
 """
 
 from __future__ import annotations

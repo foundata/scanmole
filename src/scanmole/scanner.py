@@ -130,8 +130,8 @@ def build_scan_command(
         # frames come back at true paper length instead of the padded window.
         # Essential for native lineart, where the padding below the paper is
         # bit-identical to the page's own white margin and software cropping
-        # cannot tell them apart (verified on the iX100: 297 mm instead of
-        # an 895 mm frame).
+        # cannot tell them apart (verified on the ScanSnap iX100: 297 mm
+        # instead of an 895 mm frame).
         command.append("--ald=yes")
 
     if config.despeckle > 0 and "swdespeck" in caps:
@@ -266,7 +266,7 @@ def scan_to_files(
     source = map_source(config.source, caps)
     if source is not None:
         # Option constraints can depend on the selected source (eSCL devices
-        # advertise a different scan window per source: the ADS-4550W reports
+        # advertise a different scan window per source: the Brother ADS-4550W reports
         # a 3098.8 mm height for simplex ADF but 355.6 mm for ADF Duplex), so
         # re-read the listing with the mapped source applied.
         caps = probe_capabilities(device, source=source)

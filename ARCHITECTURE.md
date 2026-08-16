@@ -41,7 +41,7 @@ Goals:
 - **Single-user desktop tool** on a current Linux desktop. One person, one seat, scanner on the desk (USB or LAN); minimal latency and ceremony.
 - **Automation-grade CLI.** The CLI is a real program with an argument parser, defined exit codes, and a machine-readable event stream, usable from cron, scripts, and the GUI alike.
 - **Boring dependencies.** Runtime tools are distribution packages only. The ScanMole code itself is stdlib at runtime (PyGObject aside, for the GUI); battle-tested external tools do the heavy lifting (SANE, OCR, PDF). Python fits this shape: the stdlib covers the whole job, img2pdf and ocrmypdf are themselves Python, PyGObject gives native GTK4, and startup time is noise against a scan+OCR job.
-- **SANE plus fleet coverage.** Anything SANE can drive must work without code changes, only configuration. foundata runs Brother scanners (e.g. [ADS-4550W](https://support.brother.com/g/b/spec.aspx?c=eu_ot&lang=en&prod=ads4550w_eu)), Fujitsu ScanSnap units (e.g. [iX500](https://www.scansnapit.com/en-eu/products/scansnap-ix500)), so they must be tested in any case.
+- **SANE plus fleet coverage.** Anything SANE can drive must work without code changes, only configuration. foundata runs Brother scanners (e.g. the [Brother ADS-4550W](https://support.brother.com/g/b/spec.aspx?c=eu_ot&lang=en&prod=ads4550w_eu)) and ScanSnap units (e.g. the [ScanSnap iX500](https://www.scansnapit.com/en-eu/products/scansnap-ix500); formerly Fujitsu-branded, Ricoh/PFU products today), so they must be tested in any case.
 
 Non-goals:
 
@@ -212,7 +212,7 @@ Acquisition drives `scanimage --batch` as a subprocess instead of binding libsan
 
 ### Command shape<a id="acquisition-command"></a>
 
-For the Fujitsu iX500:
+For the ScanSnap iX500:
 
 ```bash
 scanimage -d <device> --source '<mapped source>' --mode '<mapped mode>' \
@@ -220,7 +220,7 @@ scanimage -d <device> --source '<mapped source>' --mode '<mapped mode>' \
           --batch=<workdir>/page_%04d.pnm --batch-print
 ```
 
-For the Fujitsu iX100 (portable single-side unit: native lineart, but no duplex), the default request (`adf-duplex`, `lineart`, 300 dpi, `auto` page size) degrades the source to the front side with a warning and requests the probed maximum window:
+For the ScanSnap iX100 (portable single-side unit: native lineart, but no duplex), the default request (`adf-duplex`, `lineart`, 300 dpi, `auto` page size) degrades the source to the front side with a warning and requests the probed maximum window:
 
 ```bash
 scanimage -d 'fujitsu:ScanSnap iX100:…' --source 'ADF Front' --mode Lineart \
@@ -245,14 +245,14 @@ The three commands are the point of the [fuzzy mapper](#acquisition-mapping): on
 
 PNM is scanimage's native output format: no encoder in the loop, and it is trivially parseable.
 
-**Vendor-only niceties** (e.g. Fujitsu's `--swdespeck`, `--swcrop`, `--swdeskew`, page width/height) apply **only when `-A` says the backend has them**. `scanimage --batch` handles the ADF loop (start page, read frames, detect duplex back sides, stop on feeder-empty) and signals feeder-empty with **exit code 7** (`SANE_STATUS_NO_DOCS`), which is treated as normal batch termination. `--batch-print` provides the per-page streaming described in [the overview](#overview); page files scanimage wrote but did not announce are swept up after the batch as a safety net. Flatbed sources add `--batch-count=1`, because a flatbed never reports "feeder empty". Some scanners/backends deliver duplex back sides in surprising order (the fleet devices are well-behaved); if a device is not, add an explicit reorder step in the pipeline, never in the GUI.
+**Vendor-only niceties** (e.g. the `fujitsu` backend's `--swdespeck`, `--swcrop`, `--swdeskew`, page width/height) apply **only when `-A` says the backend has them**. `scanimage --batch` handles the ADF loop (start page, read frames, detect duplex back sides, stop on feeder-empty) and signals feeder-empty with **exit code 7** (`SANE_STATUS_NO_DOCS`), which is treated as normal batch termination. `--batch-print` provides the per-page streaming described in [the overview](#overview); page files scanimage wrote but did not announce are swept up after the batch as a safety net. Flatbed sources add `--batch-count=1`, because a flatbed never reports "feeder empty". Some scanners/backends deliver duplex back sides in surprising order (the fleet devices are well-behaved); if a device is not, add an explicit reorder step in the pipeline, never in the GUI.
 
 
 ### Device and option heterogeneity: never hardcode strings<a id="acquisition-mapping"></a>
 
 `--source` and `--mode` values are backend-defined free text, and they differ. For example:
 
-- Fujitsu backend: `ADF Duplex`, `ADF Front`, `ADF Back`; modes `Lineart|Gray|Color`.
+- `fujitsu` backend (ScanSnap devices): `ADF Duplex`, `ADF Front`, `ADF Back`; modes `Lineart|Gray|Color`.
 - Brother (brscan4, typical; verify per model): sources like `Automatic Document Feeder(left aligned,Duplex)`, mode names like `Black & White`, `True Gray`, `24bit Color[Fast]`.
 
 Therefore: **always probe `scanimage -A` and fuzzy-map** the user's abstract intent (`duplex` / `front` / `flatbed`; `lineart` / `gray` / `color`) onto the backend's actual choice strings (case-insensitive substring/keyword match: a source containing both "adf"/"feeder" and "duplex" wins for duplex; "black & white"≙lineart, etc.). When a device lacks the requested mode, the mapper degrades with a warning instead of failing: airscan/eSCL devices often offer only Color and Gray, so a lineart request becomes gray at acquisition time; the pipeline then restores the asked-for 1-bit output in software (see [software lineart fallback](#pipeline-lineart)). The parser and mapper are pure functions pinned by fixtures (`tests/fixtures/scanimage-A/`), so they are regression-tested without hardware. Hardcoding backend strings is exactly the bug class that ties a frontend to a single vendor. The `-A` parsing is text-scraping; it has been stable for years, but treat sane-backends major updates as a trigger to re-verify the fixtures against real devices.
@@ -260,7 +260,7 @@ Therefore: **always probe `scanimage -A` and fuzzy-map** the user's abstract int
 
 ### Backend strategy per vendor<a id="acquisition-backends"></a>
 
-**Fujitsu ScanSnap iX500:** the in-tree SANE `fujitsu` backend supports it well over USB. No firmware download is needed. Its Wi-Fi mode speaks a proprietary ScanSnap protocol, not eSCL, so treat the Fujitsu iX500 as USB-only under SANE (verify for any newer ScanSnap models before buying).
+**ScanSnap iX500:** the in-tree SANE `fujitsu` backend supports it well over USB (ScanSnap scanners were sold under the Fujitsu brand until 2023 and are Ricoh/PFU products today; the backend keeps its historic name). No firmware download is needed. Its Wi-Fi mode speaks a proprietary ScanSnap protocol, not eSCL, so treat the ScanSnap iX500 as USB-only under SANE (verify for any newer ScanSnap models before buying).
 
 **Brother:** two routes, in order of preference:
 
@@ -280,18 +280,18 @@ Therefore: **always probe `scanimage -A` and fuzzy-map** the user's abstract int
 
 ### Scan parameter defaults<a id="pipeline-defaults"></a>
 
-Office intake is overwhelmingly machine-printed text. The default is 1-bit lineart at 300 dpi: tesseract's often-cited sweet spot, and the archive is read by humans, for whom 1-bit glyphs render cleanly at 300 dpi where lower resolutions turn visibly jagged; on a measured business letter it also recovered noticeably more OCR text than 200 dpi. The cost is moderate (dpi scales data quadratically, roughly 110 KB instead of 60 KB per A4 text page), fine for an archival tool and set to shrink further once lossless JBIG2 recoding (jbig2enc) is integrated; `-r 200` stays one flag away as the economy choice for bulk everyday mail, and 600 dpi quadruples the data again for marginal OCR gain on print. `Gray` and `Color` remain one flag away for stamps, handwriting, photos, or low-contrast originals; grayscale is the right choice when lineart thresholding eats faint text. `--swdespeck=1` (Fujitsu) stays on: it removes pepper noise that both uglifies output and skews blank detection.
+Office intake is overwhelmingly machine-printed text. The default is 1-bit lineart at 300 dpi: tesseract's often-cited sweet spot, and the archive is read by humans, for whom 1-bit glyphs render cleanly at 300 dpi where lower resolutions turn visibly jagged; on a measured business letter it also recovered noticeably more OCR text than 200 dpi. The cost is moderate (dpi scales data quadratically, roughly 110 KB instead of 60 KB per A4 text page), fine for an archival tool and set to shrink further once lossless JBIG2 recoding (jbig2enc) is integrated; `-r 200` stays one flag away as the economy choice for bulk everyday mail, and 600 dpi quadruples the data again for marginal OCR gain on print. `Gray` and `Color` remain one flag away for stamps, handwriting, photos, or low-contrast originals; grayscale is the right choice when lineart thresholding eats faint text. `--swdespeck=1` (`fujitsu` backend) stays on: it removes pepper noise that both uglifies output and skews blank detection.
 
 
 ### Automatic page size<a id="pipeline-autosize"></a>
 
 `--page-size auto` (the default) removes the need to know the paper size up front, which is what makes receipts, A5 letters and mixed stacks scan without ceremony. Hardware cannot do this reliably: eSCL devices scan a fixed window and pad past the end of the paper instead of reporting the true length (measured on the Brother ADS-4550W: a 1000 mm request yields a padded 215.9 x 355.6 mm frame).
 
-Mechanics: acquisition requests the device's maximum window. The maximum comes from the probed `--page-width`/`--page-height` ranges where the backend has them, falling back to the `-x`/`-y` ranges otherwise; the distinction matters on sheet-fed fujitsu devices, whose `-A` output caps the `-y` range at the current (A4) window and only extends it once `--page-height` is raised, so clamping against `-y` alone would silently cut legal paper and long receipts at 297 mm. The capability probe must also be read with the mapped `--source` applied, because eSCL/airscan devices advertise different geometry ranges per source (the ADS-4550W reports a 3098.8 mm window height for simplex ADF but 355.6 mm for ADF Duplex). Per page, before the [lineart fallback](#pipeline-lineart) and [blank detection](#pipeline-blank), the pipeline walks the column and row mean-brightness profiles inward from each edge until they cross the paper cutoff (0.7 of full brightness; ADF backing and end-of-paper padding measure ~0.35 to 0.55 on real hardware, paper >0.9), then crops the PNM in place to that box, shaved inward by ~1/3 mm so half-gray transition pixels cannot survive as a dark rim. `img2pdf` then sizes every PDF page from its own pixel dimensions, so each page gets its true paper size, like the ScanSnap reference output. Cost: well under 100 ms per A4/300 dpi page, stdlib only.
+Mechanics: acquisition requests the device's maximum window. The maximum comes from the probed `--page-width`/`--page-height` ranges where the backend has them, falling back to the `-x`/`-y` ranges otherwise; the distinction matters on sheet-fed `fujitsu`-backend devices, whose `-A` output caps the `-y` range at the current (A4) window and only extends it once `--page-height` is raised, so clamping against `-y` alone would silently cut legal paper and long receipts at 297 mm. The capability probe must also be read with the mapped `--source` applied, because eSCL/airscan devices advertise different geometry ranges per source (the Brother ADS-4550W reports a 3098.8 mm window height for simplex ADF but 355.6 mm for ADF Duplex). Per page, before the [lineart fallback](#pipeline-lineart) and [blank detection](#pipeline-blank), the pipeline walks the column and row mean-brightness profiles inward from each edge until they cross the paper cutoff (0.7 of full brightness; ADF backing and end-of-paper padding measure ~0.35 to 0.55 on real hardware, paper >0.9), then crops the PNM in place to that box, shaved inward by ~1/3 mm so half-gray transition pixels cannot survive as a dark rim. `img2pdf` then sizes every PDF page from its own pixel dimensions, so each page gets its true paper size, like the ScanSnap reference output. Cost: well under 100 ms per A4/300 dpi page, stdlib only.
 
 End-of-paper padding needs a second signal: devices can pad past the paper end with pure white (the Brother ADS-4550W does for color and back-side passes), which brightness alone cannot tell from paper. That padding is synthetic and bit-perfectly uniform, while real scanned paper always carries sensor noise, so rows identical to a perfectly uniform bottom row are stripped before the brightness walk.
 
-Native-lineart devices are the exception to the software crop: a 1-bit frame carries no sensor noise, so padding below or beside the paper is bit-identical to the page's own white margin and cannot be cropped in software. Auto page size therefore enables hardware lower-edge detection where the backend has it (`--ald=yes` on fujitsu; verified on the iX100: a 297 mm frame instead of the 895 mm window), and the width keeps the window's small white overhang as a cosmetic limitation.
+Native-lineart devices are the exception to the software crop: a 1-bit frame carries no sensor noise, so padding below or beside the paper is bit-identical to the page's own white margin and cannot be cropped in software. Auto page size therefore enables hardware lower-edge detection where the backend has it (`--ald=yes` on the `fujitsu` backend; verified on the ScanSnap iX100: a 297 mm frame instead of the 895 mm window), and the width keeps the window's small white overhang as a cosmetic limitation.
 
 Fallbacks and limitations: if no side shows backing (borderless scan, white backing), the page is kept whole; an all-dark frame (full-bleed photo, jam) is also kept whole rather than cropped to nothing. Skewed pages crop to their rotated bounding box; deskew where needed. Fixed sizes (`a4`, ...) bypass all of this and behave as before.
 
@@ -307,7 +307,7 @@ Known limitation: a single global threshold. Faint originals (pencil, thermal pa
 
 ### Blank-page detection: mean brightness, pure stdlib<a id="pipeline-blank"></a>
 
-Duplex scanning of mostly single-sided paper produces ~50% blank pages; dropping them is a core feature, and it must work identically on every backend (unlike the Fujitsu-only `--swskip` backend option). The measurement is a ~40-line stdlib PNM parser; ImageMagick could do it but is heavyweight, brings security-policy landmines, and costs one process spawn per page.
+Duplex scanning of mostly single-sided paper produces ~50% blank pages; dropping them is a core feature, and it must work identically on every backend (unlike `--swskip`, which only the `fujitsu` backend offers). The measurement is a ~40-line stdlib PNM parser; ImageMagick could do it but is heavyweight, brings security-policy landmines, and costs one process spawn per page.
 
 Rule: a page is blank iff its **mean brightness, normalized to [0,1], is > 0.995**, i.e. less than 0.5% "ink". A threshold of `0` disables blank detection. Being a ratio, the rule is resolution-independent: at Lineart/300 dpi/A4 the default tolerates ~43k dark pixels, which comfortably absorbs residual noise while catching even a single short line of text (a typical printed line is >100k black pixels at 300 dpi).
 
@@ -317,7 +317,7 @@ Implementation, and why acquisition uses PNM:
 - **P5 (gray) / P6 (RGB):** header includes `maxval`; mean = `sum(payload) / (n · maxval)` (`sum()` over `bytes` is C-speed). Comments (`#`) in headers must be handled.
 - Non-PNM inputs (possible via `--from-images`) are not measured: those inputs are user-curated, so blank detection is skipped and the page is always kept.
 
-**Known weakness (documented, mitigated):** anything dark that isn't content (punch holes, staple shadows, the black scan-bed edge on skewed pages) lowers the mean and can rescue a blank page from being dropped. With the default `--page-size auto`, the [paper-edge crop](#pipeline-autosize) removes border and padding artifacts before measuring, which fixed exactly this on the eSCL fleet device (a blank backside measured 0.984 uncropped and 0.999 cropped). Punch holes and interior shadows remain; `--swdespeck` mitigates on Fujitsu, and the threshold is a CLI knob (`--blank-threshold`) so field tuning needs no release.
+**Known weakness (documented, mitigated):** anything dark that isn't content (punch holes, staple shadows, the black scan-bed edge on skewed pages) lowers the mean and can rescue a blank page from being dropped. With the default `--page-size auto`, the [paper-edge crop](#pipeline-autosize) removes border and padding artifacts before measuring, which fixed exactly this on the eSCL fleet device (a blank backside measured 0.984 uncropped and 0.999 cropped). Punch holes and interior shadows remain; `--swdespeck` mitigates on the `fujitsu` backend, and the threshold is a CLI knob (`--blank-threshold`) so field tuning needs no release.
 
 
 ### PDF assembly<a id="pipeline-pdf"></a>

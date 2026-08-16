@@ -54,7 +54,7 @@ uv sync                        # installs the scanmole and scanmole-gui commands
 
 The `--system-site-packages` flag matters for the GUI only; the CLI is pure stdlib and works in any venv.
 
-Brother devices: modern ones (e.g. ADS-4550W) work driverless via `sane-airscan` (eSCL) and need no Brother driver. Older ones need Brother's `brscan4`/`brscan5` RPMs. Fujitsu ScanSnap (iX500 etc.) uses the stock SANE `fujitsu` backend over USB.
+Brother devices: modern ones (e.g. the Brother ADS-4550W) work driverless via `sane-airscan` (eSCL) and need no Brother driver. Older ones need Brother's `brscan4`/`brscan5` RPMs. ScanSnap devices (e.g. the ScanSnap iX500; formerly sold under the Fujitsu brand, Ricoh products today) use the stock SANE `fujitsu` backend over USB.
 
 
 ## Usage<a id="usage"></a>
@@ -142,7 +142,7 @@ If a USB scanner does not show up in `scanimage -L`:
 2. Check `lsusb`. If the scanner is missing there too, the problem is cabling, power or the USB port, not software.
 3. Run `sane-find-scanner -q`. It talks raw USB without any backend; if it finds the device while `scanimage -L` stays empty, the cause is permissions or a disabled backend.
 4. Permissions: SANE grants access to locally logged-in desktop users. After the first plug-in, replug the device and log out and in once so the udev ACLs apply. Over ssh or headless there is no desktop session ("works locally, fails over ssh"); that needs a udev rule granting access to a `scanner` group.
-5. Check `/etc/sane.d/dll.conf`: the line for your vendor's backend must not be commented out (Canon `pixma`/`canon_dr`, Epson `epsonds`/`epson2`, Fujitsu `fujitsu`).
+5. Check `/etc/sane.d/dll.conf`: the line for your vendor's backend must not be commented out (Canon `pixma`/`canon_dr`, Epson `epsonds`/`epson2`, ScanSnap `fujitsu`; the backend keeps its historic name).
 6. Network-capable devices from roughly 2015 on usually speak eSCL and work driverless via `sane-airscan`: make sure `avahi-daemon` is running and check what `airscan-discover` finds. Worth trying even when a device's USB route fails.
 7. Vendor drivers (Canon `scangearmp2`, Epson `epsonscan2`, Brother `brscan4`/`brscan5`) are the last resort for devices without an in-tree backend or eSCL support.
 
@@ -185,7 +185,11 @@ The [`REUSE.toml`](REUSE.toml) file provides detailed licensing and copyright in
 
 ### Trademarks<a id="trademarks"></a>
 
-Fujitsu and ScanSnap are trademarks of their respective owners; Brother is a trademark of Brother Industries, Ltd. Their use here is purely descriptive and does not imply any affiliation with or endorsement by the trademark holders.
+- ScanSnap is a trademark of PFU Limited, a Ricoh Group company (ScanSnap scanners were sold under the Fujitsu brand until 2023)
+- Fujitsu is a trademark of Fujitsu Limited
+- Brother is a trademark of Brother Industries, Ltd
+
+Their use here is purely descriptive and does not imply any affiliation with or endorsement by the trademark holders.
 
 
 ## Author information<a id="author-information"></a>
