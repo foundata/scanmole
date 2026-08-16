@@ -421,15 +421,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self.set_content(toolbar)
 
         header = Adw.HeaderBar()
-        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        if LOGO_FILE.is_file():
-            logo = Gtk.Image.new_from_file(str(LOGO_FILE))
-            logo.set_pixel_size(28)
-            title_box.append(logo)
-        title_label = Gtk.Label(label="ScanMole")
-        title_label.add_css_class("heading")
-        title_box.append(title_label)
-        header.set_title_widget(title_box)
+        header.set_title_widget(Adw.WindowTitle(title="ScanMole"))
         # The orthodox GNOME primary menu: Settings and About live behind the
         # hamburger button instead of standalone header actions.
         menu = Gio.Menu()
@@ -476,15 +468,35 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         container.append(self._narrow_box)
         container.append(self._grid)
-        # Credit line below the form, outside the layout switching so it
-        # always spans the full width.
-        credit = Gtk.Label(halign=Gtk.Align.CENTER, margin_top=8)
-        credit.set_markup(
+        # Credit block below the form, outside the layout switching so it
+        # always spans the full width; same identity layout as the About
+        # dialog (logo, bold line, tagline).
+        credit = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=14,
+            halign=Gtk.Align.CENTER,
+            margin_top=10,
+        )
+        if LOGO_FILE.is_file():
+            credit_logo = Gtk.Image.new_from_file(str(LOGO_FILE))
+            credit_logo.set_pixel_size(60)
+            credit.append(credit_logo)
+        credit_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, spacing=2
+        )
+        credit_title = Gtk.Label(xalign=0.0)
+        credit_title.set_markup(
             _('ScanMole %(version)s by <a href="%(url)s">foundata</a>')
             % {"version": __version__, "url": PROJECT_URL}
         )
-        credit.add_css_class("caption")
-        credit.add_css_class("dim-label")
+        credit_title.add_css_class("heading")
+        credit_labels.append(credit_title)
+        credit_tagline = Gtk.Label(
+            label=_("Easy document scanning for Linux"), xalign=0.0
+        )
+        credit_tagline.add_css_class("dim-label")
+        credit_labels.append(credit_tagline)
+        credit.append(credit_labels)
         container.append(credit)
         self._clamp.set_child(container)
 
