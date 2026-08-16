@@ -125,6 +125,8 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
 
 SIGKILL_GRACE_SECONDS = 3  # between SIGTERM and SIGKILL on cancel
 
+DEFAULT_WINDOW_SIZE = (650, 810)  # starts in the single-column layout
+
 # App-level styling: compact resolution preset chips and a dpi entry sized
 # to its digits.
 _APP_CSS = """
@@ -377,11 +379,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._scanmole = find_scanmole()
         self._settings = load_settings()
 
-        # Restore the remembered window geometry; the default starts in the
-        # single-column layout.
+        # Restore the remembered window geometry.
         self.set_default_size(
-            as_int(self._settings.get("window_width"), 650),
-            as_int(self._settings.get("window_height"), 810),
+            as_int(self._settings.get("window_width"), DEFAULT_WINDOW_SIZE[0]),
+            as_int(self._settings.get("window_height"), DEFAULT_WINDOW_SIZE[1]),
         )
         if bool(self._settings.get("window_maximized")):
             self.maximize()
@@ -1370,6 +1371,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         store_settings(self._settings)
         self._folder = default_folder()
         self._apply_saved_settings()
+        # Also resize back to the default geometry; without this the close
+        # handler would immediately re-persist the current size and the reset
+        # would never reach the window.
+        if self.is_maximized():
+            self.unmaximize()
+        self.set_default_size(*DEFAULT_WINDOW_SIZE)
         # The open settings dialog still shows the pre-reset selections;
         # close it, the next open rebuilds from the defaults.
         if self._settings_dialog is not None:
