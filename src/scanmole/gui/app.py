@@ -140,6 +140,50 @@ def find_scanmole() -> str:
     return shutil.which("scanmole") or "scanmole"
 
 
+def ensure_desktop_integration() -> None:
+    """Install or refresh the user-level desktop entry and icon.
+
+    GNOME's window switcher and app grid show an application's name and logo
+    only when a desktop file matches the application id. A uv-managed
+    install has no packaging step to place one, so the GUI registers itself
+    (phase 1; the future RPM ships system-wide files instead).
+    """
+    try:
+        executable = shutil.which("scanmole-gui") or str(Path(sys.argv[0]).resolve())
+        data_home = Path(GLib.get_user_data_dir())
+        desktop_entry = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=ScanMole\n"
+            "Comment=Scan documents from a SANE scanner straight to a "
+            "searchable PDF\n"
+            "Comment[de]=Scannt Dokumente von einem SANE-Scanner direkt in "
+            "ein durchsuchbares PDF\n"
+            f'Exec="{executable}"\n'
+            f"Icon={APP_ID}\n"
+            "Terminal=false\n"
+            "StartupNotify=true\n"
+            "Categories=Office;Scanning;\n"
+        )
+        icon_target = (
+            data_home / "icons" / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
+        )
+        if LOGO_FILE.is_file():
+            icon_data = LOGO_FILE.read_bytes()
+            if not icon_target.is_file() or icon_target.read_bytes() != icon_data:
+                icon_target.parent.mkdir(parents=True, exist_ok=True)
+                icon_target.write_bytes(icon_data)
+        desktop_target = data_home / "applications" / f"{APP_ID}.desktop"
+        if (
+            not desktop_target.is_file()
+            or desktop_target.read_text(encoding="utf-8") != desktop_entry
+        ):
+            desktop_target.parent.mkdir(parents=True, exist_ok=True)
+            desktop_target.write_text(desktop_entry, encoding="utf-8")
+    except OSError:
+        pass  # desktop integration is a convenience; never block startup
+
+
 def default_folder() -> str:
     """Return the XDG Documents folder, falling back to the home directory."""
     docs = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS)
@@ -1675,6 +1719,7 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
 
     def _on_activate(self, app: Adw.Application) -> None:
         """Present the main window, creating it on first activation."""
+        ensure_desktop_integration()
         # Make the packaged mascot icon resolvable by name (About dialog).
         display = Gdk.Display.get_default()
         if display is not None:
