@@ -125,11 +125,9 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
 
 SIGKILL_GRACE_SECONDS = 3  # between SIGTERM and SIGKILL on cancel
 
-# App-level styling: a slightly deeper canvas in light mode (shaded from the
-# named color so dark mode and high-contrast settings stay intact) and
-# compact resolution preset chips.
+# App-level styling: compact resolution preset chips and a dpi entry sized
+# to its digits.
 _APP_CSS = """
-window.background { background-color: shade(@window_bg_color, 0.96); }
 button.chip { min-height: 20px; padding: 0px 8px; font-size: 0.85em; }
 entry.dpi { min-width: 0px; padding-left: 8px; padding-right: 8px; }
 """
