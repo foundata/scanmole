@@ -981,23 +981,76 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._set_result_bar("idle", _("Settings reset to defaults."))
 
     def _on_about_clicked(self, *_args: object) -> None:
-        """Show the About dialog with GUI and CLI versions."""
-        cli_version = self._cli_version or _("unknown")
-        comments = (
-            _("Scan documents from a SANE scanner straight to a searchable PDF.")
-            + "\n"
-            + _("scanmole CLI: %(version)s") % {"version": cli_version}
+        """Show a flat, single-page About dialog (no nested subpages)."""
+        dialog = Adw.Dialog(title=_("About ScanMole"), content_width=440)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(Adw.HeaderBar())
+        content = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=14,
+            margin_top=12,
+            margin_bottom=20,
+            margin_start=20,
+            margin_end=20,
         )
-        about = Adw.AboutDialog(
-            application_name="ScanMole",
-            application_icon=APP_ID,
-            developer_name="foundata GmbH",
-            version=__version__,
-            comments=comments,
-            website=PROJECT_URL,
-            license_type=Gtk.License.GPL_3_0,
+
+        identity = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        if LOGO_FILE.is_file():
+            logo = Gtk.Image.new_from_file(str(LOGO_FILE))
+            logo.set_pixel_size(72)
+            identity.append(logo)
+        id_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, spacing=2
         )
-        about.present(self)
+        name = Gtk.Label(label="ScanMole", xalign=0.0)
+        name.add_css_class("title-4")
+        id_labels.append(name)
+        tagline = Gtk.Label(label=_("Easy document scanning for Linux"), xalign=0.0)
+        tagline.add_css_class("dim-label")
+        id_labels.append(tagline)
+        identity.append(id_labels)
+        content.append(identity)
+
+        facts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for key, value in (
+            ("scanmole CLI", self._cli_version or _("unknown")),
+            ("scanmole-gui", __version__),
+            (_("License"), "GPL-3.0-or-later"),
+        ):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            key_label = Gtk.Label(label=key, xalign=0.0, hexpand=True)
+            row.append(key_label)
+            value_label = Gtk.Label(label=value, xalign=1.0)
+            value_label.add_css_class("monospace")
+            row.append(value_label)
+            facts.append(row)
+        content.append(facts)
+
+        description = Gtk.Label(
+            label=_(
+                "ScanMole scans documents through SANE, detects blank pages, "
+                "assembles PDFs, and optionally makes them text-searchable "
+                "with OCR."
+            ),
+            xalign=0.0,
+            wrap=True,
+        )
+        description.add_css_class("dim-label")
+        content.append(description)
+
+        website = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        website_label = Gtk.Label(label=_("Website:"), valign=Gtk.Align.CENTER)
+        website.append(website_label)
+        link = Gtk.LinkButton.new_with_label(
+            PROJECT_URL, "foundata.com/en/projects/scanmole"
+        )
+        link.set_halign(Gtk.Align.START)
+        website.append(link)
+        content.append(website)
+
+        toolbar.set_content(content)
+        dialog.set_child(toolbar)
+        dialog.present(self)
 
     # ----------------------------------------------------------- scanning
 
