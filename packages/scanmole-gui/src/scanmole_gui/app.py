@@ -13,6 +13,7 @@ mixes in output of the English-only CLI.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -42,6 +43,8 @@ from gi.repository import (  # noqa: E402  # after require_version
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
 from scanmole_gui import __version__, incompatible_cli  # noqa: E402
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
+
+LOGGER = logging.getLogger(__name__)
 
 APP_ID = "com.foundata.ScanMole"
 PROJECT_URL = "https://foundata.com/en/projects/scanmole/"
@@ -122,7 +125,14 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
     ),
 }
 
-SIGKILL_GRACE_SECONDS = 3  # between SIGTERM and SIGKILL on cancel
+SIGKILL_GRACE_SECONDS = 10
+"""Between SIGTERM and SIGKILL on cancel.
+
+Must outlast the engine's own worst-case cleanup: on SIGTERM the CLI gives
+scanimage up to 5 seconds before killing it, then sizes and preserves the
+scanned pages and removes the output reservation. Killing the group earlier
+would destroy exactly the recovery the escalation is meant to allow.
+"""
 
 DEFAULT_WINDOW_SIZE = (650, 810)  # starts in the single-column layout
 
@@ -162,7 +172,7 @@ def ensure_app_icon() -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(icon_data)
     except OSError:
-        pass  # a convenience; never block startup
+        LOGGER.debug("icon installation skipped", exc_info=True)  # a convenience
 
 
 def desktop_entry_path() -> Path:
@@ -236,18 +246,33 @@ def load_settings() -> dict[str, object]:
     """Load persisted GUI settings, returning an empty dict on any error."""
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}  # first start
     except (OSError, ValueError):
+        LOGGER.debug("settings unreadable; starting fresh", exc_info=True)
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def store_settings(data: dict[str, object]) -> None:
-    """Persist GUI settings; failures are ignored as a convenience feature."""
+    """Persist GUI settings; failures only cost this snapshot.
+
+    Written to a sibling file and renamed atomically: an interrupted
+    in-place write would leave invalid JSON behind, silently resetting
+    every preference on the next launch.
+    """
+    staging = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
     try:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        staging.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(staging, CONFIG_FILE)
     except OSError:
-        pass
+        LOGGER.debug("could not persist settings", exc_info=True)
+    finally:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def combo_value(row: Adw.ComboRow, items: tuple[tuple[str, str], ...]) -> str:
@@ -389,6 +414,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # Runtime state
         self._proc: subprocess.Popen[str] | None = None
         self._cancelled = False
+        self._closing = False
+        self._close_patience = 0
         self._devices: list[dict[str, str]] = []
         self._pages = 0
         self._blanks = 0
@@ -1065,14 +1092,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                     event = json.loads(raw)
                 except ValueError:
                     continue
+                if not isinstance(event, dict):
+                    continue  # valid JSON, wrong shape: not ours to crash on
                 if event.get("event") == "hello":
                     hello_version = str(event.get("version") or "") or None
                 if event.get("event") == "devices":
-                    # Hide virtual devices (webcams, SANE test backend).
+                    # Hide virtual devices (webcams, SANE test backend); skip
+                    # entries that are not objects instead of crashing.
                     devices = [
                         device
                         for device in event.get("devices") or []
-                        if not device.get("device", "").startswith(("v4l:", "test:"))
+                        if isinstance(device, dict)
+                        and not str(device.get("device", "")).startswith(
+                            ("v4l:", "test:")
+                        )
                     ]
             if result.stderr.strip():
                 GLib.idle_add(self._append_log, result.stderr.strip())
@@ -1103,7 +1136,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             err = _("Device search timed out.")
         except OSError as exc:
             err = _("Device search failed: %(error)s") % {"error": exc}
-        GLib.idle_add(self._apply_devices, devices, err, prefer)
+        except Exception:  # defensive: the UI must never stay dead
+            LOGGER.debug("device search failed unexpectedly", exc_info=True)
+            err = _("Device search failed unexpectedly.")
+        finally:
+            # Always reaches the main loop, or the refresh button and the
+            # "Searching for scanners…" subtitle would stay stuck forever.
+            GLib.idle_add(self._apply_devices, devices, err, prefer)
 
     def _probe_cli_version(self) -> str | None:
         """Return the supervised CLI's version string, or ``None``."""
@@ -1671,6 +1710,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         except ValueError:
             self._append_log(line)  # non-JSON on stdout: just log it
             return
+        if not isinstance(event, dict):
+            self._append_log(line)  # valid JSON, wrong shape: log, don't crash
+            return
         kind = event.get("event")
         if kind == "start":
             self._set_result_bar("running", _("Scanning…"))
@@ -1798,9 +1840,30 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._settings["window_width"] = int(self.get_width())
             self._settings["window_height"] = int(self.get_height())
         self._save_settings()
-        if self._proc is not None and self._proc.poll() is None:
-            self._signal_group(self._proc, signal.SIGTERM)
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            # Closing must not orphan the engine mid-batch: run the normal
+            # cancel escalation and keep the (hidden) window alive until the
+            # child exited, so its cleanup finishes and nothing keeps
+            # scanning invisibly.
+            if not self._closing:
+                self._closing = True
+                self._close_patience = SIGKILL_GRACE_SECONDS + 5
+                self._on_cancel_clicked()
+                self.set_visible(False)
+                GLib.timeout_add_seconds(1, self._destroy_when_exited, proc)
+            return True  # inhibit; the poll below closes for real
         return False  # allow the window to close
+
+    def _destroy_when_exited(self, proc: subprocess.Popen[str]) -> bool:
+        """Destroy the hidden window once the cancelled child is gone."""
+        self._close_patience -= 1
+        if proc.poll() is None and self._close_patience > 0:
+            return bool(GLib.SOURCE_CONTINUE)
+        if proc.poll() is None:  # pragma: no cover -- SIGKILL failed somehow
+            LOGGER.debug("closing despite a surviving child process group")
+        self.destroy()
+        return bool(GLib.SOURCE_REMOVE)
 
     # -------------------------------------------------------- UI plumbing
 
