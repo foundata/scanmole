@@ -31,6 +31,12 @@ def list_devices() -> list[Device]:
 
     Includes virtual devices (webcams, the SANE test backend); use
     :func:`is_real_device` to filter them.
+
+    Raises:
+        DeviceError: If ``scanimage`` failed and produced no device records.
+            An empty scanner list is a *successful* enumeration (scanimage
+            exits 0 then); reducing a real failure such as "access denied"
+            to "no scanners found" would hide it behind a success exit code.
     """
     result = run_command(
         ["scanimage", "-f", "%d|%v|%m|%t%n"],
@@ -49,9 +55,20 @@ def list_devices() -> list[Device]:
                 type="|".join(parts[3:]).strip(),
             )
         )
-    if not devices and result.returncode != 0:
-        LOGGER.debug(
-            "scanimage -f exited %d: %s", result.returncode, result.stderr.strip()
+    if result.returncode != 0:
+        tail = "\n".join(result.stderr.strip().splitlines()[-3:])
+        if not devices:
+            raise DeviceError(
+                f"device discovery failed (scanimage exited "
+                f"{result.returncode}): {tail or 'no error output'}"
+            )
+        # Partial output alongside a failure (one broken backend): keep the
+        # parsed devices, but say so.
+        LOGGER.warning(
+            "scanimage -f exited %d after listing %d device(s): %s",
+            result.returncode,
+            len(devices),
+            tail,
         )
     return devices
 

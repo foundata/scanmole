@@ -15,10 +15,57 @@ from scanmole.devices import (
 from scanmole.errors import DeviceError
 
 
-def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
+def _completed(
+    stdout: str, returncode: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
-        args=["scanimage"], returncode=returncode, stdout=stdout, stderr=""
+        args=["scanimage"], returncode=returncode, stdout=stdout, stderr=stderr
     )
+
+
+def test_list_devices_raises_when_scanimage_fails_without_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A failed enumeration must not masquerade as "no scanners found":
+    # scanimage exits 0 for a genuinely empty list, so nonzero plus nothing
+    # parsed is an operational failure (access denied, broken backend).
+    monkeypatch.setattr(
+        "scanmole.devices.run_command",
+        lambda command, timeout_seconds: _completed(
+            "", returncode=1, stderr="scanimage: access denied"
+        ),
+    )
+
+    with pytest.raises(DeviceError, match="access denied"):
+        list_devices()
+
+
+def test_list_devices_keeps_partial_output_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = "fujitsu:ScanSnap iX500:65535|FUJITSU|ScanSnap iX500|scanner\n"
+    monkeypatch.setattr(
+        "scanmole.devices.run_command",
+        lambda command, timeout_seconds: _completed(
+            listing, returncode=1, stderr="one backend crashed"
+        ),
+    )
+
+    devices = list_devices()
+
+    assert len(devices) == 1
+    assert devices[0]["device"] == "fujitsu:ScanSnap iX500:65535"
+
+
+def test_list_devices_empty_success_is_no_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scanmole.devices.run_command",
+        lambda command, timeout_seconds: _completed(""),
+    )
+
+    assert list_devices() == []
 
 
 def test_list_devices_parses_the_format_string_output(
@@ -92,10 +139,14 @@ def test_pick_default_device_takes_the_first_real_scanner(
 def test_pick_default_device_fails_without_a_real_scanner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # An empty enumeration is a *success* (scanimage exits 0 then); only
+    # webcams around means no scanner to pick.
     monkeypatch.delenv("SCANMOLE_DEVICE", raising=False)
     monkeypatch.setattr(
         "scanmole.devices.run_command",
-        lambda command, timeout_seconds: _completed("", returncode=1),
+        lambda command, timeout_seconds: _completed(
+            "v4l:/dev/video0|Noname|Integrated Camera|virtual device\n"
+        ),
     )
 
     with pytest.raises(DeviceError, match="no scanner device found"):
