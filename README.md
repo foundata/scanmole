@@ -5,7 +5,7 @@
 It consists of two components, shipped as two Python packages, so servers and scripts can install the CLI alone while desktops get the whole experience:
 
 1. **`scanmole`**: CLI scanning engine.
-2. **`scanmole-gui`**: GTK4/libadwaita frontend (depends on `scanmole`). A thin subprocess wrapper around the CLI using its `--json` event protocol; it contains no scanning logic itself.
+2. **`scanmole-gui`**: GTK4/[libadwaita](https://gnome.pages.gitlab.gnome.org/libadwaita/) frontend (depends on `scanmole`). A thin subprocess wrapper around the CLI using its `--json` event protocol; it contains no scanning logic itself.
 
 
 <div align="center" id="project-readme-header">
@@ -33,13 +33,16 @@ It consists of two components, shipped as two Python packages, so servers and sc
 - [Installation](#installation)
   - [Debian/Ubuntu](#installation-debian)
   - [Fedora](#installation-fedora)
-  - [Device-specific notes](#installation-devices)
-  - [Tested devices](#installation-tested-devices)
 - [Usage](#usage)
   - [Command Line Interface (CLI)](#usage-cli)
   - [The GUI](#usage-gui)
   - [Exit codes](#usage-exit-codes)
   - [The `--json` protocol](#usage-json)
+- [Devices](#devices)
+  - [Brother](#devices-brother)
+  - [Epson](#devices-epson)
+  - [ScanSnap](#devices-scansnap)
+  - [Tested devices](#devices-tested)
 - [FAQ](#faq)
   - [What to do if my scanner is not listed?](#faq-scanner-not-listed)
   - [What to do if my scanner isn't working as expected?](#faq-scanner-quirks)
@@ -152,31 +155,7 @@ sudo make install
 ```
 
 
-### Device-specific notes<a id="installation-devices"></a>
-
-#### Brother<a id="installation-brother"></a>
-
-Modern Brother devices (e.g. the Brother ADS-4550W) work driverless via `sane-airscan` (eSCL) and need no additional packages or configuration beyond the dependencies above.
-
-Older devices without eSCL support (e.g. the Brother ADS-2600W) need Brother's proprietary `brscan4`/`brscan5` driver packages from the [Brother support site](https://support.brother.com/g/s/id/linux/en/index.html); network devices must additionally be registered with `brsaneconfig4`/`brsaneconfig5`.
-
-
-#### ScanSnap<a id="installation-scansnap"></a>
-
-ScanSnap devices (e.g. the ScanSnap iX500; formerly sold under the Fujitsu brand, Ricoh products today) use the stock SANE `fujitsu` backend over USB. They need no additional packages or configuration beyond the dependencies above.
-
-
-### Tested devices<a id="installation-tested-devices"></a>
-
-Anything SANE can drive should work; the following devices are regularly used with ScanMole and were verified with real batches:
-
-| Device | Connection | SANE backend | Notes |
-|---|---|---|---|
-| Brother ADS-4550W | USB (via ipp-usb) and network | `airscan` (eSCL, driverless) | Duplex ADF. Offers only Color/Gray, so 1-bit output comes from ScanMole's software conversion. |
-| ScanSnap iX500 | USB | `fujitsu` | Duplex ADF, native 1-bit, hardware paper-edge detection. |
-| ScanSnap iX100 | USB | `fujitsu` | Portable single-side sheet feeder, native 1-bit. |
-
-Every listed device has its captured capability listing pinned in the test suite (`tests/fixtures/scanimage-A/`), so its option mapping stays regression-tested without the hardware. If your device works too (or does not), [reporting it](#faq-scanner-quirks) helps this list grow.
+Device-specific packages, network configuration and the list of verified units are collected under [Devices](#devices).
 
 
 ## Usage<a id="usage"></a>
@@ -184,13 +163,13 @@ Every listed device has its captured capability listing pinned in the test suite
 ### Command Line Interface (CLI)<a id="usage-cli"></a>
 
 ```sh
-scanmole --list-devices        # what SANE sees (webcams/v4l are ignored)
-scanmole                       # ADF duplex, lineart, 300 dpi, auto size, deu+eng OCR
-                               #   -> ./2026-08-15_scan_001.pdf (auto-numbered)
-scanmole '{YYYY}-{MM}_scan_{NN}'       # template -> ./2026-08_scan_01.pdf
+scanmole --list-devices   # what SANE sees (webcams/v4l are ignored)
+scanmole                  # ADF duplex, lineart, 300 dpi, auto size, deu+eng OCR
+                          #   -> ./2026-08-15_scan_001.pdf (auto-numbered)
+scanmole '{YYYY}-{MM}_scan_{NN}'  # template -> ./2026-08_scan_01.pdf
 scanmole -o invoice.pdf --mode gray -r 300 -l deu+eng
 scanmole --source flatbed --no-ocr --keep-blanks draft
-scanmole --from-images pages/*.png -o rebuild.pdf   # pipeline without a scanner
+scanmole --from-images pages/*.png -o rebuild.pdf  # pipeline without a scanner
 ```
 
 Output names may contain placeholders, in the CLI and the GUI alike: `{YYYY}`, `{MM}`, `{DD}` (date), `{hh}`, `{mm}`, `{ss}` (time), `{N}`/`{NN}`/... (zero-padded auto-increment, bumped until the name is free) and `{device}`; the default is `{YYYY}-{MM}-{DD}_scan_{NNN}.pdf`.
@@ -252,6 +231,50 @@ One JSON object per line on stdout; human-readable log on stderr:
 ```
 
 `hello` opens every `--json` run and carries the CLI version, which is also the API version ([SemVer](https://semver.org/)): a frontend and the CLI are compatible as long as their major versions match (from 1.0.0 on). `start` carries the requested settings; `settings` (scanner runs only) reports the values actually negotiated with the SANE backend. `error.code` mirrors the process exit code. This protocol, the option names and the exit codes are the compatibility boundary for any frontend or reimplementation; the authoritative definition is the CLI contract in [`ARCHITECTURE.md`](ARCHITECTURE.md#contract).
+
+
+## Devices<a id="devices"></a>
+
+Anything [SANE](https://en.wikipedia.org/wiki/Scanner_Access_Now_Easy) can drive should work without ScanMole knowing the model; vendor specifics and the verified units are collected here.
+
+### Brother<a id="devices-brother"></a>
+
+Modern Brother devices (e.g. the Brother ADS-4550W) work driverless via `sane-airscan` (eSCL) and need no additional packages or configuration beyond the dependencies from [Installation](#installation).
+
+Older devices without eSCL support (e.g. the Brother ADS-2600W) need Brother's proprietary `brscan4`/`brscan5` driver packages from the [Brother support site](https://support.brother.com/g/s/id/linux/en/index.html); network devices must additionally be registered with `brsaneconfig4`/`brsaneconfig5`.
+
+
+### Epson<a id="devices-epson"></a>
+
+Modern Epson document scanners (DS/ES/WorkForce series, e.g. the Epson DS-730N) use the `epsonds` backend. If your device is not recognized, try one of the following; `epsonds` does no discovery over the network:
+
+1. Add a line `net <ip-address>` to `/etc/sane.d/epsonds.conf`; the device then appears as `epsonds:net:...`.
+2. Alternatively these devices speak WSD via `sane-airscan`. If discovery does not pick the scanner up, pin the endpoint in the `[devices]` section of `/etc/sane.d/airscan.conf`, copying the line `airscan-discover` reports.
+
+   ```
+   [devices]
+   "<device name, e.g. EPSON DS-730N>" = http://<ip-address>:80/WDP/SCAN, WSD
+   ```
+
+Do **not** use an `epson2:net:...` entry that may show up alongside: the `epson2` backend covers older flatbeds and misdetects DS models over the network (as a flatbed named "PID", failing with an I/O error at scan start).
+
+
+### ScanSnap<a id="devices-scansnap"></a>
+
+ScanSnap devices (e.g. the ScanSnap iX500; formerly sold under the Fujitsu brand, Ricoh products today) use the stock SANE `fujitsu` backend over USB. They need no additional packages or configuration beyond the dependencies from [Installation](#installation).
+
+
+### Tested devices<a id="devices-tested"></a>
+
+The following devices are regularly used with ScanMole and were verified with real batches:
+
+| Device | Connection | SANE backend | Notes |
+|---|---|---|---|
+| Brother ADS-4550W | USB (via ipp-usb) and network | `airscan` (eSCL, driverless) | Duplex ADF. Offers only Color/Gray, so 1-bit output comes from ScanMole's software conversion. |
+| ScanSnap iX500 | USB | `fujitsu` | Duplex ADF, native 1-bit, hardware paper-edge detection. |
+| ScanSnap iX100 | USB | `fujitsu` | Portable single-side sheet feeder, native 1-bit. |
+
+Every listed device has its captured capability listing pinned in the test suite (`tests/fixtures/scanimage-A/`), so its option mapping stays regression-tested without the hardware. If your device works too (or does not), [reporting it](#faq-scanner-quirks) helps this list grow.
 
 
 ## FAQ<a id="faq"></a>
