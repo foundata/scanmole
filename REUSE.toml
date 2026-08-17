@@ -1,6 +1,6 @@
 version = 1
 SPDX-PackageName = "ScanMole: userfriendly, simple scanning tool. Scan documents from a SANE scanner straight to a searchable PDF."
-SPDX-PackageDownloadLocation = "https://github.com/foundata/scanmole"
+SPDX-PackageDownloadLocation = "https://foundata.com/en/projects/scanmole/#releases"
 SPDX-PackageSupplier = "foundata GmbH (https://foundata.com)"
 SPDX-PackageComment = """
 This project may include calls to Application Programming Interfaces
