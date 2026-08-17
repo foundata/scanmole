@@ -4,7 +4,7 @@
 name = "scanmole"
 version = "1.0.0"
 description = "Scan documents from a SANE scanner straight to a searchable PDF."
-keywords = ["scanning", "scanner", "sane", "adf", "pdf", "ocr", "paperless"]
+keywords = ["scanning", "scanner", "document-processing", "linux", "sane", "pdf", "ocr"]
 license = "GPL-3.0-or-later"
 license-files = ["LICENSES/*.txt"]
 readme = { file = "README.md", content-type = "text/markdown" }

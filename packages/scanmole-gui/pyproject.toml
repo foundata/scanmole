@@ -4,7 +4,7 @@
 name = "scanmole-gui"
 version = "1.0.0"
 description = "GTK4/libadwaita frontend for ScanMole, the SANE-scanner-to-searchable-PDF tool."
-keywords = ["scanning", "scanner", "sane", "adf", "pdf", "ocr", "paperless", "gtk"]
+keywords = ["scanning", "scanner", "document-processing", "linux", "sane", "pdf", "ocr", "gui"]
 license = "GPL-3.0-or-later"
 license-files = ["LICENSES/*.txt"]
 readme = { file = "README.md", content-type = "text/markdown" }
