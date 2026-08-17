@@ -2,17 +2,17 @@
 
 **Easy, scriptable document scanning for Linux: ADF duplex batches in, searchable (OCRed) PDFs out.**
 
-It consists of two components:
+It consists of two components, shipped as two Python packages, so servers and scripts can install the CLI alone while desktops get the whole experience:
 
 1. **`scanmole`**: CLI scanning engine.
-2. **`scanmole-gui`**: GTK4/libadwaita frontend. A thin subprocess wrapper around `scanmole` using its `--json` event protocol; it contains no scanning logic itself.
+2. **`scanmole-gui`**: GTK4/libadwaita frontend (depends on `scanmole`). A thin subprocess wrapper around the CLI using its `--json` event protocol; it contains no scanning logic itself.
 
 
 <div align="center" id="project-readme-header">
 <br>
 <br>
 
-<img src="src/scanmole/gui/icons/hicolor/scalable/apps/com.foundata.ScanMole.svg" alt="ScanMole logo: a mole with glasses holding a scanned document" height="128" />
+<img src="packages/scanmole-gui/src/scanmole_gui/icons/hicolor/scalable/apps/com.foundata.ScanMole.svg" alt="ScanMole logo: a mole with glasses holding a scanned document" height="128" />
 
 <br>
 <br>
@@ -79,16 +79,27 @@ Main features:
 
 ## Installation<a id="installation"></a>
 
-ScanMole is a Python package installed into a [uv](https://docs.astral.sh/uv/)-managed virtualenv:
+ScanMole consists of two Python packages, currently installed from a repository checkout into a [uv](https://docs.astral.sh/uv/)-managed virtualenv. On a desktop, install both:
 
 ```sh
+git clone https://github.com/foundata/scanmole.git
+cd scanmole
 uv venv --system-site-packages # venv that can see the distribution's PyGObject
 uv sync                        # installs the scanmole and scanmole-gui commands
 ```
 
-The `--system-site-packages` flag matters for the GUI only; the CLI is pure stdlib and works in any venv.
+The `--system-site-packages` flag matters for the GUI only. On a server or for scripting, the CLI installs alone into any venv (it is pure stdlib and needs neither GTK nor PyGObject):
 
-ScanMole's runtime shells out to external tools, which come from distribution packages. Install them as follows:
+```sh
+git clone https://github.com/foundata/scanmole.git
+cd scanmole
+uv venv
+uv sync --package scanmole     # installs only the scanmole command
+```
+
+Afterwards, activate the venv (`source .venv/bin/activate`) or prefix the commands with `uv run`.
+
+ScanMole's runtime shells out to external tools, which come from distribution packages. Install them as follows (on a CLI-only machine, the GTK/PyGObject packages at the end of each list can be skipped):
 
 
 ### Debian/Ubuntu<a id="installation-debian"></a>

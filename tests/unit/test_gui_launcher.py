@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from scanmole.gui import incompatible_cli, main
+from scanmole_gui import incompatible_cli, main
 
 
 @pytest.mark.parametrize(

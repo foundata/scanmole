@@ -1,6 +1,6 @@
 """GTK4/libadwaita frontend for the ScanMole CLI.
 
-The console-script entry point lives here rather than in :mod:`scanmole.gui.app`
+The console-script entry point lives here rather than in :mod:`scanmole_gui.app`
 so a missing PyGObject/GTK installation produces a clean one-line message
 instead of an import traceback: ``app`` imports the GTK bindings at module
 level, while this launcher probes for them first.
@@ -13,7 +13,10 @@ import os
 import sys
 from pathlib import Path
 
-from scanmole import BYLINE, __version__
+from scanmole import BYLINE
+
+# The scanmole-gui distribution version, bumped in lockstep with scanmole.
+__version__ = "0.1.0"
 
 _MISSING_GUI_MESSAGE = (
     "scanmole-gui needs PyGObject and GTK 4 — install: python3-gobject gtk4 libadwaita"
@@ -24,7 +27,7 @@ def preferred_ui_language() -> str:
     """Return the persisted GUI language override (``en``/``de``), or ``""``.
 
     Read without GLib on purpose: the language must be in the environment
-    before :mod:`scanmole.gui.i18n` builds its gettext catalog at import time,
+    before :mod:`scanmole_gui.i18n` builds its gettext catalog at import time,
     which happens when the GTK probe below succeeds and ``app`` is imported.
     """
     config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
@@ -81,6 +84,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {_MISSING_GUI_MESSAGE}", file=sys.stderr)
         return 1
 
-    from scanmole.gui.app import main as run_gui
+    from scanmole_gui.app import main as run_gui
 
     return run_gui(argv)

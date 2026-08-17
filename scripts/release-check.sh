@@ -69,9 +69,9 @@ run_static_checks() {
     # Formatter, linter and type checker are version-independent here
     # (mypy targets the project minimum via pyproject), so run them once.
     log "Static checks (format, lint, type check)"
-    uv run ruff format --check src tests
-    uv run ruff check src tests
-    uv run mypy src tests
+    uv run ruff format --check packages tests
+    uv run ruff check packages tests
+    uv run mypy packages/scanmole/src packages/scanmole-gui/src tests
 }
 
 run_tests_matrix() {
@@ -82,17 +82,18 @@ run_tests_matrix() {
 }
 
 build_artifacts() {
-    log "Build wheel and source distribution"
+    log "Build wheels and source distributions (all workspace packages)"
     rm -rf dist
-    uv build
+    uv build --all-packages
     ls -1 dist
 }
 
 smoke_test_matrix() {
-    local wheel
-    wheel="$(ls -1 dist/*.whl | head -n1)"
-    if [ -z "$wheel" ]; then
-        echo "error: no wheel found in dist/" >&2
+    local cli_wheel gui_wheel
+    cli_wheel="$(ls -1 dist/scanmole-*.whl | head -n1)"
+    gui_wheel="$(ls -1 dist/scanmole_gui-*.whl | head -n1)"
+    if [ -z "$cli_wheel" ] || [ -z "$gui_wheel" ]; then
+        echo "error: expected scanmole and scanmole_gui wheels in dist/" >&2
         exit 1
     fi
 
@@ -103,8 +104,8 @@ smoke_test_matrix() {
         log "Install + smoke test on Python ${py} (clean environment)"
         local venv="${WORK_DIR}/venv-${py}"
         uv venv --python "$py" "$venv" >/dev/null
-        # Install ONLY the built wheel (no project sources on the path).
-        uv pip install --python "$venv/bin/python" "$wheel" >/dev/null
+        # Install ONLY the built wheels (no project sources on the path).
+        uv pip install --python "$venv/bin/python" "$cli_wheel" "$gui_wheel" >/dev/null
 
         # Import smoke test against the installed artifact.
         local installed_version
@@ -117,6 +118,11 @@ smoke_test_matrix() {
             exit 1
         fi
         echo "import ok: ${IMPORT_NAME} ${installed_version}"
+
+        # The GUI package must stay importable without GTK (its launcher and
+        # the pure helpers are GTK-free by design).
+        "$venv/bin/python" -c "import scanmole_gui" >/dev/null
+        echo "import ok: scanmole_gui"
 
         # Command-line smoke test against the installed console scripts.
         "$venv/bin/${COMMAND_NAME}" --version >/dev/null

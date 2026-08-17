@@ -1,6 +1,6 @@
 """Tests for the GUI's gettext catalogs.
 
-Imports only :mod:`scanmole.gui.i18n` (stdlib gettext), so no GTK/PyGObject is
+Imports only :mod:`scanmole_gui.i18n` (stdlib gettext), so no GTK/PyGObject is
 needed. Verifies that the committed German .mo is loadable and that unknown
 locales fall back to the English msgids.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import gettext
 
-from scanmole.gui.i18n import DOMAIN, LOCALE_DIR
+from scanmole_gui.i18n import DOMAIN, LOCALE_DIR
 
 
 def _catalog(language: str) -> gettext.NullTranslations:

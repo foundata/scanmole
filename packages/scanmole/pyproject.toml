@@ -1,0 +1,53 @@
+# https://packaging.python.org/en/latest/guides/writing-pyproject-toml/
+
+[project]
+name = "scanmole"
+version = "0.1.0"
+description = "Scan documents from a SANE scanner straight to a searchable PDF."
+keywords = ["scanning", "scanner", "sane", "adf", "pdf", "ocr", "paperless"]
+license = "GPL-3.0-or-later"
+license-files = ["LICENSES/*.txt"]
+readme = { file = "README.md", content-type = "text/markdown" }
+authors = [
+  { name = "foundata GmbH" },
+  { name = "Andreas Haerter", email = "ah@foundata.com" },
+]
+maintainers = [
+  { name = "Andreas Haerter", email = "ah@foundata.com" },
+]
+requires-python = ">=3.12"
+dependencies = []
+
+# https://pypi.org/classifiers/
+classifiers = [
+  "Development Status :: 4 - Beta",
+
+  # Indication for whom the project is for
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Multimedia :: Graphics :: Capture :: Scanners",
+  "Topic :: Office/Business",
+  "Topic :: Utilities",
+
+  # Supported Python versions
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+
+[project.scripts]
+scanmole = "scanmole.cli:main"
+
+[project.urls]
+Homepage = "https://foundata.com/en/projects/scanmole/"
+Documentation = "https://foundata.com/en/projects/scanmole/#doc"
+Repository = "https://foundata.com/en/projects/scanmole/#source"
+Issues = "https://foundata.com/en/projects/scanmole/#issues"
+Changelog = "https://foundata.com/en/projects/scanmole/#changelog"
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"

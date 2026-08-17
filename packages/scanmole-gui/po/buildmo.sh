@@ -6,7 +6,7 @@ set -eu
 cd "$(dirname "$0")/.."
 for po in po/*.po; do
     lang=$(basename "$po" .po)
-    dir="src/scanmole/gui/locale/$lang/LC_MESSAGES"
+    dir="src/scanmole_gui/locale/$lang/LC_MESSAGES"
     mkdir -p "$dir"
-    msgfmt --check --statistics -o "$dir/scanmole.mo" "$po"
+    msgfmt --check --statistics -o "$dir/scanmole-gui.mo" "$po"
 done

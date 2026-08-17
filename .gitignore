@@ -398,4 +398,4 @@ $RECYCLE.BIN/
 
 # ScanMole: compiled GUI translation catalogs are committed (uv_build has no
 # build hook to run msgfmt); the extracted po/*.pot template stays generated.
-!src/scanmole/gui/locale/**/*.mo
+!packages/scanmole-gui/src/scanmole_gui/locale/**/*.mo

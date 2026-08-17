@@ -55,39 +55,45 @@ This file provides information for maintainers and contributors to ScanMole. Wha
 
 ## Project structure<a id="project-structure"></a>
 
+The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/) with two installable packages; the root `pyproject.toml` is virtual and holds the shared tooling configuration and dev dependencies.
+
 ```
-scanmole/                      # repository root
-├── pyproject.toml             # metadata, deps, entry points, ruff/mypy/pytest config
+scanmole/                      # repository root (uv workspace)
+├── pyproject.toml             # virtual workspace root: members, dev deps, ruff/mypy/pytest config
 ├── README.md
 ├── ARCHITECTURE.md            # what the system is (incl. the frozen CLI contract)
 ├── DEVELOPMENT.md             # this file
-├── src/
-│   └── scanmole/              # import package
-│       ├── cli.py             # argparse + main() -> int   (scanmole console script)
-│       ├── pipeline.py        # orchestration: scan → blank-drop → PDF → OCR
-│       ├── scanner.py         # scanimage acquisition, streaming page delivery
-│       ├── options.py         # -A capability parsing + source/mode/page-size mapping
-│       ├── naming.py          # output filename templates (shared with the GUI preview)
-│       ├── devices.py         # device discovery
-│       ├── pnm.py             # stdlib PNM parsing + blank detection
-│       ├── pdf.py             # img2pdf + ocrmypdf wrappers
-│       ├── events.py          # JSON-lines event protocol writer
-│       ├── errors.py          # ScanMoleError hierarchy (exit codes)
-│       ├── external.py        # subprocess helpers, timeouts, install hints
-│       ├── config.py          # ScanConfig dataclass + page-size table
-│       └── gui/               # GTK4/libadwaita GUI (scanmole-gui console script)
+├── packages/
+│   ├── scanmole/              # the CLI engine package
+│   │   ├── pyproject.toml     # metadata + scanmole console script
+│   │   └── src/scanmole/      # import package
+│   │       ├── cli.py         # argparse + main() -> int
+│   │       ├── pipeline.py    # orchestration: scan → blank-drop → PDF → OCR
+│   │       ├── scanner.py     # scanimage acquisition, streaming page delivery
+│   │       ├── options.py     # -A capability parsing + source/mode/page-size mapping
+│   │       ├── naming.py      # output filename templates (shared with the GUI preview)
+│   │       ├── devices.py     # device discovery
+│   │       ├── pnm.py         # stdlib PNM parsing + blank detection
+│   │       ├── pdf.py         # img2pdf + ocrmypdf wrappers
+│   │       ├── events.py      # JSON-lines event protocol writer
+│   │       ├── errors.py      # ScanMoleError hierarchy (exit codes)
+│   │       ├── external.py    # subprocess helpers, timeouts, install hints
+│   │       └── config.py      # ScanConfig dataclass + page-size table
+│   └── scanmole-gui/          # the GTK4/libadwaita frontend package
+│       ├── pyproject.toml     # metadata + scanmole-gui console script; depends on scanmole
+│       ├── po/                # translation template, per-language .po, scripts
+│       └── src/scanmole_gui/  # import package
 │           ├── app.py         # the window and event handling
 │           ├── i18n.py        # gettext catalog loading (_ and ngettext)
 │           ├── locale/        # compiled .mo catalogs (committed, ship in wheel)
 │           └── icons/         # hicolor tree with the logo (header bar, About, README)
-├── po/                        # translation template, per-language .po, scripts
 ├── scripts/
 │   └── release-check.sh       # full local release gate (matrix, build, smoke test)
 └── tests/
     ├── unit/                  # no hardware, no external tools
     ├── integration/           # external tools and the SANE test backend, with skips
     └── fixtures/
-        ├── scanimage-A/       # captured/modeled -A listings pinning the parser
+        ├── scanimage-A/       # captured -A listings pinning the parser
         └── golden/            # committed --json transcript (compatibility check)
 ```
 
@@ -95,7 +101,7 @@ scanmole/                      # repository root
 ## Development standards<a id="development-standards"></a>
 
 - Follow the foundata Python style guide: full type annotations, Google-style docstrings, `logging` for diagnostics.
-- mypy runs in strict mode over `src` and `tests`, including the GUI package. Only the `gi` bindings are exempted in `pyproject.toml` because PyGObject ships no stubs; where the GTK boundary genuinely cannot be typed (subclassing the Any-typed widget classes), a per-line `# type: ignore[...]` with a specific error code and a comment is used.
+- mypy runs in strict mode over both packages and `tests`, including the GUI. Only the `gi` bindings are exempted in `pyproject.toml` because PyGObject ships no stubs; where the GTK boundary genuinely cannot be typed (subclassing the Any-typed widget classes), a per-line `# type: ignore[...]` with a specific error code and a comment is used.
 - All commands run as argument sequences with explicit timeouts, never through a shell (`scanmole/external.py` is the only place that spawns tools, `scanner.py` aside).
 - Markdown: one paragraph or list item per line (no hard wrapping), no em or en dashes in prose.
 - Encoding: UTF-8 with LF line endings, no BOM.
@@ -104,9 +110,9 @@ scanmole/                      # repository root
 ### Code formatting and linting<a id="code-linting"></a>
 
 ```sh
-uv run ruff format src tests   # format
-uv run ruff check src tests    # lint (add --fix for autofixes)
-uv run mypy src tests          # strict type check
+uv run ruff format packages tests   # format
+uv run ruff check packages tests    # lint (add --fix for autofixes)
+uv run mypy packages/scanmole/src packages/scanmole-gui/src tests  # strict type check
 ```
 
 Always run all three before committing. The rule sets live in `pyproject.toml`.
@@ -191,19 +197,19 @@ Manual, per release, per device class:
 Only the GUI is localized (see [`ARCHITECTURE.md`](ARCHITECTURE.md#i18n)). Workflow, with the gettext tools installed:
 
 ```sh
-po/updatepo.sh de   # re-extract strings and merge them into po/de.po
-$EDITOR po/de.po    # translate
-po/buildmo.sh       # compile into src/scanmole/gui/locale/ (committed)
+packages/scanmole-gui/po/updatepo.sh de   # re-extract strings, merge into po/de.po
+$EDITOR packages/scanmole-gui/po/de.po    # translate
+packages/scanmole-gui/po/buildmo.sh       # compile into src/scanmole_gui/locale/ (committed)
 ```
 
 Adding a language (e.g. `es`):
 
-1. Run `po/genpot.sh`.
-2. Run `msginit -l es -i po/scanmole.pot -o po/es.po`.
-3. Translate `po/es.po`.
-4. Run `po/buildmo.sh`.
+1. Run `packages/scanmole-gui/po/genpot.sh`.
+2. Run `msginit -l es -i po/scanmole-gui.pot -o po/es.po` inside `packages/scanmole-gui/`.
+3. Translate `packages/scanmole-gui/po/es.po`.
+4. Run `packages/scanmole-gui/po/buildmo.sh`.
 
-No code changes are needed. Compiled `.mo` catalogs are committed because the build backend cannot run msgfmt; the extracted `po/scanmole.pot` stays generated. Translatable strings use `%`-style named placeholders and `ngettext` for plurals.
+No code changes are needed. Compiled `.mo` catalogs are committed because the build backend cannot run msgfmt; the extracted `po/scanmole-gui.pot` stays generated. Translatable strings use `%`-style named placeholders and `ngettext` for plurals.
 
 
 ## Recommended development workflow<a id="development-workflow"></a>
@@ -225,10 +231,10 @@ No code changes are needed. Compiled `.mo` catalogs are committed because the bu
 ### Before committing<a id="before-committing"></a>
 
 ```sh
-uv run ruff format src tests   # 1. format
-uv run ruff check --fix src tests   # 2. lint
-uv run mypy src tests          # 3. type check
-uv run pytest                  # 4. tests
+uv run ruff format packages tests        # 1. format
+uv run ruff check --fix packages tests   # 2. lint
+uv run mypy packages/scanmole/src packages/scanmole-gui/src tests  # 3. type check
+uv run pytest                            # 4. tests
 ```
 
 
@@ -242,9 +248,9 @@ uv run pytest                  # 4. tests
 2. Determine the next version number. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 3. Update several files to match the new release version:
    - [`CHANGELOG.md`](./CHANGELOG.md): insert a section for the new release with the date (Keep a Changelog format).
-   - [`uv.lock`](./uv.lock): the `version` variable of the `scanmole` package.
-   - [`pyproject.toml`](./pyproject.toml): the `version` variable.
-   - [`src/scanmole/__init__.py`](./src/scanmole/__init__.py): the `__version__` variable.
+   - [`uv.lock`](./uv.lock): the `version` of the `scanmole` and `scanmole-gui` packages.
+   - [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml): the `version` variable, plus the `scanmole==...` dependency pin in the GUI package.
+   - [`packages/scanmole/src/scanmole/__init__.py`](./packages/scanmole/src/scanmole/__init__.py) and [`packages/scanmole-gui/src/scanmole_gui/__init__.py`](./packages/scanmole-gui/src/scanmole_gui/__init__.py): the `__version__` variable.
    - The following snippet can help with these files (but double check `uv.lock` that only the package's own version gets replaced):
      ```sh
      old_version="<FIXME version>" # major.minor.patch
@@ -252,8 +258,10 @@ uv run pytest                  # 4. tests
 
      files=(
       "./uv.lock"
-      "./pyproject.toml"
-      "./src/scanmole/__init__.py"
+      "./packages/scanmole/pyproject.toml"
+      "./packages/scanmole-gui/pyproject.toml"
+      "./packages/scanmole/src/scanmole/__init__.py"
+      "./packages/scanmole-gui/src/scanmole_gui/__init__.py"
      )
 
      old_version_regex="${old_version//./\\.}"
@@ -274,8 +282,10 @@ uv run pytest                  # 4. tests
    git add \
      "./CHANGELOG.md" \
      "./uv.lock" \
-     "./pyproject.toml" \
-     "./src/scanmole/__init__.py"
+     "./packages/scanmole/pyproject.toml" \
+     "./packages/scanmole-gui/pyproject.toml" \
+     "./packages/scanmole/src/scanmole/__init__.py" \
+     "./packages/scanmole-gui/src/scanmole_gui/__init__.py"
    git commit -m "release: prepare ${version}"
 
    git tag "v${version}" "$(git rev-parse --verify HEAD)" -m "version ${version}"

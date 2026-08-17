@@ -8,6 +8,6 @@ if [ $# -ne 1 ]; then
 fi
 cd "$(dirname "$0")/.."
 ./po/genpot.sh
-msgmerge --backup=none --update "po/$1.po" po/scanmole.pot
+msgmerge --backup=none --update "po/$1.po" po/scanmole-gui.pot
 msgattrib --no-obsolete -o "po/$1.po" "po/$1.po"
 msgfmt --statistics -o /dev/null "po/$1.po"

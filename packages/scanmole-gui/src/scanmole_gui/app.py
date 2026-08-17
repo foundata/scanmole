@@ -6,7 +6,7 @@ offers the finished PDF. All scanning and OCR work happens in the ``scanmole``
 executable (resolved from ``PATH``).
 
 Widget labels, status texts and dialogs are translatable via gettext (see
-:mod:`scanmole.gui.i18n`); the log pane stays English on purpose, because it
+:mod:`scanmole_gui.i18n`); the log pane stays English on purpose, because it
 mixes in output of the English-only CLI.
 """
 
@@ -37,13 +37,11 @@ from gi.repository import (  # noqa: E402  # after require_version
     Gtk,
 )
 
-from scanmole import __version__  # noqa: E402
-from scanmole.gui import incompatible_cli  # noqa: E402
-from scanmole.gui.i18n import _, ngettext  # noqa: E402  # after gi setup
-
-# The GUI holds no pipeline logic; this pure helper is imported only so the
-# live filename preview matches what the CLI will produce.
+# The GUI holds no pipeline logic; the pure naming helper is imported only so
+# the live filename preview matches what the CLI will produce.
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
+from scanmole_gui import __version__, incompatible_cli  # noqa: E402
+from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 
 APP_ID = "com.foundata.ScanMole"
 PROJECT_URL = "https://foundata.com/en/projects/scanmole/"
@@ -1947,7 +1945,7 @@ def main(argv: list[str] | None = None) -> int:
         # Re-execute the process so the launcher re-applies the persisted
         # interface language before gettext binds. The stale LANGUAGE from
         # this process must not leak into the replacement.
-        from scanmole.gui import preferred_ui_language
+        from scanmole_gui import preferred_ui_language
 
         language = preferred_ui_language()
         if language:

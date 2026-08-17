@@ -12,7 +12,7 @@ from __future__ import annotations
 import gettext
 from pathlib import Path
 
-DOMAIN = "scanmole"
+DOMAIN = "scanmole-gui"
 
 # Compiled catalogs live inside the package (locale/<lang>/LC_MESSAGES/) and
 # ship with the wheel. gettext needs a real filesystem path for localedir, so
