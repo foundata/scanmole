@@ -114,13 +114,39 @@ def publish_pdf(source: Path, output: Path) -> None:
             staged.unlink(missing_ok=True)
 
 
-def copy_kept_images(kept: list[KeptPage], destination: Path) -> None:
-    """Copy each kept page image into ``destination`` as ``page_NNNN.ext``."""
+def copy_kept_images(kept: list[KeptPage], destination: Path, stem: str) -> None:
+    """Copy each kept page image into a per-batch directory under destination.
+
+    Each batch claims ``<destination>/<stem>/`` (or ``<stem>_2/``, ... when
+    taken) with an atomic ``mkdir``: archive directories are typically reused
+    across runs, and repeated as well as concurrent batches must not
+    overwrite or interleave each other's pages. An output-stem file prefix
+    alone cannot guarantee that, because equally named outputs in different
+    directories share a stem.
+
+    Raises:
+        ProcessingError: If no batch directory could be reserved.
+    """
     destination.mkdir(parents=True, exist_ok=True)
+    batch_dir: Path | None = None
+    for attempt in range(1, 1000):
+        candidate = destination / (stem if attempt == 1 else f"{stem}_{attempt}")
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise ProcessingError(
+                f"cannot reserve the archive directory {candidate}: {exc}"
+            ) from exc
+        batch_dir = candidate
+        break
+    if batch_dir is None:  # pragma: no cover -- needs 999 same-named batches
+        raise ProcessingError(f"cannot reserve an archive directory in {destination}")
     for number, page in kept:
         suffix = page.suffix or ".img"
-        shutil.copy2(page, destination / f"page_{number:04d}{suffix}")
-    LOGGER.info("Kept page images copied to %s", destination)
+        shutil.copy2(page, batch_dir / f"page_{number:04d}{suffix}")
+    LOGGER.info("Kept page images copied to %s", batch_dir)
 
 
 def _apply_content_sizes(
@@ -335,7 +361,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         LOGGER.info("Scanned %d page(s), kept %d", total, len(kept))
         _apply_content_sizes(measured, kept, negotiated, config, dpi)
         if config.keep_images is not None:
-            copy_kept_images(kept, config.keep_images)
+            copy_kept_images(kept, config.keep_images, config.output.stem)
         if not kept:
             raise NoPagesError(
                 f"all {total} page(s) were blank -- nothing to output "

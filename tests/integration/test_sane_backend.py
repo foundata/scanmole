@@ -117,7 +117,7 @@ def test_lineart_request_produces_one_bit_pages_on_a_gray_backend(
 
     assert main(argv) == 0
 
-    pages = sorted(kept.glob("page_*.pnm"))
+    pages = sorted((kept / "out").glob("page_*.pnm"))  # per-batch subdirectory
     assert pages
     for page in pages:
         assert page.read_bytes().startswith(b"P4\n")

@@ -305,7 +305,7 @@ def test_lineart_request_binarizes_gray_scanner_pages(
 
     assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
 
-    kept = keep_dir / "page_0001.pnm"
+    kept = keep_dir / "out" / "page_0001.pnm"
     assert kept.read_bytes().startswith(b"P4\n")
     page_event = next(
         json.loads(line)
@@ -334,7 +334,7 @@ def test_lineart_threshold_zero_keeps_the_gray_pages(
 
     assert run_pipeline(config, EventWriter(enabled=False)) == 0
 
-    assert (keep_dir / "page_0001.pnm").read_bytes().startswith(b"P5\n")
+    assert (keep_dir / "out" / "page_0001.pnm").read_bytes().startswith(b"P5\n")
 
 
 def test_auto_page_size_crops_before_binarization_and_blank_detection(
@@ -395,7 +395,7 @@ def test_auto_page_size_crops_before_binarization_and_blank_detection(
     events = [json.loads(line) for line in stream.getvalue().splitlines()]
     scan_done = next(event for event in events if event["event"] == "scan_done")
     assert scan_done == {"event": "scan_done", "total": 2, "kept": 1, "blanks": 1}
-    kept_page = keep_dir / "page_0001.pnm"
+    kept_page = keep_dir / "out" / "page_0001.pnm"
     header = kept_page.read_bytes().split(b"\n", 2)
     assert header[0] == b"P4"  # cropped, then binarized
     width, height = map(int, header[1].split())
@@ -477,7 +477,7 @@ def test_auto_page_size_sizes_white_backed_frames_by_content(
     assert run_pipeline(config, EventWriter(enabled=False)) == 0
 
     for name in ("page_0001.pnm", "page_0002.pnm"):
-        header = (keep_dir / name).read_bytes().split(b"\n", 2)
+        header = (keep_dir / "out" / name).read_bytes().split(b"\n", 2)
         width, height = map(int, header[1].split())
         # Both kept and both exactly A4 (byte-grid alignment may add <8 px).
         assert abs(width - round(210 * scale)) < 8
@@ -623,7 +623,7 @@ def test_hardware_cropped_frames_stay_untouched(
 
     assert run_pipeline(config, EventWriter(enabled=False)) == 0
 
-    header = (keep_dir / "page_0001.pnm").read_bytes().split(b"\n", 2)
+    header = (keep_dir / "out" / "page_0001.pnm").read_bytes().split(b"\n", 2)
     width, height = map(int, header[1].split())
     assert (width, height) == (frame_w, frame_h)  # exactly as delivered
 
@@ -657,3 +657,20 @@ def test_blank_threshold_zero_disables_blank_detection(tmp_path: Path) -> None:
 
     assert keep is True
     assert blank is False
+
+
+def test_keep_images_batches_never_collide(tmp_path: Path) -> None:
+    # Reusing one archive directory (also concurrently, mkdir is atomic)
+    # must isolate batches even when outputs in different directories share
+    # a name: each batch claims its own subdirectory.
+    from scanmole.pipeline import copy_kept_images
+
+    first = _gray_page(tmp_path / "a.pnm")
+    second = _gray_page(tmp_path / "b.pnm")
+    archive = tmp_path / "archive"
+
+    copy_kept_images([(1, first)], archive, "scan")
+    copy_kept_images([(1, second)], archive, "scan")
+
+    assert (archive / "scan" / "page_0001.pnm").is_file()
+    assert (archive / "scan_2" / "page_0001.pnm").is_file()
