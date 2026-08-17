@@ -1,15 +1,35 @@
 # ScanMole
 
-<img src="src/scanmole/gui/icons/hicolor/scalable/apps/com.foundata.ScanMole.svg" alt="ScanMole logo: a mole with glasses holding a scanned document" width="110" align="right">
+**Easy, scriptable document scanning for Linux: ADF duplex batches in, searchable (OCRed) PDFs out.**
 
-Paperless-office document scanning for Linux: ADF duplex batches in, searchable (OCRed) PDFs out. A scriptable CLI with a GTK4 GUI on top of it.
+It consists of two components:
 
-- **`scanmole`**: CLI scanning engine (Python 3, stdlib only). Scans via SANE (`scanimage`), drops blank pages, assembles a PDF with `img2pdf`, runs Tesseract OCR via `ocrmypdf`.
-- **`scanmole-gui`**: GTK4/libadwaita frontend. A thin subprocess wrapper around `scanmole` using its `--json` event protocol; it contains no scanning logic itself.
+1. **`scanmole`**: CLI scanning engine.
+2. **`scanmole-gui`**: GTK4/libadwaita frontend. A thin subprocess wrapper around `scanmole` using its `--json` event protocol; it contains no scanning logic itself.
+
+
+<div align="center" id="project-readme-header">
+<br>
+<br>
+
+<img src="src/scanmole/gui/icons/hicolor/scalable/apps/com.foundata.ScanMole.svg" alt="ScanMole logo: a mole with glasses holding a scanned document" height="128" />
+
+<br>
+<br>
+
+**⭐ Found this useful? Support open-source and star this project:**
+
+[![GitHub repository](https://img.shields.io/github/stars/foundata/scanmole.svg)](https://github.com/foundata/scanmole)
+
+<br>
+</div>
 
 
 ## Table of contents<a id="toc"></a>
 
+- [Features](#features)
+- [Demo](#demo)
+  - [Screenshots](#demo-screenshots)
 - [Installation](#installation)
   - [Debian/Ubuntu](#installation-debian)
   - [Fedora](#installation-fedora)
@@ -28,6 +48,33 @@ Paperless-office document scanning for Linux: ADF duplex batches in, searchable 
 - [Licensing, copyright](#licensing-copyright)
   - [Trademarks](#trademarks)
 - [Author information](#author-information)
+
+
+## Features<a id="features"></a>
+
+Main features:
+
+- **Scan a stack of paper into one searchable PDF with a single command:** duplex batch, blank backsides dropped, OCR text layer, archival PDF/A output by default.
+- **Automatic page size detection crops every page to the paper's real edges**, so receipts come out receipt-sized and mixed stacks need no set-up.
+- **Small files by default:** 1-bit black-and-white at 300 dpi lands at roughly 100 KB per A4 text page, and ocrmypdf shrinks that further where `jbig2enc` is installed.
+- **Works with anything [SANE](https://en.wikipedia.org/wiki/Scanner_Access_Now_Easy)** can drive, including driverless eSCL devices via `sane-airscan`. Device capabilities are probed and mapped instead of hardcoded, and devices without a native 1-bit mode get software binarization automatically.
+- **Automation-grade CLI** with defined exit codes, filename templates and a versioned JSON event protocol; interrupted batches can be rebuilt from the preserved page images without rescanning the paper.
+- **Easy-to-use GTK4/libadwaita GUI** on top of the same engine, with a live filename preview and translations (German included).
+
+
+## Demo<a id="demo"></a>
+
+### Screenshots<a id="demo-screenshots"></a>
+
+[<img src="./assets/images/screenshots/scanmole-gui-01-main.png" alt="Screenshot: The ScanMole GUI with a connected ScanSnap iX500, ready to scan" height="128" />](./assets/images/screenshots/scanmole-gui-01-main.png)
+&#160;
+[<img src="./assets/images/screenshots/scanmole-gui-02-scan-result.png" alt="Screenshot: The ScanMole GUI after a finished scan on a Brother ADS-4550W, with saved pages and a skipped blank in the result bar" height="128" />](./assets/images/screenshots/scanmole-gui-02-scan-result.png)
+&#160;
+[<img src="./assets/images/screenshots/scanmole-gui-03-two-column.png" alt="Screenshot: The ScanMole GUI in its two-column layout with two scanners connected" height="128" />](./assets/images/screenshots/scanmole-gui-03-two-column.png)
+&#160;
+[<img src="./assets/images/screenshots/scanmole-gui-04-settings.png" alt="Screenshot: The ScanMole GUI's settings dialog with color scheme, language and desktop integration" height="128" />](./assets/images/screenshots/scanmole-gui-04-settings.png)
+&#160;
+[<img src="./assets/images/screenshots/scanmole-cli-01-scan.png" alt="Screenshot: The ScanMole CLI listing devices and scanning a duplex batch to a searchable PDF" height="128" />](./assets/images/screenshots/scanmole-cli-01-scan.png)
 
 
 ## Installation<a id="installation"></a>
