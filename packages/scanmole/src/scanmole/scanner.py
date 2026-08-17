@@ -259,8 +259,15 @@ def run_scanimage(
                 process.kill()
                 process.wait()
             raise
+        # Drain both readers completely before the pipes close. The process
+        # has exited, so the pumps terminate once the buffered output is
+        # consumed; the remaining work is the page callbacks themselves, and
+        # returning while one still runs would race the caller's "batch is
+        # done" logic against a page that is still being analyzed (a slow
+        # final callback could silently miss the PDF). A bounded join is
+        # exactly that bug with extra steps.
         for reader in readers:
-            reader.join(timeout=10)
+            reader.join()
     if page_failure is not None:
         if isinstance(page_failure, ScanMoleError):
             raise page_failure

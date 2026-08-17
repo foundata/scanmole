@@ -66,6 +66,25 @@ def test_run_scanimage_reports_pages_printed_on_stdout(tmp_path: Path) -> None:
     assert "Scanned page 1." in stderr
 
 
+def test_run_scanimage_waits_for_slow_page_callbacks(tmp_path: Path) -> None:
+    # The process can exit long before the callbacks finish; returning while
+    # one still runs would race the caller's post-batch logic against a page
+    # that is still being analyzed. All callbacks must complete first.
+    import time
+
+    pages = [tmp_path / f"page_{n:04d}.pnm" for n in range(1, 4)]
+    handled: list[Path] = []
+
+    def slow_callback(page: Path) -> None:
+        time.sleep(0.2)
+        handled.append(page)
+
+    script = "; ".join(f"echo '{page}'" for page in pages)
+    run_scanimage(["sh", "-c", script], slow_callback)
+
+    assert handled == pages  # complete and in order at the moment of return
+
+
 def test_run_scanimage_ignores_non_page_stdout_lines(tmp_path: Path) -> None:
     seen: list[Path] = []
 
