@@ -11,7 +11,9 @@ from scanmole.pnm import (
     autocrop_pnm,
     binarize_image,
     binarize_pnm,
+    crop_pnm,
     image_mean,
+    pnm_content_stats,
     pnm_mean,
 )
 
@@ -290,3 +292,201 @@ def test_image_mean_skips_non_pnm_files(tmp_path: Path) -> None:
     png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
     assert image_mean(png) is None
+
+
+def _p4_frame(
+    width: int, height: int, boxes: list[tuple[int, int, int, int]] | None = None
+) -> bytes:
+    """A white 1-bit frame with the given pixel boxes filled black."""
+    row_bytes = (width + 7) // 8
+    raster = bytearray(row_bytes * height)
+    for x0, y0, x1, y1 in boxes or []:
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                raster[y * row_bytes + x // 8] |= 0x80 >> (x % 8)
+    return b"P4\n%d %d\n" % (width, height) + bytes(raster)
+
+
+def test_content_stats_finds_the_content_box(tmp_path: Path) -> None:
+    # 400x600 white frame, solid content block at (64, 100)-(320, 500).
+    page = _write(tmp_path / "page.pbm", _p4_frame(400, 600, [(64, 100, 320, 500)]))
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    assert stats is not None
+    assert stats.frame == (400, 600)
+    assert stats.bbox == (64, 100, 320, 500)
+    assert stats.mean < 0.1  # solid black content
+    assert crop_pnm(page, stats.bbox) is True
+
+
+def test_content_stats_empty_frame_has_no_box_and_reads_blank(
+    tmp_path: Path,
+) -> None:
+    page = _write(tmp_path / "blank.pbm", _p4_frame(400, 600))
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    assert stats is not None
+    assert stats.bbox is None
+    assert stats.mean == 1.0
+
+
+def test_content_stats_ignores_hairline_streaks_and_specks(tmp_path: Path) -> None:
+    # A 2-px roller streak over the full height and one speck row must not
+    # widen the box beyond the real content block.
+    page = _write(
+        tmp_path / "streaky.pbm",
+        _p4_frame(
+            400,
+            600,
+            [
+                (64, 100, 320, 500),  # real content
+                (392, 0, 394, 600),  # right-edge streak, 2 px wide
+                (30, 20, 42, 21),  # single speck row near the top
+            ],
+        ),
+    )
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    assert stats is not None
+    assert stats.bbox == (64, 100, 320, 500)
+
+
+def test_content_stats_reads_gray_frames(tmp_path: Path) -> None:
+    # P5: dark block on white; ink is "darker than half brightness".
+    rows = []
+    for y in range(60):
+        row = bytearray([255] * 80)
+        if 20 <= y < 50:
+            row[24:56] = bytes([30] * 32)
+        rows.append(bytes(row))
+    page = _write(tmp_path / "gray.pgm", b"P5\n80 60\n255\n" + b"".join(rows))
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    assert stats is not None
+    assert stats.bbox == (24, 20, 56, 50)
+    assert stats.mean < 0.1
+
+
+def test_content_stats_sparse_content_mean_stays_low(tmp_path: Path) -> None:
+    # A small block on a huge white frame: the whole-frame mean would read
+    # blank, the content-box mean must not.
+    page = _write(
+        tmp_path / "sparse.pbm", _p4_frame(2000, 3000, [(400, 400, 600, 480)])
+    )
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    mean = pnm_mean(page)
+    assert mean is not None and mean > 0.995  # would be dropped as blank
+    assert stats is not None
+    assert stats.bbox == (400, 400, 600, 480)
+    assert stats.mean < 0.5
+
+
+def test_content_stats_reach_covers_faint_content_below_the_box(
+    tmp_path: Path,
+) -> None:
+    # A thin footer (a page number): too faint for the robust box, but the
+    # permissive reach envelope must cover it so no crop can cut it off.
+    page = _write(
+        tmp_path / "footer.pbm",
+        _p4_frame(
+            400,
+            900,
+            [
+                (64, 100, 320, 500),  # body
+                (180, 800, 185, 806),  # faint footer: 5 ink per row
+            ],
+        ),
+    )
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    assert stats is not None
+    assert stats.bbox == (64, 100, 320, 500)  # footer is no sizing evidence
+    assert stats.reach is not None
+    assert stats.reach[3] >= 806  # but it is inside the safety envelope
+
+
+def test_content_stats_reach_excludes_hairline_streaks(tmp_path: Path) -> None:
+    # A 2-px roller streak stays out of both envelopes: under 3 ink per row
+    # and only one column bin wide.
+    page = _write(
+        tmp_path / "streak.pbm",
+        _p4_frame(400, 600, [(64, 100, 320, 500), (392, 0, 394, 600)]),
+    )
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    assert stats is not None
+    assert stats.bbox == (64, 100, 320, 500)
+    assert stats.reach == (64, 100, 320, 500)
+
+
+def test_content_stats_mean_ignores_ink_outside_the_box(tmp_path: Path) -> None:
+    # The blank verdict must come from the box alone: heavy ink elsewhere in
+    # the same rows (an eroded streak) may not darken a sparse page's mean.
+    sparse = _write(
+        tmp_path / "sparse.pbm", _p4_frame(2000, 3000, [(400, 400, 600, 480)])
+    )
+    streaky = _write(
+        tmp_path / "streaky.pbm",
+        _p4_frame(2000, 3000, [(400, 400, 600, 480), (1990, 0, 1992, 3000)]),
+    )
+
+    plain = pnm_content_stats(sparse, min_ink_px=8)
+    with_streak = pnm_content_stats(streaky, min_ink_px=8)
+
+    assert plain is not None and with_streak is not None
+    assert plain.bbox == with_streak.bbox
+    assert plain.mean == pytest.approx(with_streak.mean)
+
+
+def test_crop_pnm_aligns_p4_origin_and_keeps_the_right_edge(tmp_path: Path) -> None:
+    page = _write(tmp_path / "page.pbm", _p4_frame(400, 600, [(64, 100, 320, 500)]))
+
+    # 70 aligns down to 64; the right edge stays exactly 330, so the width
+    # grows only on the left (330 - 64 = 266). Rows are taken exactly.
+    assert crop_pnm(page, (70, 100, 330, 500)) is True
+    assert page.read_bytes().startswith(b"P4\n266 400\n")
+    mean = pnm_mean(page)
+    assert mean is not None and mean < 0.1  # the content block dominates
+
+
+def test_crop_pnm_clears_padding_bits_when_ending_at_frame_edge(
+    tmp_path: Path,
+) -> None:
+    # 12-px frame: cropping to the right edge leaves 4 padding bits, which
+    # must come out white even though the source content is black there.
+    page = _write(tmp_path / "edge.pbm", _p4_frame(12, 16, [(0, 0, 12, 16)]))
+
+    assert crop_pnm(page, (8, 0, 12, 16)) is True
+    assert page.read_bytes().startswith(b"P4\n4 16\n")
+    assert pnm_mean(page) == pytest.approx(0.0)
+
+
+def test_crop_pnm_rejects_full_frame_and_degenerate_boxes(tmp_path: Path) -> None:
+    original = _p4_frame(64, 32, [(8, 8, 24, 24)])
+    page = _write(tmp_path / "page.pbm", original)
+
+    assert crop_pnm(page, (0, 0, 64, 32)) is False
+    assert crop_pnm(page, (-10, -10, 200, 200)) is False  # clamps to full frame
+    assert crop_pnm(page, (40, 10, 40, 20)) is False  # zero width
+    assert page.read_bytes() == original
+
+
+def test_crop_pnm_crops_gray_frames_pixel_exact(tmp_path: Path) -> None:
+    rows = [bytes([y * 4 % 256] * 40) for y in range(30)]
+    page = _write(tmp_path / "gray.pgm", b"P5\n40 30\n255\n" + b"".join(rows))
+
+    assert crop_pnm(page, (5, 10, 25, 20)) is True
+
+    data = page.read_bytes()
+    assert data.startswith(b"P5\n20 10\n255\n")
+    raster = data.split(b"\n", 3)[3]
+    assert len(raster) == 20 * 10
+    assert raster[0] == 40  # first kept row is source row 10 (10*4)

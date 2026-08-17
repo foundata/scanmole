@@ -49,6 +49,12 @@ class EffectiveSettings:
     source: str | None
     mode: str | None
     resolution: int | None
+    window_mm: tuple[float, float] | None = None
+    """The clamped ``-x``/``-y`` scan window actually requested, if known.
+
+    Lets the pipeline recognize frames that came back at the full window:
+    the proof that no hardware paper-length detection took place.
+    """
 
 
 @dataclass(frozen=True)
@@ -113,6 +119,7 @@ def build_scan_command(
     # them; --page-width/--page-height are emitted first to extend the window.
     width_cap = _window_cap(caps.get("page-width"), caps.get("x"))
     height_cap = _window_cap(caps.get("page-height"), caps.get("y"))
+    window: dict[str, float] = {}
     for option, value, capability in (
         ("--page-width", width, caps.get("page-width")),
         ("--page-height", height, caps.get("page-height")),
@@ -125,7 +132,10 @@ def build_scan_command(
             capability.kind != "range" or capability.maximum is None
         ):
             continue  # no known maximum: let the backend's default window apply
-        command += [option, format_mm(value, capability, option)]
+        rendered = format_mm(value, capability, option)
+        command += [option, rendered]
+        if option in ("-x", "-y"):
+            window[option] = float(rendered)
     if size is None and "ald" in caps:
         # Auto page size: let the scanner detect the paper's lower edge, so
         # frames come back at true paper length instead of the padded window.
@@ -160,7 +170,12 @@ def build_scan_command(
     )
     if flatbed:
         command.append("--batch-count=1")  # a flatbed never reports "feeder empty"
-    return command, EffectiveSettings(source=source, mode=mode, resolution=resolution)
+    return command, EffectiveSettings(
+        source=source,
+        mode=mode,
+        resolution=resolution,
+        window_mm=(window["-x"], window["-y"]) if len(window) == 2 else None,
+    )
 
 
 def run_scanimage(
@@ -259,16 +274,18 @@ def scan_to_files(
     work_dir: Path,
     events: EventWriter,
     on_page: Callable[[Path], None],
+    on_settings: Callable[[EffectiveSettings], None] | None = None,
 ) -> ScanResult:
     """Scan into ``work_dir`` and return the pages plus the effective settings.
 
     Emits a ``settings`` event with the values negotiated with the backend
     before the scan starts; the same values are part of the returned
     :class:`ScanResult` so later stages (PDF assembly) can use the dpi the
-    pages were actually scanned at. Each page is delivered through ``on_page``
-    as soon as scanimage finishes writing it; page files that scanimage wrote
-    but did not announce (defensive) are delivered after the batch, in name
-    order.
+    pages were actually scanned at. ``on_settings``, when given, receives the
+    same values before the first page, so per-page processing can already use
+    them. Each page is delivered through ``on_page`` as soon as scanimage
+    finishes writing it; page files that scanimage wrote but did not announce
+    (defensive) are delivered after the batch, in name order.
 
     Raises:
         DeviceError: If ``scanimage`` fails for a reason other than an empty
@@ -288,6 +305,8 @@ def scan_to_files(
         caps = probe_capabilities(device, source=source)
     pattern = str(work_dir / "page_%04d.pnm")
     command, effective = build_scan_command(config, device, caps, pattern)
+    if on_settings is not None:
+        on_settings(effective)
     events.emit(
         "settings",
         device=device,

@@ -10,12 +10,18 @@ import dataclasses
 import io
 import json
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from scanmole.config import ScanConfig
-from scanmole.errors import NoPagesError, ProcessingError, ScanMoleError
+from scanmole.errors import (
+    DeviceError,
+    NoPagesError,
+    ProcessingError,
+    ScanMoleError,
+)
 from scanmole.events import EventWriter
 from scanmole.options import Capability
 from scanmole.pipeline import analyze_page, publish_pdf, run_pipeline
@@ -110,6 +116,7 @@ def test_processing_failure_preserves_scanned_pages(
         work_dir: Path,
         events: EventWriter,
         on_page: object,
+        on_settings: object = None,
     ) -> ScanResult:
         page = _gray_page(work_dir / "page_0001.pnm")
         assert callable(on_page)
@@ -151,6 +158,7 @@ def test_page_callback_failure_preserves_pages_and_reports_no_success(
         work_dir: Path,
         events: EventWriter,
         on_page: object,
+        on_settings: object = None,
     ) -> ScanResult:
         page = _gray_page(work_dir / "page_0001.pnm")
         assert callable(on_page)
@@ -265,6 +273,7 @@ def _fake_gray_scan(
     work_dir: Path,
     events: EventWriter,
     on_page: object,
+    on_settings: object = None,
 ) -> ScanResult:
     # Emulates a backend without a 1-bit mode: it delivers a gray page even
     # though lineart was requested (dark text pixels on a bright background).
@@ -352,6 +361,7 @@ def test_auto_page_size_crops_before_binarization_and_blank_detection(
         work_dir: Path,
         events: EventWriter,
         on_page: object,
+        on_settings: object = None,
     ) -> ScanResult:
         content = work_dir / "page_0001.pnm"
         content.write_bytes(bordered_page(with_ink=True))
@@ -390,6 +400,232 @@ def test_auto_page_size_crops_before_binarization_and_blank_detection(
     assert header[0] == b"P4"  # cropped, then binarized
     width, height = map(int, header[1].split())
     assert width < 120 and height < 90  # backing removed
+
+
+def test_auto_page_size_sizes_white_backed_frames_by_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # White backing: full-window frames with no detectable paper edge. The
+    # batch must come out at the majority standard size (A4 here), and the
+    # sparse second page must survive blank detection via its content box
+    # even though its whole-frame mean reads blank.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+
+    def white_frame(boxes: list[tuple[int, int, int, int]]) -> bytes:
+        row_bytes = (frame_w + 7) // 8
+        raster = bytearray(row_bytes * frame_h)
+        for x0, y0, x1, y1 in boxes:
+            for y in range(y0, y1):
+                for x in range(x0, x1):
+                    raster[y * row_bytes + x // 8] |= 0x80 >> (x % 8)
+        return b"P4\n%d %d\n" % (frame_w, frame_h) + bytes(raster)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        dense = work_dir / "page_0001.pnm"
+        dense.write_bytes(
+            white_frame(
+                [(round(20 * scale), 0, round(190 * scale), round(270 * scale))]
+            )
+        )
+        sparse = work_dir / "page_0002.pnm"
+        sparse.write_bytes(
+            white_frame(
+                [
+                    (
+                        round(30 * scale),
+                        round(40 * scale),
+                        round(120 * scale),
+                        round(60 * scale),
+                    )
+                ]
+            )
+        )
+        assert callable(on_page)
+        on_page(dense)
+        on_page(sparse)
+        return ScanResult(pages=[dense, sparse], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    for name in ("page_0001.pnm", "page_0002.pnm"):
+        header = (keep_dir / name).read_bytes().split(b"\n", 2)
+        width, height = map(int, header[1].split())
+        # Both kept and both exactly A4 (byte-grid alignment may add <8 px).
+        assert abs(width - round(210 * scale)) < 8
+        assert height == round(297 * scale)
+
+
+def test_mid_batch_failure_preserves_sized_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The documented recovery command uses --from-images, which never crops;
+    # pages preserved by a failed run must therefore be sized before the
+    # error propagates, or recovery resurrects the full-window frames.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        row_bytes = (frame_w + 7) // 8
+        raster = bytearray(row_bytes * frame_h)
+        for y in range(0, round(270 * scale)):
+            for index in range(10, 90):
+                raster[y * row_bytes + index] = 0xFF
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(b"P4\n%d %d\n" % (frame_w, frame_h) + bytes(raster))
+        assert callable(on_page)
+        on_page(page)
+        raise DeviceError("scanner unplugged mid-batch")
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"), page_size="auto"
+    )
+
+    with pytest.raises(DeviceError) as info:
+        run_pipeline(config, EventWriter(enabled=False))
+
+    work_dir = Path(info.value.message.split("kept in ", 1)[1].split(" ", 1)[0])
+    try:
+        header = (work_dir / "page_0001.pnm").read_bytes().split(b"\n", 2)
+        _width, height = map(int, header[1].split())
+        assert height == round(297 * scale)  # sized to A4, not the window
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_keyboard_interrupt_preserves_scanned_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ctrl-C mid-batch must not delete the only copy of already-fed paper.
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        page = _gray_page(work_dir / "page_0001.pnm")
+        assert callable(on_page)
+        on_page(page)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    config = _config(images=None, output=tmp_path / "out.pdf")
+
+    work_dirs_before = set(Path(tempfile.gettempdir()).glob("scanmole-*"))
+    with pytest.raises(KeyboardInterrupt):
+        run_pipeline(config, EventWriter(enabled=False))
+
+    new_dirs = set(Path(tempfile.gettempdir()).glob("scanmole-*")) - work_dirs_before
+    try:
+        assert len(new_dirs) == 1
+        assert (next(iter(new_dirs)) / "page_0001.pnm").is_file()
+    finally:
+        for directory in new_dirs:
+            shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_hardware_cropped_frames_stay_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A frame shorter than the scan window proves the device's own paper
+    # length detection worked (--ald/--adf-crp); content sizing must not run.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(window[0] * scale), round(215 * scale)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        row_bytes = (frame_w + 7) // 8
+        raster = bytearray(row_bytes * frame_h)
+        for y in range(40, 700):  # a dense content block, clearly not blank
+            for index in range(10, 60):
+                raster[y * row_bytes + index] = 0xFF
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(b"P4\n%d %d\n" % (frame_w, frame_h) + bytes(raster))
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    header = (keep_dir / "page_0001.pnm").read_bytes().split(b"\n", 2)
+    width, height = map(int, header[1].split())
+    assert (width, height) == (frame_w, frame_h)  # exactly as delivered
 
 
 def test_from_images_are_never_binarized(

@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
 from scanmole.config import ScanConfig
@@ -19,30 +20,51 @@ from scanmole.devices import pick_default_device
 from scanmole.errors import InputError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import require_tools
-from scanmole.options import parse_page_size
+from scanmole.options import is_flatbed_source, parse_page_size
 from scanmole.pdf import build_pdf, run_ocr
-from scanmole.pnm import autocrop_image, binarize_image, image_mean
-from scanmole.scanner import scan_to_files
+from scanmole.pnm import (
+    autocrop_image,
+    binarize_image,
+    crop_image,
+    image_content_stats,
+    image_mean,
+)
+from scanmole.scanner import EffectiveSettings, scan_to_files
+from scanmole.sizing import PageContent, choose_crops
 
 LOGGER = logging.getLogger(__name__)
 
 KeptPage = tuple[int, Path]
 
+_WINDOW_MATCH_MM = 5.0
+"""A frame within this of the requested window proves nothing was cropped.
+
+Backends deliver slightly less than the negotiated window (the genesys
+backend rounds the 216.7 mm LiDE 220 window down to a 213.4 mm frame), while
+real hardware paper detection shortens frames by far more than this.
+"""
+
 
 def analyze_page(
-    page: Path, number: int, config: ScanConfig, events: EventWriter
+    page: Path,
+    number: int,
+    config: ScanConfig,
+    events: EventWriter,
+    mean_hint: float | None = None,
 ) -> tuple[bool, bool]:
     """Evaluate one page, emit its ``page`` event and log the outcome.
 
     A page counts as blank when its mean brightness exceeds
     ``config.blank_threshold``; a threshold of ``0`` (or below) disables blank
     detection entirely. Blank pages are dropped unless ``config.keep_blanks``
-    is set.
+    is set. ``mean_hint`` replaces the whole-file measurement where the caller
+    measured a more meaningful region (the content box of a full-window
+    frame, where the surrounding padding would drown a sparse page).
 
     Returns:
         Whether the page should be kept and whether it was detected as blank.
     """
-    mean = image_mean(page)
+    mean = mean_hint if mean_hint is not None else image_mean(page)
     blank = (
         config.blank_threshold > 0
         and mean is not None
@@ -101,6 +123,74 @@ def copy_kept_images(kept: list[KeptPage], destination: Path) -> None:
     LOGGER.info("Kept page images copied to %s", destination)
 
 
+def _apply_content_sizes(
+    measured: list[PageContent],
+    kept: list[KeptPage],
+    negotiated: list[EffectiveSettings],
+    config: ScanConfig,
+    dpi: int | None,
+) -> None:
+    """Crop full-window frames to their content-decided page sizes.
+
+    Runs after the batch on purpose: the size vote needs every page's content
+    box, so a sparse final page in an A4 stack still comes out A4. Only kept
+    pages are rewritten; dropped blanks carry no vote (their boxes are empty)
+    and never reach the PDF.
+    """
+    if not measured or dpi is None:
+        return
+    kept_paths = {page for _, page in kept}
+    if not kept_paths.intersection(entry.path for entry in measured):
+        return
+    source = negotiated[0].source if negotiated else None
+    flatbed = (
+        is_flatbed_source(source) if source is not None else config.source == "flatbed"
+    )
+    # Front/back frames of a duplex batch are the same physical sheet and
+    # share one paper size. All measured frames enter the decision (dropped
+    # blank backsides still pair with their front side); only kept pages are
+    # rewritten.
+    duplex = "duplex" in (source or config.source or "").lower()
+    sized: Counter[str] = Counter()
+    for decision in choose_crops(measured, dpi, flatbed, duplex):
+        if decision.box_px is None or decision.page.path not in kept_paths:
+            continue
+        if crop_image(decision.page.path, decision.box_px):
+            sized[decision.label] += 1
+    if sized:
+        summary = ", ".join(
+            f"{label} ({count})" for label, count in sorted(sized.items())
+        )
+        LOGGER.info(
+            "Auto page size: no paper edges detectable (white backing); "
+            "sized %d page(s) by content: %s",
+            sum(sized.values()),
+            summary,
+        )
+
+
+def _size_preserved_pages(
+    measured: list[PageContent],
+    kept: list[KeptPage],
+    negotiated: list[EffectiveSettings],
+    config: ScanConfig,
+) -> None:
+    """Best-effort content sizing for pages preserved by a failed run.
+
+    The documented recovery command rebuilds via ``--from-images``, which
+    never crops (user-curated inputs), so whatever sizing evidence exists at
+    failure time is applied here; otherwise recovery would resurrect the
+    full-window frames. Never raises: the original error must propagate.
+    """
+    try:
+        dpi = negotiated[0].resolution if negotiated else None
+        _apply_content_sizes(
+            measured, kept, negotiated, config, dpi or config.resolution
+        )
+    except Exception:  # pragma: no cover -- defensive only
+        LOGGER.debug("could not size the preserved pages", exc_info=True)
+
+
 def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
     """Run the full pipeline for ``config`` and return the process exit code.
 
@@ -146,6 +236,8 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         )
 
         binarized = False
+        negotiated: list[EffectiveSettings] = []
+        measured: list[PageContent] = []
 
         def handle_page(page: Path) -> None:
             # Called per page as it lands: from the scanner's reader thread
@@ -157,8 +249,9 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # crop to the paper first so backing strips and end-of-paper
             # padding reach neither the 1-bit conversion nor blank detection,
             # and the PDF page gets the paper's real size.
+            edge_cropped = False
             if not from_images and auto_page_size:
-                autocrop_image(page, crop_trim_px)
+                edge_cropped = autocrop_image(page, crop_trim_px)
             # Backends without a 1-bit mode (eSCL offers only Gray/Color)
             # degrade a lineart request to gray; restore the asked-for 1-bit
             # output in software, before blank detection so the 0.995 default
@@ -177,7 +270,38 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                         "1-bit lineart in software (threshold %d%%)",
                         round(config.lineart_threshold * 100),
                     )
-            keep, blank = analyze_page(page, total, config, events)
+            # White backing or white lid: neither the device (a full-window
+            # frame proves it) nor the edge walk found a paper edge. Record
+            # the content box for the batch-level size decision and judge
+            # blankness inside it, where a sparse page cannot drown in the
+            # padding. Frames a hardware detection did shorten never qualify.
+            mean_hint: float | None = None
+            window = negotiated[0].window_mm if negotiated else None
+            if not from_images and auto_page_size and not edge_cropped and window:
+                dpi_now = negotiated[0].resolution or config.resolution
+                scale = dpi_now / 25.4
+                stats = image_content_stats(page, min_ink_px=max(4, round(scale)))
+                if (
+                    stats is not None
+                    and stats.frame[0] / scale >= window[0] - _WINDOW_MATCH_MM
+                    and stats.frame[1] / scale >= window[1] - _WINDOW_MATCH_MM
+                ):
+                    measured.append(
+                        PageContent(
+                            number=total,
+                            path=page,
+                            frame_px=stats.frame,
+                            bbox_px=stats.bbox,
+                            reach_px=stats.reach,
+                        )
+                    )
+                    # Hint only when a content box exists. Without one, the
+                    # whole-frame brightness mean must keep deciding: faint
+                    # gray content below the ink cutoff (a light stamp in
+                    # gray mode) has no box but is not blank.
+                    if stats.bbox is not None:
+                        mean_hint = stats.mean
+            keep, blank = analyze_page(page, total, config, events, mean_hint)
             if blank:
                 blanks += 1
             if keep:
@@ -195,7 +319,9 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                 LOGGER.info(
                     "Auto page size: cropping each page to the detected paper edges"
                 )
-            scanned = scan_to_files(config, device, work_dir, events, handle_page)
+            scanned = scan_to_files(
+                config, device, work_dir, events, handle_page, negotiated.append
+            )
             # The backend may have snapped the requested dpi; the PDF must be
             # stamped with what the pages were actually scanned at, or their
             # geometry comes out wrong.
@@ -207,6 +333,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
 
         events.emit("scan_done", total=total, kept=len(kept), blanks=blanks)
         LOGGER.info("Scanned %d page(s), kept %d", total, len(kept))
+        _apply_content_sizes(measured, kept, negotiated, config, dpi)
         if config.keep_images is not None:
             copy_kept_images(kept, config.keep_images)
         if not kept:
@@ -241,12 +368,28 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         # and tell the user where they are, whatever went wrong afterwards.
         if total > 0 and config.from_images is None:
             preserve = True
+            _size_preserved_pages(measured, kept, negotiated, config)
             exc.message += (
                 f" -- the {total} scanned page(s) are kept in {work_dir} "
                 f"(recover with: scanmole --from-images '{work_dir}'/page_*.pnm "
                 "-o out.pdf)"
             )
             exc.args = (exc.message,)
+        raise
+    except BaseException:
+        # Same contract for everything else that can abort a run, including
+        # SIGINT/SIGTERM (KeyboardInterrupt, SystemExit) and unexpected bugs:
+        # scanned pages must never be deleted before a successful publish.
+        if total > 0 and config.from_images is None:
+            preserve = True
+            _size_preserved_pages(measured, kept, negotiated, config)
+            LOGGER.info(
+                "The %d scanned page(s) are kept in %s (recover with: "
+                "scanmole --from-images '%s'/page_*.pnm -o out.pdf)",
+                total,
+                work_dir,
+                work_dir,
+            )
         raise
     finally:
         if not preserve:

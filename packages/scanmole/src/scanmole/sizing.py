@@ -1,0 +1,318 @@
+"""Decide page sizes when no paper edge is physically detectable.
+
+White ADF backings and white flatbed lids make the paper boundary invisible:
+the padding around the sheet is bit-identical to the sheet's own margin, in
+hardware and software alike. What remains detectable is the printed content,
+so this module promises conservative content framing, not paper edges. Its
+one hard invariant: no detected content, not even the faint kind, ever lies
+outside a chosen crop; when sizes and safety conflict, pages come out larger,
+never cut.
+
+Decision flow: pages are grouped into physical sheets (front/back pairs on
+duplex sources share one paper size, which is physically true rather than a
+heuristic), each sheet snaps to the smallest standard size containing its
+robust content box, a strict batch majority upgrades sheets whose content
+plausibly sits on majority-sized paper (wide enough, fits), and content that
+fits no standard, or is receipt-shaped, gets its box plus margins instead.
+
+Pure decision logic; measuring frames and rewriting files stays elsewhere.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+from scanmole.config import PAGE_SIZES
+
+SNAP_TOLERANCE_MM = 2.0
+"""Robust content may exceed a candidate size by this much (skew, edge
+artifacts). A classification tolerance only: the final crop is always
+expanded to contain all detected content, so it can never cut anything."""
+
+_SNAP_AREA_SLACK = 1.2
+"""Candidates within this area factor of the smallest fit count as ties.
+
+Content alone cannot distinguish some paper sizes: almost any A4 page's
+content also fits US letter, whose area is 3% smaller. Near-ties resolve in
+:data:`~scanmole.config.PAGE_SIZES` table order (ISO sizes first, portrait
+before landscape) instead of by area."""
+
+_ADOPT_WIDTH_FRACTION = 0.7
+"""A sheet adopts the majority size only when its content is at least this
+fraction of the majority width. Sparse pages of the same paper have full-width
+text lines and adopt; receipts and genuinely smaller paper are narrower and
+keep their own size, which is what keeps mixed stacks mixed."""
+
+_RECEIPT_MAX_WIDTH_MM = 100.0
+_RECEIPT_MIN_ASPECT = 2.2
+"""Narrow, tall content (receipt-shaped) skips standard-size snapping:
+receipt paper has arbitrary lengths and near-arbitrary widths, and snapping
+an 80 mm receipt to A5 would invent 68 mm of white paper."""
+
+FREE_SIDE_MARGIN_MM = 10.0
+"""Margin around the content when no standard size applies (receipts)."""
+
+FREE_TAIL_MARGIN_MM = 15.0
+"""Margin below the last content row for non-standard feeder pages."""
+
+
+@dataclass(frozen=True)
+class PageContent:
+    """One frame's content measurement, in pixels.
+
+    ``bbox_px`` is the robust box (size evidence), ``reach_px`` the permissive
+    envelope (crop safety; superset of ``bbox_px`` when both exist).
+    """
+
+    number: int
+    path: Path
+    frame_px: tuple[int, int]
+    bbox_px: tuple[int, int, int, int] | None
+    reach_px: tuple[int, int, int, int] | None = None
+
+
+@dataclass(frozen=True)
+class CropDecision:
+    """The crop box for one frame; ``None`` keeps the frame as-is."""
+
+    page: PageContent
+    box_px: tuple[int, int, int, int] | None
+    label: str
+
+
+def _candidates(frame_mm: tuple[float, float]) -> list[tuple[str, float, float]]:
+    """Standard sizes fitting the frame, in table order.
+
+    Includes landscape orientations (A4 landscape drops out of a 216 mm ADF
+    window by itself); duplicate dimensions keep their first label.
+    """
+    tol = SNAP_TOLERANCE_MM
+    seen: set[tuple[float, float]] = set()
+    sizes: list[tuple[str, float, float]] = []
+    for name, (width, height) in PAGE_SIZES.items():
+        for label, dims in (
+            (name, (width, height)),
+            (f"{name} landscape", (height, width)),
+        ):
+            if dims in seen:
+                continue
+            seen.add(dims)
+            if dims[0] <= frame_mm[0] + tol and dims[1] <= frame_mm[1] + tol:
+                sizes.append((label, dims[0], dims[1]))
+    return sizes
+
+
+def _contains(
+    candidate: tuple[str, float, float],
+    demand_mm: tuple[float, float],
+) -> bool:
+    """Whether the candidate covers the content demand (width, height).
+
+    For feeder sheets the height demand is the content's distance from the
+    leading edge (crops are top-anchored there), not the box height: a legal
+    sheet whose text starts 20 mm down must not snap to A4 just because the
+    text span happens to be shorter than 297 mm.
+    """
+    tol = SNAP_TOLERANCE_MM
+    return candidate[1] + tol >= demand_mm[0] and candidate[2] + tol >= demand_mm[1]
+
+
+def _snap(
+    candidates: list[tuple[str, float, float]], demand_mm: tuple[float, float]
+) -> tuple[str, float, float] | None:
+    """The smallest candidate covering the demand, table order on ties."""
+    containing = [entry for entry in candidates if _contains(entry, demand_mm)]
+    if not containing:
+        return None
+    smallest = min(entry[1] * entry[2] for entry in containing)
+    for entry in containing:  # table order; near-ties prefer earlier entries
+        if entry[1] * entry[2] <= smallest * _SNAP_AREA_SLACK:
+            return entry
+    return None  # pragma: no cover -- the smallest entry always matches
+
+
+def _union(
+    boxes: list[tuple[int, int, int, int] | None],
+) -> tuple[int, int, int, int] | None:
+    present = [box for box in boxes if box is not None]
+    if not present:
+        return None
+    return (
+        min(box[0] for box in present),
+        min(box[1] for box in present),
+        max(box[2] for box in present),
+        max(box[3] for box in present),
+    )
+
+
+def _demand_mm(
+    bbox: tuple[int, int, int, int], scale: float, flatbed: bool
+) -> tuple[float, float]:
+    """The (width, height) a size must cover for this content box."""
+    height = (bbox[3] - bbox[1]) if flatbed else bbox[3]  # feeder: from row 0
+    return ((bbox[2] - bbox[0]) / scale, height / scale)
+
+
+def _receipt_shaped(bbox: tuple[int, int, int, int], scale: float) -> bool:
+    width = (bbox[2] - bbox[0]) / scale
+    height = (bbox[3] - bbox[1]) / scale
+    return width <= _RECEIPT_MAX_WIDTH_MM and height / width >= _RECEIPT_MIN_ASPECT
+
+
+def _place(
+    size_mm: tuple[float, float],
+    page: PageContent,
+    dpi: int,
+    flatbed: bool,
+) -> tuple[int, int, int, int]:
+    """Position a target size inside the frame as a pixel box.
+
+    Feeder frames are top-anchored (row 0 is the paper's leading edge) and
+    centered on the content horizontally; flatbed frames are centered on the
+    content in both axes, because the original sits wherever the user put it.
+    The box shifts as needed to keep the content inside, then clamps.
+    """
+    scale = dpi / 25.4
+    frame_w, frame_h = page.frame_px
+    box_w = min(frame_w, round(size_mm[0] * scale))
+    box_h = min(frame_h, round(size_mm[1] * scale))
+    bbox = page.bbox_px
+
+    center_x = (bbox[0] + bbox[2]) / 2 if bbox else frame_w / 2
+    x0 = round(center_x - box_w / 2)
+    if bbox is not None:  # content first, centering second
+        x0 = min(x0, bbox[0])
+        x0 = max(x0, bbox[2] - box_w)
+    x0 = max(0, min(x0, frame_w - box_w))
+
+    if flatbed:
+        center_y = (bbox[1] + bbox[3]) / 2 if bbox else frame_h / 2
+        y0 = round(center_y - box_h / 2)
+        if bbox is not None:
+            y0 = min(y0, bbox[1])
+            y0 = max(y0, bbox[3] - box_h)
+        y0 = max(0, min(y0, frame_h - box_h))
+    else:
+        y0 = 0
+    return (x0, y0, x0 + box_w, y0 + box_h)
+
+
+def _free_box(page: PageContent, dpi: int, flatbed: bool) -> tuple[int, int, int, int]:
+    """Content plus margins for frames no standard size applies to."""
+    scale = dpi / 25.4
+    frame_w, frame_h = page.frame_px
+    x0, y0, x1, y1 = page.bbox_px or (0, 0, frame_w, frame_h)
+    side = round(FREE_SIDE_MARGIN_MM * scale)
+    tail = round(FREE_TAIL_MARGIN_MM * scale)
+    if flatbed:
+        return (
+            max(0, x0 - side),
+            max(0, y0 - side),
+            min(frame_w, x1 + side),
+            min(frame_h, y1 + side),
+        )
+    return (max(0, x0 - side), 0, min(frame_w, x1 + side), min(frame_h, y1 + tail))
+
+
+def _covering(
+    box: tuple[int, int, int, int], page: PageContent
+) -> tuple[int, int, int, int]:
+    """Expand a box to contain all detected content, clamped to the frame.
+
+    Enforces the module invariant: the classification tolerance and the
+    permissive reach envelope may exceed the chosen size, and then the page
+    comes out larger instead of losing content.
+    """
+    frame_w, frame_h = page.frame_px
+    x0, y0, x1, y1 = box
+    for extra in (page.bbox_px, page.reach_px):
+        if extra is None:
+            continue
+        x0, y0 = min(x0, extra[0]), min(y0, extra[1])
+        x1, y1 = max(x1, extra[2]), max(y1, extra[3])
+    return (max(0, x0), max(0, y0), min(frame_w, x1), min(frame_h, y1))
+
+
+def choose_crops(
+    pages: list[PageContent], dpi: int, flatbed: bool, duplex: bool = False
+) -> list[CropDecision]:
+    """Decide every frame's crop from the batch's content measurements.
+
+    Args:
+        pages: Content measurements of the qualifying frames, in scan order.
+        dpi: The resolution the frames were scanned at.
+        flatbed: Whether the frames came from a flatbed (changes placement).
+        duplex: Whether consecutive frames are front/back of the same sheet
+            (they then share one size decision).
+
+    Returns:
+        One decision per input page, in order. ``box_px`` is ``None`` when the
+        frame should stay untouched (no content and no batch majority, or the
+        decision equals the full frame anyway).
+    """
+    scale = dpi / 25.4
+    units: list[list[PageContent]] = []
+    if duplex:
+        # Pair by page number, not list position: a sheet is (2k-1, 2k) in
+        # delivery order, and pairing must survive gaps (frames that did not
+        # qualify for measuring).
+        sheets: dict[int, list[PageContent]] = {}
+        for page in pages:
+            sheets.setdefault((page.number + 1) // 2, []).append(page)
+        units = [sheets[sheet] for sheet in sorted(sheets)]
+    else:
+        units = [[page] for page in pages]
+
+    unit_boxes = [_union([page.bbox_px for page in unit]) for unit in units]
+    snapped: list[tuple[str, float, float] | None] = []
+    for unit, bbox in zip(units, unit_boxes, strict=True):
+        candidate: tuple[str, float, float] | None = None
+        if bbox is not None and not _receipt_shaped(bbox, scale):
+            frame = unit[0].frame_px
+            frame_mm = (frame[0] / scale, frame[1] / scale)
+            candidate = _snap(_candidates(frame_mm), _demand_mm(bbox, scale, flatbed))
+        snapped.append(candidate)
+
+    # Strict majority over the sheets that carry content: a plurality must
+    # not rewrite a genuinely mixed stack (50/50 stays 50/50).
+    voters = sum(1 for bbox in unit_boxes if bbox is not None)
+    votes = Counter(entry for entry in snapped if entry is not None)
+    majority: tuple[str, float, float] | None = None
+    if votes:
+        top = max(votes, key=lambda entry: (votes[entry], entry[1] * entry[2]))
+        if votes[top] * 2 > voters:
+            majority = top
+
+    decisions: list[CropDecision] = []
+    for unit, bbox, own in zip(units, unit_boxes, snapped, strict=True):
+        chosen = own
+        if majority is not None:
+            if bbox is None:
+                chosen = majority  # blank sheet: the majority is the best guess
+            elif chosen != majority and _contains(
+                majority, _demand_mm(bbox, scale, flatbed)
+            ):
+                # Upgrade only when the content is wide enough to plausibly
+                # sit on majority-sized paper; narrower paper (receipts,
+                # smaller formats) keeps its own decision.
+                width_mm = (bbox[2] - bbox[0]) / scale
+                if width_mm >= _ADOPT_WIDTH_FRACTION * majority[1]:
+                    chosen = majority
+        for page in unit:
+            if chosen is not None:
+                box = _place((chosen[1], chosen[2]), page, dpi, flatbed)
+                label = chosen[0]
+            elif bbox is not None:
+                box = _free_box(page, dpi, flatbed)
+                label = "content"
+            else:
+                decisions.append(CropDecision(page=page, box_px=None, label="frame"))
+                continue
+            box = _covering(box, page)
+            if box == (0, 0, page.frame_px[0], page.frame_px[1]):
+                decisions.append(CropDecision(page=page, box_px=None, label=label))
+            else:
+                decisions.append(CropDecision(page=page, box_px=box, label=label))
+    return decisions
