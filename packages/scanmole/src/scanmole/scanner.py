@@ -134,11 +134,20 @@ def build_scan_command(
         # cannot tell them apart (verified on the ScanSnap iX100: 297 mm
         # instead of an 895 mm frame).
         command.append("--ald=yes")
+    if size is None and "adf-crp" in caps:
+        # Same idea on the epsonds backend ("ADF auto cropping"): the device
+        # crops to the detected paper bounds itself. White-backing scanners
+        # (Epson DS series) need this, because software edge detection cannot
+        # tell white backing from white paper.
+        command.append("--adf-crp=yes")
 
     if config.despeckle > 0 and "swdespeck" in caps:
         command.append(f"--swdespeck={config.despeckle}")
     if "swdeskew" in caps:
         command.append(f"--swdeskew={'yes' if config.deskew else 'no'}")
+    if "adf-skew" in caps:
+        # epsonds' hardware skew correction, same contract as --swdeskew.
+        command.append(f"--adf-skew={'yes' if config.deskew else 'no'}")
     if "swcrop" in caps:
         command.append(f"--swcrop={'yes' if config.crop else 'no'}")
 

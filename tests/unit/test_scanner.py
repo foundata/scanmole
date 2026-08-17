@@ -205,6 +205,29 @@ def test_build_scan_command_fixed_size_may_exceed_the_bare_axis_range(
     assert command[command.index("-y") + 1] == "355.6"
 
 
+def test_build_scan_command_auto_size_enables_hardware_adf_cropping(
+    tmp_path: Path,
+) -> None:
+    # epsonds' "ADF auto cropping": white-backing devices cannot be cropped
+    # in software, so auto page size hands the job to the hardware.
+    caps = {"adf-crp": Capability(kind="bool"), "adf-skew": Capability(kind="bool")}
+
+    auto_command, _ = build_scan_command(
+        _config(page_size="auto"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+    fixed_command, _ = build_scan_command(
+        _config(page_size="a4", deskew=True),
+        "test:0",
+        caps,
+        str(tmp_path / "p_%04d.pnm"),
+    )
+
+    assert "--adf-crp=yes" in auto_command
+    assert "--adf-crp=yes" not in fixed_command
+    assert "--adf-skew=no" in auto_command
+    assert "--adf-skew=yes" in fixed_command
+
+
 def test_build_scan_command_degraded_flatbed_gets_batch_count(
     tmp_path: Path,
 ) -> None:

@@ -241,6 +241,18 @@ def test_epson_ds730n_epson2_fixture_is_effectively_sourceless() -> None:
     assert snap_resolution(300, caps) == 300
 
 
+def test_epson_ds730n_epsonds_fixture_maps_the_document_scanner() -> None:
+    # The same device as the epson2 fixture, driven by the correct backend:
+    # real feeder sources, native lineart, and hardware auto cropping.
+    caps = _fixture_caps("epson-ds730n-epsonds.txt")
+
+    assert map_source("adf-duplex", caps) == "ADF Duplex"
+    assert map_mode("lineart", caps) == "Lineart"
+    assert snap_resolution(300, caps) == 300
+    assert caps["adf-crp"].kind == "bool"
+    assert caps["adf-skew"].kind == "bool"
+
+
 def test_scansnap_ix100_fixture_degrades_duplex_to_front() -> None:
     # Single-side portable unit: only "ADF Front" exists; a duplex request
     # degrades to it with a warning instead of failing.

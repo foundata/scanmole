@@ -1,0 +1,29 @@
+All options specific to device `epsonds:net:192.168.0.167':
+  Standard:
+    --source ADF Front|ADF Duplex [ADF Front]
+        Selects the scan source (such as a document-feeder).
+    --mode Lineart|Gray|Color [Color]
+        Selects the scan mode (e.g., lineart, monochrome, or color).
+    --depth 1|8bit [8]
+        Number of bits per sample, typical values are 1 for "line-art" and 8
+        for multibit scans.
+    --resolution 50|75|100|150|200|240|300|360|400|600dpi [50]
+        Sets the resolution of the scanned image.
+  Geometry:
+    -l 0..215.9mm [0]
+        Top-left x position of scan area.
+    -t 0..393.7mm [0]
+        Top-left y position of scan area.
+    -x 0..215.9mm [215.9]
+        Width of scan-area.
+    -y 0..393.7mm [393.7]
+        Height of scan-area.
+  Optional equipment:
+    --eject []
+        Eject the sheet in the ADF
+    --load [inactive]
+        Load a sheet in the ADF
+    --adf-skew[=(yes|no)] [no]
+        Enables ADF skew correction
+    --adf-crp[=(yes|no)] [no]
+        Enables ADF auto cropping
