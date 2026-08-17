@@ -186,6 +186,27 @@ def test_binarize_image_keeps_a_malformed_page_with_a_warning(
     assert page.read_bytes() == original
 
 
+def test_failed_write_leaves_the_original_frame_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The frame may be the only copy of the paper: a full disk mid-write must
+    # not truncate it. Writes go to a sibling temp file and replace atomically.
+    original = b"P5\n8 1\n255\n" + bytes([0, 50, 100, 127, 128, 200, 255, 255])
+    page = _write(tmp_path / "gray.pgm", original)
+    real_write = Path.write_bytes
+
+    def failing_write(self: Path, data: bytes) -> int:
+        if self.name.endswith(".tmp"):
+            raise OSError(28, "No space left on device")
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing_write)
+
+    assert binarize_image(page, 0.5) is False  # best-effort wrapper reports it
+    assert page.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [page]  # no staging leftovers
+
+
 def test_autocrop_pnm_crops_to_the_paper_box(tmp_path: Path) -> None:
     page = _write(tmp_path / "bordered.pgm", _bordered_page())
 

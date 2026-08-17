@@ -9,6 +9,7 @@ them instead of pulling in an image library.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,24 @@ _WHITESPACE = b" \t\r\n"
 
 _POPCOUNT = bytes(value.bit_count() for value in range(256))
 """Translate table turning each raster byte into its number of set bits."""
+
+
+def _replace_file(path: Path, data: bytes) -> None:
+    """Atomically replace ``path`` with ``data`` via a sibling temp file.
+
+    The acquired frame may be the only copy of the paper; a failed in-place
+    write (disk full, interrupt) must leave the original untouched instead of
+    truncating it.
+
+    Raises:
+        OSError: If writing or replacing fails; the original stays intact.
+    """
+    staging = path.with_name(f".{path.name}.tmp")
+    try:
+        staging.write_bytes(data)
+        os.replace(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
 
 
 def _read_header(buffer: bytes, token_count: int) -> tuple[list[bytes], int]:
@@ -179,7 +198,7 @@ def binarize_pnm(path: Path, threshold: float) -> bool:
         packed += int.from_bytes(raster[bit::8].translate(table), "big")
     data = packed.to_bytes(row_out * height, "big")
 
-    path.write_bytes(b"P4\n%d %d\n" % (width, height) + data)
+    _replace_file(path, b"P4\n%d %d\n" % (width, height) + data)
     return True
 
 
@@ -311,7 +330,7 @@ def autocrop_pnm(path: Path, trim_px: int) -> bool:
     )
     magic = b"P6" if kind == b"6" else b"P5"
     header = b"%s\n%d %d\n%d\n" % (magic, right - left + 1, bottom - top + 1, maxval)
-    path.write_bytes(header + data)
+    _replace_file(path, header + data)
     return True
 
 
@@ -628,7 +647,7 @@ def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:
             keep = (0xFF << (8 - new_width % 8)) & 0xFF
             rows = [row[:-1] + bytes((row[-1] & keep,)) for row in rows]
         header = b"P4\n%d %d\n" % (new_width, y1 - y0)
-        path.write_bytes(header + b"".join(rows))
+        _replace_file(path, header + b"".join(rows))
         return True
 
     channels = 3 if kind == b"6" else 1
@@ -648,7 +667,7 @@ def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:
         y1 - y0,
         maxval,
     )
-    path.write_bytes(header + data)
+    _replace_file(path, header + data)
     return True
 
 
