@@ -281,7 +281,7 @@ Both packages always release together, with the same version and one `vX.Y.Z` ta
      ```
 4. If everything is fine: commit the changes, tag the release and push:
    ```sh
-   version="<FIXME version>" # FIXME major.minor.patch
+   version="<FIXME version>" # major.minor.patch
    git add \
      "./CHANGELOG.md" \
      "./uv.lock" \
@@ -302,10 +302,42 @@ Both packages always release together, with the same version and one `vX.Y.Z` ta
    git push origin ":refs/tags/v${version}" # delete the old tag remotely
    ```
    This is *only* possible if there was no [GitHub release](https://github.com/foundata/scanmole/releases/). Use a new patch version number otherwise.
-5. Use [GitHub's release feature](https://github.com/foundata/scanmole/releases/new), select the tag you pushed and create a new release:
-   * Use `v<version>` as title
-   * A description is optional. In doubt, use `See CHANGELOG.md for more information about this release.`
-6. Check if the GitHub API delivers the correct version as `latest`:
+5. Prepare the `README.md` files that ship with the artifacts: rewrite the project README's relative links as absolute GitHub URLs and copy the result over both members' pointer READMEs (see Wiki "Process: Release Python artifacts"; an internal `foundata` helper script is available for this). These changes are made only in the working tree between the tag and the upload; nothing is ever committed. This is why the step belongs here rather than before step 4.
+6. Build both packages and publish them to [PyPI](https://pypi.org/project/scanmole/). The build in step 1 ran before the version bump, so `dist/` still holds artifacts of the old version and has to be rebuilt:
+   ```sh
+   rm -rf "./dist"
+   uv build --all-packages
+   ls -1 "./dist" # a wheel and a source distribution per package, all carrying the new version
+   ```
+   Uploading needs a PyPI API token with upload rights for both projects. `uv publish` reads it from `UV_PUBLISH_TOKEN`; keep the value out of the shell history and out of command lines visible in the process list:
+   ```sh
+   printf 'PyPI API token: '
+   read -rs UV_PUBLISH_TOKEN
+   printf '\n'
+   export UV_PUBLISH_TOKEN
+
+   uv publish
+   unset UV_PUBLISH_TOKEN
+   ```
+   An account-wide token covers both packages in one call. Project-scoped tokens only cover their own project, so publish the packages one after another with the matching token: `uv publish "./dist/scanmole-${version}"*` and `uv publish "./dist/scanmole_gui-${version}"*` if so.
+
+   A version number can be uploaded only once. A broken release cannot be replaced, only [yanked](https://pypi.org/help/#yanked), and the fix needs a new patch version.
+
+   Throw the prepared READMEs of step 5 away once the upload succeeded:
+   ```sh
+   git restore "./README.md" "./packages/scanmole/README.md" "./packages/scanmole-gui/README.md"
+   git status # expect a clean working tree
+   ```
+7. Verify that the published packages install and run from PyPI. The second command also proves the dependency pull-through, as it has to install two packages:
+   ```sh
+   uv run --isolated --no-project --with "scanmole==${version}" -- scanmole --version
+   uv run --isolated --no-project --with "scanmole-gui==${version}" -- scanmole-gui --version
+   ```
+   Both print the new version. This does not start the GUI itself, which needs the distribution's PyGObject and GTK (see [`README.md`](README.md#installation)).
+8. Use [GitHub's release feature](https://github.com/foundata/scanmole/releases/new), select the tag you pushed and create a new release:
+   - Use `v<version>` as title
+   - A description is optional. In doubt, use `See CHANGELOG.md for more information about this release.`
+9. Check if the GitHub API delivers the correct version as `latest`:
    ```sh
    curl -s -L https://api.github.com/repos/foundata/scanmole/releases/latest | jq -r '.tag_name' | sed -e 's/^v//g'
    ```
