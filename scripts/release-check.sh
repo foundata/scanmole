@@ -46,7 +46,7 @@ COMMAND_NAME="scanmole"
 GUI_COMMAND_NAME="scanmole-gui"
 
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+trap 'rm -rf "$WORK_DIR"; git -C "$PKG_DIR" worktree prune >/dev/null 2>&1 || true' EXIT
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
@@ -82,10 +82,48 @@ run_tests_matrix() {
 }
 
 build_artifacts() {
-    log "Build wheels and source distributions (all workspace packages)"
+    # Build from a pristine checkout of HEAD: the developer tree carries
+    # ignored litter (tool caches, editor droppings) that must never decide
+    # what ships. Local uncommitted changes are deliberately not built; a
+    # release is a commit, not a working tree.
+    log "Build wheels and source distributions (clean checkout of HEAD)"
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "note: local changes present; artifacts are built from HEAD without them"
+    fi
+    local clean_dir="${WORK_DIR}/clean-src"
+    git worktree add --detach --quiet "$clean_dir" HEAD
     rm -rf dist
-    uv build --all-packages
+    (cd "$clean_dir" && uv build --all-packages --out-dir "${PKG_DIR}/dist")
+    git worktree remove --force "$clean_dir"
     ls -1 dist
+
+    log "Artifact hygiene (no caches or bytecode inside)"
+    uv run python - dist/* <<'PY'
+import sys
+import tarfile
+import zipfile
+
+bad: list[str] = []
+for name in sys.argv[1:]:
+    if name.endswith(".whl"):
+        entries = zipfile.ZipFile(name).namelist()
+    else:
+        with tarfile.open(name) as archive:
+            entries = archive.getnames()
+    for entry in entries:
+        parts = entry.split("/")
+        if any(
+            part == "__pycache__" or (part.startswith(".") and "cache" in part)
+            for part in parts
+        ) or entry.endswith(".pyc"):
+            bad.append(f"{name}: {entry}")
+if bad:
+    print("error: developer litter inside release artifacts:", file=sys.stderr)
+    for line in bad:
+        print(f"  {line}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"clean: {len(sys.argv) - 1} artifact(s) checked")
+PY
 }
 
 smoke_test_matrix() {
@@ -123,6 +161,26 @@ smoke_test_matrix() {
         # the pure helpers are GTK-free by design).
         "$venv/bin/python" -c "import scanmole_gui" >/dev/null
         echo "import ok: scanmole_gui"
+
+        # Distribution metadata must agree with both runtime versions and
+        # with the lockstep policy (one version for both packages). The
+        # __version__ check above cannot see a stale pyproject version.
+        local meta_cli meta_gui gui_runtime
+        meta_cli="$("$venv/bin/python" -c \
+            "from importlib.metadata import version; print(version('scanmole'))")"
+        meta_gui="$("$venv/bin/python" -c \
+            "from importlib.metadata import version; print(version('scanmole-gui'))")"
+        gui_runtime="$("$venv/bin/python" -c \
+            "import scanmole_gui; print(scanmole_gui.__version__)")"
+        if [ "$meta_cli" != "$installed_version" ] \
+            || [ "$meta_gui" != "$gui_runtime" ] \
+            || [ "$meta_cli" != "$meta_gui" ]; then
+            echo "error: version skew: scanmole metadata ${meta_cli}," \
+                 "runtime ${installed_version}; scanmole-gui metadata" \
+                 "${meta_gui}, runtime ${gui_runtime}" >&2
+            exit 1
+        fi
+        echo "metadata ok: both packages at ${meta_cli}"
 
         # Command-line smoke test against the installed console scripts.
         "$venv/bin/${COMMAND_NAME}" --version >/dev/null
