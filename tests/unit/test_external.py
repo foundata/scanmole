@@ -25,6 +25,7 @@ def test_hint_names_apt_packages_on_debian_family() -> None:
         assert "apt install" in hint
         assert "sane-utils" in hint
         assert "tesseract-ocr-deu" in hint
+        assert "tesseract-ocr-osd" in hint
 
 
 def test_hint_defaults_to_fedora_packages() -> None:
@@ -33,6 +34,7 @@ def test_hint_defaults_to_fedora_packages() -> None:
         assert "dnf install" in hint
         assert "sane-backends" in hint
         assert "tesseract-langpack-deu" in hint
+        assert "tesseract-osd" in hint
 
 
 def test_require_tools_accepts_present_tools() -> None:

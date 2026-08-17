@@ -119,7 +119,7 @@ Only Debian 13+ and Ubuntu 24.04+ are supported (older releases lack the require
 
 ```sh
 sudo apt install sane-utils sane-airscan img2pdf ocrmypdf \
-                 tesseract-ocr tesseract-ocr-deu jbig2enc \
+                 tesseract-ocr tesseract-ocr-deu tesseract-ocr-osd jbig2enc \
                  python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
 ```
 
@@ -128,7 +128,7 @@ sudo apt install sane-utils sane-airscan img2pdf ocrmypdf \
 
 ```sh
 sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf \
-                 tesseract tesseract-langpack-deu \
+                 tesseract tesseract-langpack-deu tesseract-osd \
                  python3-gobject gtk4 libadwaita
 ```
 

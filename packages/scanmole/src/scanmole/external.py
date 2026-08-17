@@ -26,10 +26,8 @@ SCAN_TIMEOUT_SECONDS = 3600
 TOOL_TIMEOUT_SECONDS = 3600
 """Timeout for ``img2pdf`` and ``ocrmypdf``."""
 
-_DNF_HINT = (
-    "try: sudo dnf install sane-backends img2pdf ocrmypdf tesseract-langpack-deu"
-)
-_APT_HINT = "try: sudo apt install sane-utils img2pdf ocrmypdf tesseract-ocr-deu"
+_DNF_HINT = "try: sudo dnf install sane-backends img2pdf ocrmypdf tesseract-langpack-deu tesseract-osd"
+_APT_HINT = "try: sudo apt install sane-utils img2pdf ocrmypdf tesseract-ocr-deu tesseract-ocr-osd"
 
 
 def parse_distro_ids(os_release: str) -> set[str]:

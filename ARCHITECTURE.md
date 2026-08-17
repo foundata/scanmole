@@ -336,7 +336,7 @@ Load-bearing detail: **PNM carries no DPI metadata.** img2pdf must be told the r
 - `--deskew`: available as an option for devices without hardware/backend deskew (Brother).
 - PDF/A (archival-grade, ocrmypdf's default output type) is ScanMole's default too; `--no-pdfa` switches to plain PDF. Runs without OCR always produce plain PDF, because img2pdf does the writing then.
 
-ocrmypdf drives tesseract underneath; the default `deu+eng` needs both language packs (`tesseract-langpack-deu` plus the always-installed English data on Fedora, `tesseract-ocr-deu` on Debian/Ubuntu). Pure single-language stacks can drop to `-l deu` for a small accuracy gain on faint text. `--rotate-pages` needs the OSD model (`osd.traineddata`): verify it is present on a minimal install. Note: ocrmypdf uses Ghostscript internally and inherits its steady CVE cadence; ocrmypdf's own flags and defaults also move across major versions, where the golden tests catch behavioral drift.
+ocrmypdf drives tesseract underneath; the default `deu+eng` needs both language packs (`tesseract-langpack-deu` plus the always-installed English data on Fedora, `tesseract-ocr-deu` on Debian/Ubuntu). Pure single-language stacks can drop to `-l deu` for a small accuracy gain on faint text. `--rotate-pages` needs the OSD model (`osd.traineddata`, packaged as `tesseract-osd` on Fedora and `tesseract-ocr-osd` on Debian/Ubuntu): it is missing on minimal installs, which fails every OCR run with "Failed loading language 'osd'". Note: ocrmypdf uses Ghostscript internally and inherits its steady CVE cadence; ocrmypdf's own flags and defaults also move across major versions, where the golden tests catch behavioral drift.
 
 
 ## GUI<a id="gui"></a>

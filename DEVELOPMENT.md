@@ -31,7 +31,7 @@ This file provides information for maintainers and contributors to ScanMole. Wha
 
 - **Python ≥ 3.12** (`typing.override`); Fedora ships far newer, Ubuntu 24.04 / Debian 13 qualify.
 - **[uv](https://docs.astral.sh/uv/)** for the virtualenv, dependency groups and entry points.
-- **External runtime tools** from distribution packages. Fedora: `sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf tesseract tesseract-langpack-deu python3-gobject gtk4 libadwaita`. Debian 13+ / Ubuntu 24.04+: `sudo apt install sane-utils sane-airscan img2pdf ocrmypdf tesseract-ocr tesseract-ocr-deu python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`.
+- **External runtime tools** from distribution packages. Fedora: `sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf tesseract tesseract-langpack-deu tesseract-osd python3-gobject gtk4 libadwaita`. Debian 13+ / Ubuntu 24.04+: `sudo apt install sane-utils sane-airscan img2pdf ocrmypdf tesseract-ocr tesseract-ocr-deu tesseract-ocr-osd python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`.
 - **gettext** tools (`msgfmt`, `msgmerge`, `xgettext`) for [translation work](#translations) only.
 
 
