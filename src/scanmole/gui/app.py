@@ -65,7 +65,7 @@ SOURCE_TOOLTIPS = (
 )
 MODES = ((_("B/W"), "lineart"), (_("Gray"), "gray"), (_("Color"), "color"))
 MODE_TOOLTIPS = (_("Black and white (1-bit)"), "", "")
-RESOLUTION_PRESETS = (150, 200, 300, 600)
+RESOLUTION_PRESETS = (200, 250, 300, 600)
 RESOLUTION_MINIMUM = 50
 RESOLUTION_MAXIMUM = 1200
 PAGE_SIZES = (
