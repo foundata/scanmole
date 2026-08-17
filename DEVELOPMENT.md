@@ -240,6 +240,8 @@ uv run pytest                            # 4. tests
 
 ## Releases<a id="releases"></a>
 
+Both packages always release together, with the same version and one `vX.Y.Z` tag; a release may leave one package without changes. One product, one version: this keeps the changelog unified, the GUI's dependency pin trivially satisfied, and a single GitHub release entry per version accurate for both artifacts.
+
 1. Run the release checks and only continue if everything passes:
    ```sh
    scripts/release-check.sh
