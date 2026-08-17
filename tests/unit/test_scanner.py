@@ -205,6 +205,33 @@ def test_build_scan_command_fixed_size_may_exceed_the_bare_axis_range(
     assert command[command.index("-y") + 1] == "355.6"
 
 
+def test_build_scan_command_degraded_flatbed_gets_batch_count(
+    tmp_path: Path,
+) -> None:
+    # Flatbed-only device, duplex requested: the mapper degrades to the
+    # flatbed, and --batch-count=1 must key on that mapped source or the
+    # batch loops forever (a flatbed never reports "feeder empty").
+    caps = {"source": Capability(kind="enum", choices=["Flatbed"])}
+
+    command, effective = build_scan_command(
+        _config(source="adf-duplex"), "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert effective.source == "Flatbed"
+    assert command[command.index("--source") + 1] == "Flatbed"
+    assert "--batch-count=1" in command
+
+
+def test_build_scan_command_requested_flatbed_gets_batch_count(
+    tmp_path: Path,
+) -> None:
+    command, _effective = build_scan_command(
+        _config(source="flatbed"), "test:0", {}, str(tmp_path / "page_%04d.pnm")
+    )
+
+    assert "--batch-count=1" in command
+
+
 def test_build_scan_command_auto_size_omits_geometry_without_ranges(
     tmp_path: Path,
 ) -> None:

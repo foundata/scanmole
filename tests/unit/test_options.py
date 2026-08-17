@@ -184,10 +184,67 @@ def test_probe_capabilities_applies_the_source(
     assert seen[1] == ["scanimage", "-d", "test:0", "-A"]
 
 
-def test_sane_test_backend_fixture_has_no_duplex_source() -> None:
+def test_sane_test_backend_fixture_degrades_duplex_to_simplex_feeder() -> None:
     caps = _fixture_caps("sane-test.txt")
 
     assert map_source("adf", caps) == "Automatic Document Feeder"
     assert map_mode("gray", caps) == "Gray"
-    with pytest.raises(DeviceError, match="no source matching"):
-        map_source("adf-duplex", caps)
+    # No duplex source exists; the mapper degrades to the simplex feeder.
+    assert map_source("adf-duplex", caps) == "Automatic Document Feeder"
+
+
+def test_parse_single_choice_option_keeps_its_choice() -> None:
+    caps = parse_capabilities(
+        "    --source Flatbed [Flatbed]\n"
+        "        Selects the scan source (such as a document-feeder).\n"
+    )
+
+    assert caps["source"].kind == "enum"
+    assert caps["source"].choices == ["Flatbed"]
+
+
+def test_parse_skips_inactive_options() -> None:
+    # Inactive options cannot be set in the device's current state; passing
+    # them would be rejected, so they must not appear as capabilities.
+    caps = parse_capabilities(
+        "    --source Flatbed [inactive]\n"
+        "        Selects the scan source (such as a document-feeder).\n"
+        "    --mode Lineart|Gray [Lineart]\n"
+    )
+
+    assert "source" not in caps
+    assert caps["mode"].choices == ["Lineart", "Gray"]
+
+
+def test_canon_lide220_fixture_degrades_feeder_requests_to_flatbed() -> None:
+    # A flatbed-only device (single-choice --source). Before the single-choice
+    # parse fix, a duplex request passed no --source and no --batch-count=1,
+    # which batch-scanned "infinity pages" on hardware that never reports
+    # "feeder empty".
+    caps = _fixture_caps("canon-lide220-genesys.txt")
+
+    assert map_source("flatbed", caps) == "Flatbed"
+    assert map_source("adf-duplex", caps) == "Flatbed"
+    assert map_source("adf", caps) == "Flatbed"
+    assert map_mode("lineart", caps) == "Gray"  # software 1-bit takes over
+    assert snap_resolution(300, caps) == 300
+
+
+def test_epson_ds730n_epson2_fixture_is_effectively_sourceless() -> None:
+    # The epson2 backend misdetects this ADF document scanner over the network
+    # and reports its only --source as inactive; the option must vanish.
+    caps = _fixture_caps("epson-ds730n-epson2.txt")
+
+    assert "source" not in caps
+    assert map_source("adf-duplex", caps) is None
+    assert map_mode("lineart", caps) == "Lineart"
+    assert snap_resolution(300, caps) == 300
+
+
+def test_scansnap_ix100_fixture_degrades_duplex_to_front() -> None:
+    # Single-side portable unit: only "ADF Front" exists; a duplex request
+    # degrades to it with a warning instead of failing.
+    caps = _fixture_caps("fujitsu-scansnap-ix100.txt")
+
+    assert map_source("adf-duplex", caps) == "ADF Front"
+    assert map_mode("lineart", caps) == "Lineart"

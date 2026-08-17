@@ -19,6 +19,7 @@ from scanmole.external import SCAN_TIMEOUT_SECONDS
 from scanmole.options import (
     Capability,
     format_mm,
+    is_flatbed_source,
     map_mode,
     map_source,
     parse_page_size,
@@ -142,7 +143,13 @@ def build_scan_command(
         command.append(f"--swcrop={'yes' if config.crop else 'no'}")
 
     command += ["--format=pnm", f"--batch={batch_pattern}", "--batch-print"]
-    if config.source == "flatbed":
+    # Keyed on the *mapped* source: a feeder request degraded to the flatbed
+    # (flatbed-only device) must not batch-scan "infinity pages" on hardware
+    # that never reports "feeder empty".
+    flatbed = (
+        is_flatbed_source(source) if source is not None else config.source == "flatbed"
+    )
+    if flatbed:
         command.append("--batch-count=1")  # a flatbed never reports "feeder empty"
     return command, EffectiveSettings(source=source, mode=mode, resolution=resolution)
 

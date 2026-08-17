@@ -133,6 +133,11 @@ def parse_capabilities(listing: str) -> dict[str, Capability]:
         if not match:
             continue
         name, rest = match.group(1), match.group(2).strip()
+        if rest.endswith("[inactive]"):
+            # Not settable in the device's current state (e.g. the epson2
+            # backend lists "--source Flatbed [inactive]"); passing such an
+            # option would be rejected, so treat it as absent.
+            continue
         spec = _strip_default_marker(rest)
         capability = Capability()
         if "yes|no" in rest:
@@ -146,6 +151,12 @@ def parse_capabilities(listing: str) -> dict[str, Capability]:
                 capability.kind = "range"
                 capability.minimum = float(span.group(1))
                 capability.maximum = float(span.group(2))
+            elif spec:
+                # A single fixed choice (e.g. "--source Flatbed [Flatbed]"):
+                # still an enum, or the mapper would treat the option as absent
+                # and lose e.g. the flatbed detection.
+                capability.kind = "enum"
+                capability.choices = [spec]
         caps[name] = capability
     return caps
 
@@ -165,59 +176,77 @@ def _is_feeder(choice: str) -> bool:
     return "adf" in choice or "feeder" in choice or "automatic document" in choice
 
 
+_SOURCE_PREDICATES: dict[str, list[Callable[[str], bool]]] = {
+    "flatbed": [
+        lambda c: "flatbed" in c.replace(" ", ""),
+        lambda c: "platen" in c or "document table" in c,
+    ],
+    "adf-duplex": [
+        lambda c: "duplex" in c and _is_feeder(c),
+        lambda c: "duplex" in c,
+    ],
+    "adf-back": [
+        lambda c: "back" in c and "duplex" not in c,
+        lambda c: "back" in c,
+    ],
+    "adf": [  # front / simplex
+        lambda c: (
+            _is_feeder(c) and "duplex" not in c and "back" not in c and "front" in c
+        ),
+        lambda c: _is_feeder(c) and "duplex" not in c and "back" not in c,
+        lambda c: _is_feeder(c) and "back" not in c,
+    ],
+}
+
+# When a device lacks the requested source, degrade rather than fail: a duplex
+# request falls back to a simplex feeder (only the backsides are lost), feeder
+# requests fall back to the flatbed on flatbed-only devices. A flatbed request
+# never degrades to a feeder, which would pull paper the user did not put in.
+_SOURCE_FALLBACKS: dict[str, list[str]] = {
+    "adf-duplex": ["adf", "flatbed"],
+    "adf": ["flatbed"],
+    "adf-back": ["adf", "flatbed"],
+    "flatbed": [],
+}
+
+
+def is_flatbed_source(choice: str) -> bool:
+    """Whether a backend source string denotes the flatbed/platen."""
+    lowered = choice.lower()
+    return any(predicate(lowered) for predicate in _SOURCE_PREDICATES["flatbed"])
+
+
 def map_source(want: str, caps: dict[str, Capability]) -> str | None:
     """Map ``adf-duplex``/``adf``/``adf-back``/``flatbed`` onto ``--source``.
+
+    Degrades to a related source with a warning when the requested one is
+    absent (see ``_SOURCE_FALLBACKS``).
 
     Returns:
         The device's matching source string, or ``None`` when the device has no
         ``--source`` option.
 
     Raises:
-        DeviceError: If the device has sources but none match ``want``.
+        DeviceError: If no source (requested or fallback) is available.
     """
     capability = caps.get("source")
     if capability is None or not capability.choices:
         LOGGER.debug("device has no --source option; not passing one")
         return None
     choices = capability.choices
-    if want == "flatbed":
-        got = _pick(
-            choices,
-            [
-                lambda c: "flatbed" in c.replace(" ", ""),
-                lambda c: "platen" in c or "document table" in c,
-            ],
-        )
-    elif want == "adf-duplex":
-        got = _pick(
-            choices,
-            [lambda c: "duplex" in c and _is_feeder(c), lambda c: "duplex" in c],
-        )
-    elif want == "adf-back":
-        got = _pick(
-            choices,
-            [lambda c: "back" in c and "duplex" not in c, lambda c: "back" in c],
-        )
-    else:  # adf (front / simplex)
-        got = _pick(
-            choices,
-            [
-                lambda c: (
-                    _is_feeder(c)
-                    and "duplex" not in c
-                    and "back" not in c
-                    and "front" in c
-                ),
-                lambda c: _is_feeder(c) and "duplex" not in c and "back" not in c,
-                lambda c: _is_feeder(c) and "back" not in c,
-            ],
-        )
-    if got is None:
-        raise DeviceError(
-            f"device has no source matching '{want}'; available: {', '.join(choices)}"
-        )
-    LOGGER.debug("source '%s' -> '%s'", want, got)
-    return got
+    for attempt in [want, *_SOURCE_FALLBACKS[want]]:
+        got = _pick(choices, _SOURCE_PREDICATES[attempt])
+        if got is not None:
+            if attempt != want:
+                LOGGER.warning(
+                    "device has no '%s' source; falling back to '%s'", want, got
+                )
+            else:
+                LOGGER.debug("source '%s' -> '%s'", want, got)
+            return got
+    raise DeviceError(
+        f"device has no source matching '{want}'; available: {', '.join(choices)}"
+    )
 
 
 def map_mode(want: str, caps: dict[str, Capability]) -> str | None:

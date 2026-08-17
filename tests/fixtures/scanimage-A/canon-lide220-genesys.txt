@@ -1,0 +1,71 @@
+All options specific to device `genesys:libusb:003:080':
+  Scan Mode:
+    --mode Color|Gray [Gray]
+        Selects the scan mode (e.g., lineart, monochrome, or color).
+    --source Flatbed [Flatbed]
+        Selects the scan source (such as a document-feeder).
+    --preview[=(yes|no)] [no]
+        Request a preview-quality scan.
+    --depth 16|8 [8]
+        Number of bits per sample, typical values are 1 for "line-art" and 8
+        for multibit scans.
+    --resolution 4800|2400|1200|600|300|150|100|75dpi [75]
+        Sets the resolution of the scanned image.
+  Geometry:
+    -l 0..216.7mm [0]
+        Top-left x position of scan area.
+    -t 0..297.5mm [0]
+        Top-left y position of scan area.
+    -x 0..216.7mm [216.7]
+        Width of scan-area.
+    -y 0..297.5mm [297.5]
+        Height of scan-area.
+  Enhancement:
+    --custom-gamma[=(yes|no)] [no] [advanced]
+        Determines whether a builtin or a custom gamma-table should be used.
+    --gamma-table 0..65535,... [inactive]
+        Gamma-correction table.  In color mode this option equally affects the
+        red, green, and blue channels simultaneously (i.e., it is an intensity
+        gamma table).
+    --red-gamma-table 0..65535,... [inactive]
+        Gamma-correction table for the red band.
+    --green-gamma-table 0..65535,... [inactive]
+        Gamma-correction table for the green band.
+    --blue-gamma-table 0..65535,... [inactive]
+        Gamma-correction table for the blue band.
+    --brightness -100..100 (in steps of 1) [0]
+        Controls the brightness of the acquired image.
+    --contrast -100..100 (in steps of 1) [0]
+        Controls the contrast of the acquired image.
+  Extras:
+    --lamp-off-time 0..60 [15]
+        The lamp will be turned off after the given time (in minutes). A value
+        of 0 means, that the lamp won't be turned off.
+    --lamp-off-scan[=(yes|no)] [no]
+        The lamp will be turned off during scan.
+    --color-filter Red|Green|Blue [Green]
+        When using gray or lineart this option selects the used color.
+    --calibration-file <string> [] [advanced]
+        Specify the calibration file to use
+    --expiration-time -1..30000 (in steps of 1) [60]
+        Time (in minutes) before a cached calibration expires. A value of 0
+        means cache is not used. A negative value means cache never expires.
+  Sensors:
+    --scan[=(yes|no)] [no] [hardware]
+        Scan button
+    --file[=(yes|no)] [no] [hardware]
+        File button
+    --email[=(yes|no)] [no] [hardware]
+        Email button
+    --copy[=(yes|no)] [no] [hardware]
+        Copy button
+    --extra[=(yes|no)] [no] [hardware]
+        Extra button
+  Buttons:
+    --clear-calibration [advanced]
+        Clear calibration cache
+    --force-calibration [advanced]
+        Force calibration ignoring all and any calibration caches
+    --ignore-internal-offsets [advanced]
+        Acquires the image including the internal calibration areas of the
+        scanner
