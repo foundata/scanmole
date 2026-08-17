@@ -86,6 +86,13 @@ def test_parse_page_size_rejects_garbage() -> None:
         parse_page_size("huge")
 
 
+def test_parse_page_size_rejects_zero_dimensions() -> None:
+    with pytest.raises(InputError, match="must be > 0"):
+        parse_page_size("0x0")
+    with pytest.raises(InputError, match="must be > 0"):
+        parse_page_size("210x0")
+
+
 def test_parse_page_size_auto_returns_none() -> None:
     assert parse_page_size("auto") is None
     assert parse_page_size(" AUTO ") is None

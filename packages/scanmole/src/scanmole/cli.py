@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import signal
 import subprocess
 import sys
@@ -80,6 +81,43 @@ def configure_logging(*, verbose: bool) -> None:
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
+def _positive_int(text: str) -> int:
+    """argparse type: an integer of at least 1 (dpi, sizes)."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer '{text}'") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def _nonnegative_int(text: str) -> int:
+    """argparse type: an integer of at least 0."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer '{text}'") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError("must not be negative")
+    return value
+
+
+def _threshold_float(text: str) -> float:
+    """argparse type: a finite brightness fraction no greater than 1.
+
+    NaN would silently disable every comparison built on it, and values above
+    1 can never match a mean brightness; both are almost certainly typos.
+    """
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid number '{text}'") from None
+    if not math.isfinite(value) or value > 1:
+        raise argparse.ArgumentTypeError("must be a finite number <= 1")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the ScanMole argument parser."""
     parser = argparse.ArgumentParser(
@@ -142,7 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-r",
         "--resolution",
-        type=int,
+        type=_positive_int,
         default=300,
         metavar="N",
         help="resolution in dpi (default: %(default)s)",
@@ -158,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--despeckle",
-        type=int,
+        type=_nonnegative_int,
         default=1,
         metavar="N",
         help="despeckle radius, 0 = off (default: %(default)s)",
@@ -221,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--blank-threshold",
-        type=float,
+        type=_threshold_float,
         default=0.995,
         metavar="F",
         help=(

@@ -350,3 +350,27 @@ def test_main_installs_a_sigterm_handler(monkeypatch: pytest.MonkeyPatch) -> Non
             handler(signal.SIGTERM, None)
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+def test_nonsensical_numeric_arguments_are_rejected_at_parse_time() -> None:
+    # Each of these previously crossed the boundary and crashed later
+    # (ZeroDivisionError at -r 0) or silently changed behavior (a NaN
+    # blank threshold disables blank removal without saying so).
+    for argv in (
+        ["-r", "0", "out"],
+        ["-r", "-150", "out"],
+        ["--despeckle", "-1", "out"],
+        ["--blank-threshold", "nan", "out"],
+        ["--blank-threshold", "1.5", "out"],
+    ):
+        with pytest.raises(SystemExit) as info:
+            _parse(argv)
+        assert info.value.code == 2  # documented usage-error exit code
+
+
+def test_blank_threshold_zero_and_fractions_still_parse(tmp_path: Path) -> None:
+    zero = _parse(["--blank-threshold", "0", "-o", str(tmp_path / "a.pdf")])
+    frac = _parse(["--blank-threshold", "0.98", "-o", str(tmp_path / "a.pdf")])
+
+    assert _build_config(zero).blank_threshold == 0
+    assert _build_config(frac).blank_threshold == 0.98

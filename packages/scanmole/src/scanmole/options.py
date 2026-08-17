@@ -304,7 +304,10 @@ def parse_page_size(spec: str) -> tuple[float, float] | None:
             f"invalid --page-size '{spec}' "
             "(use auto, a4|a5|a6|letter|legal, or WxH in mm)"
         )
-    return float(match.group(1)), float(match.group(2))
+    width, height = float(match.group(1)), float(match.group(2))
+    if width <= 0 or height <= 0:
+        raise InputError(f"invalid --page-size '{spec}' (dimensions must be > 0 mm)")
+    return width, height
 
 
 def format_mm(value: float, capability: Capability | None, option: str) -> str:
