@@ -309,6 +309,10 @@ Both packages always release together, with the same version and one `vX.Y.Z` ta
    uv build --all-packages
    ls -1 "./dist" # a wheel and a source distribution per package, all carrying the new version
    ```
+   Validate exactly these files before uploading; the release check in step 1 ran before the version bump and the README preparation, so it never saw them. This verifies versions, the tag on `HEAD`, the lockstep policy, the prepared READMEs and that the working tree carries no other changes:
+   ```sh
+   scripts/release-check.sh --artifacts
+   ```
    Uploading needs a PyPI API token with upload rights for both projects. `uv publish` reads it from `UV_PUBLISH_TOKEN`; keep the value out of the shell history and out of command lines visible in the process list:
    ```sh
    printf 'PyPI API token: '

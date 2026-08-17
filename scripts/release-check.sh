@@ -18,8 +18,16 @@
 #
 # Usage:
 #   scripts/release-check.sh [PYTHON_VERSION ...]
+#   scripts/release-check.sh --artifacts
 #
 # Without arguments the supported version matrix below is used.
+#
+# --artifacts validates the artifacts currently in dist/ without rebuilding
+# them: the exact files "uv publish" would upload. The main gate runs before
+# the version bump and the PyPI README preparation, so it never sees those;
+# this mode checks litter, version and tag agreement, the lockstep policy,
+# the prepared READMEs and that the working tree differs from HEAD in
+# nothing but the prepared READMEs. Run it directly before uploading.
 
 set -euo pipefail
 
@@ -30,7 +38,10 @@ export UV_LINK_MODE=copy
 # Supported Python versions (keep in sync with pyproject and the README).
 # Override by passing versions as arguments.
 SUPPORTED_PYTHONS=("3.12" "3.13" "3.14")
-if [ "$#" -gt 0 ]; then
+ARTIFACTS_ONLY="no"
+if [ "${1:-}" = "--artifacts" ]; then
+    ARTIFACTS_ONLY="yes"
+elif [ "$#" -gt 0 ]; then
     SUPPORTED_PYTHONS=("$@")
 fi
 
@@ -96,7 +107,10 @@ build_artifacts() {
     (cd "$clean_dir" && uv build --all-packages --out-dir "${PKG_DIR}/dist")
     git worktree remove --force "$clean_dir"
     ls -1 dist
+    check_artifact_hygiene
+}
 
+check_artifact_hygiene() {
     log "Artifact hygiene (no caches or bytecode inside)"
     uv run python - dist/* <<'PY'
 import sys
@@ -124,6 +138,137 @@ if bad:
     raise SystemExit(1)
 print(f"clean: {len(sys.argv) - 1} artifact(s) checked")
 PY
+}
+
+validate_artifacts() {
+    # Pre-publish validation of dist/ exactly as it lies there. The rebuild
+    # after the version bump and the README preparation happens from the
+    # working tree on purpose (the prepared READMEs only exist there), so
+    # these are the only checks the uploaded bytes ever get.
+    if ! ls dist/*.whl >/dev/null 2>&1; then
+        echo "error: no artifacts in dist/ -- run 'uv build --all-packages' first" >&2
+        exit 1
+    fi
+    check_artifact_hygiene
+
+    log "Tree state, versions, tag, lockstep and prepared READMEs"
+    uv run python - dist/* <<'PY'
+import re
+import subprocess
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+errors: list[str] = []
+
+# The working tree may differ from the tagged HEAD in exactly the three
+# prepared README files; anything else would ship untested content.
+allowed = {
+    "README.md",
+    "packages/scanmole/README.md",
+    "packages/scanmole-gui/README.md",
+}
+status = subprocess.run(
+    ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
+).stdout
+for line in status.splitlines():
+    code, path = line[:2], line[3:]
+    if code.strip() == "M" and path in allowed:
+        continue
+    if code == "??":
+        if "/src/" in path and path.startswith("packages/"):
+            errors.append(f"untracked file would enter the artifacts: {path}")
+        continue
+    errors.append(f"tree differs from HEAD beyond the prepared READMEs: {line}")
+
+# One version everywhere: both sources, the tag on HEAD, every artifact's
+# file name and metadata.
+versions: dict[str, str] = {}
+for name, init in (
+    ("scanmole", "packages/scanmole/src/scanmole/__init__.py"),
+    ("scanmole-gui", "packages/scanmole-gui/src/scanmole_gui/__init__.py"),
+):
+    match = re.search(r'__version__ = "([^"]+)"', Path(init).read_text())
+    if match is None:
+        errors.append(f"cannot read __version__ from {init}")
+    else:
+        versions[name] = match.group(1)
+version = versions.get("scanmole", "")
+if len(set(versions.values())) != 1:
+    errors.append(f"lockstep violated in the sources: {versions}")
+tags = subprocess.run(
+    ["git", "tag", "--points-at", "HEAD"], capture_output=True, text=True, check=True
+).stdout.split()
+if version and f"v{version}" not in tags:
+    errors.append(
+        f"no v{version} tag on HEAD (found: {tags or 'none'}); "
+        "artifacts must be built from the tagged release state"
+    )
+
+def metadata_text(artifact: str) -> str:
+    if artifact.endswith(".whl"):
+        with zipfile.ZipFile(artifact) as bundle:
+            meta = next(n for n in bundle.namelist() if n.endswith(".dist-info/METADATA"))
+            return bundle.read(meta).decode("utf-8", errors="replace")
+    with tarfile.open(artifact) as bundle:
+        meta = next(n for n in bundle.getnames() if n.endswith("/PKG-INFO"))
+        member = bundle.extractfile(meta)
+        assert member is not None
+        return member.read().decode("utf-8", errors="replace")
+
+relative_link = re.compile(r"\]\((?!https?://|#|mailto:)")
+for artifact in sys.argv[1:]:
+    text = metadata_text(artifact)
+    headers, _, description = text.partition("\n\n")
+    meta_version = ""
+    for line in headers.splitlines():
+        if line.startswith("Version:"):
+            meta_version = line.split(":", 1)[1].strip()
+    if meta_version != version:
+        errors.append(f"{artifact}: metadata version {meta_version} != {version}")
+    if version and version not in Path(artifact).name:
+        errors.append(f"{artifact}: file name does not carry version {version}")
+    # The PyPI page is this description. A pointer stub means the README
+    # preparation (copy over the member READMEs) was skipped; relative
+    # links break on pypi.org.
+    if len(description) < 5000:
+        errors.append(
+            f"{artifact}: description is {len(description)} chars; "
+            "looks like the pointer README instead of the prepared project page"
+        )
+    hits = relative_link.findall(description)
+    if hits:
+        errors.append(
+            f"{artifact}: description contains {len(hits)} relative link(s); "
+            "run the README preparation (see DEVELOPMENT.md step 5)"
+        )
+
+if errors:
+    for line in errors:
+        print(f"error: {line}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"consistent: {len(sys.argv) - 1} artifact(s) at {version}, tag v{version} on HEAD")
+PY
+
+    log "Install + smoke test of the artifacts (clean environment)"
+    local venv="${WORK_DIR}/venv-artifacts"
+    uv venv "$venv" >/dev/null
+    uv pip install --python "$venv/bin/python" dist/*.whl >/dev/null
+    "$venv/bin/${COMMAND_NAME}" --version >/dev/null
+    local runtime_version meta_cli meta_gui
+    runtime_version="$("$venv/bin/python" -c "import ${IMPORT_NAME}; print(${IMPORT_NAME}.__version__)")"
+    meta_cli="$("$venv/bin/python" -c \
+        "from importlib.metadata import version; print(version('scanmole'))")"
+    meta_gui="$("$venv/bin/python" -c \
+        "from importlib.metadata import version; print(version('scanmole-gui'))")"
+    if [ "$meta_cli" != "$runtime_version" ] || [ "$meta_cli" != "$meta_gui" ]; then
+        echo "error: version skew after install: runtime ${runtime_version}," \
+             "scanmole ${meta_cli}, scanmole-gui ${meta_gui}" >&2
+        exit 1
+    fi
+    echo "install ok: both packages at ${meta_cli}"
+    log "Artifacts are ready to publish"
 }
 
 smoke_test_matrix() {
@@ -205,6 +350,11 @@ smoke_test_matrix() {
 
 main() {
     require_uv
+    if [ "$ARTIFACTS_ONLY" = "yes" ]; then
+        echo "Artifact validation for ${DIST_NAME}"
+        validate_artifacts
+        return
+    fi
     echo "Release check for ${DIST_NAME}"
     echo "Python versions: ${SUPPORTED_PYTHONS[*]}"
     ensure_pythons
