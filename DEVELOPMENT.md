@@ -244,20 +244,19 @@ uv run pytest                            # 4. tests
    ```sh
    scripts/release-check.sh
    ```
-   This runs formatting, linting, the strict type check and the test suite on every supported Python version, then builds the wheel and source distribution, installs the wheel into a clean throwaway environment per version and smoke-tests the installed artifact (import, `scanmole --version`/`--help`, and the `scanmole-gui` launcher's defined no-GTK behavior). Integration tests need `img2pdf` and the SANE `test` backend to actually run instead of skipping (see [Testing](#testing)); use a machine that has both. Also run the [smoke checklist](#smoke-checklist) on at least one fleet device.
+   This runs formatting, linting, the strict type check and the test suite on every supported Python version, then builds both packages' wheels and source distributions, installs the wheels into a clean throwaway environment per version and smoke-tests the installed artifacts (import, `scanmole --version`/`--help`, and the `scanmole-gui` launcher's defined no-GTK behavior). Integration tests need `img2pdf` and the SANE `test` backend to actually run instead of skipping (see [Testing](#testing)); use a machine that has both. Also run the [smoke checklist](#smoke-checklist) on at least one fleet device.
 2. Determine the next version number. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 3. Update several files to match the new release version:
    - [`CHANGELOG.md`](./CHANGELOG.md): insert a section for the new release with the date (Keep a Changelog format).
-   - [`uv.lock`](./uv.lock): the `version` of the `scanmole` and `scanmole-gui` packages.
-   - [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml): the `version` variable, plus the `scanmole==...` dependency pin in the GUI package.
+   - [`uv.lock`](./uv.lock): updated by running `uv lock` after the pyproject bump, never edited by hand.
+   - [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml): the `version` variable. A new **major** additionally widens the `scanmole>=X,<X+1` dependency pin in the GUI package by hand (minor and patch releases leave it untouched; the snippet below does not cover it).
    - [`packages/scanmole/src/scanmole/__init__.py`](./packages/scanmole/src/scanmole/__init__.py) and [`packages/scanmole-gui/src/scanmole_gui/__init__.py`](./packages/scanmole-gui/src/scanmole_gui/__init__.py): the `__version__` variable.
-   - The following snippet can help with these files (but double check `uv.lock` that only the package's own version gets replaced):
+   - The following snippet can help with these files:
      ```sh
      old_version="<FIXME version>" # major.minor.patch
      new_version="<FIXME version>" # major.minor.patch
 
      files=(
-      "./uv.lock"
       "./packages/scanmole/pyproject.toml"
       "./packages/scanmole-gui/pyproject.toml"
       "./packages/scanmole/src/scanmole/__init__.py"
@@ -275,6 +274,8 @@ uv run pytest                            # 4. tests
        grep -B 1 -E "^([[:space:]]*(__version__|version)[[:space:]]*[:=][[:space:]]*)\"?${new_version}\"?$" "$file" || true
        echo
      done
+
+     uv lock # update the member versions in the lockfile
      ```
 4. If everything is fine: commit the changes, tag the release and push:
    ```sh
