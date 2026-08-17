@@ -1,7 +1,23 @@
 # Changelog
 
-All notable, user-facing changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 
 ## [Unreleased]
 
-Initial development towards 0.1.0; nothing has been released yet.
+- Nothing worth mentioning yet.
+
+
+
+## [1.0.0] - 2026-08-17
+
+### Added
+
+- All functionality and files.
+
+
+[unreleased]: https://github.com/foundata/scanmole/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/foundata/scanmole/releases/tag/v1.0.0

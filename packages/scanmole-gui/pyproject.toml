@@ -2,7 +2,7 @@
 
 [project]
 name = "scanmole-gui"
-version = "0.1.0"
+version = "1.0.0"
 description = "GTK4/libadwaita frontend for ScanMole, the SANE-scanner-to-searchable-PDF tool."
 keywords = ["scanning", "scanner", "sane", "adf", "pdf", "ocr", "paperless", "gtk"]
 license = "GPL-3.0-or-later"
@@ -16,9 +16,9 @@ maintainers = [
   { name = "Andreas Haerter", email = "ah@foundata.com" },
 ]
 requires-python = ">=3.12"
-# Pre-1.0 the GUI expects the exact engine version, mirroring the runtime
-# version handshake; from 1.0.0 on this pin widens to the same SemVer major.
-dependencies = ["scanmole==0.1.0"]
+# The pin mirrors the runtime version handshake: GUI and CLI are compatible
+# while their SemVer majors match.
+dependencies = ["scanmole>=1.0.0,<2"]
 
 # PyGObject/GTK4/libadwaita deliberately come from distribution packages (a
 # venv with --system-site-packages), not from PyPI: the PyPI PyGObject is a
@@ -26,7 +26,7 @@ dependencies = ["scanmole==0.1.0"]
 
 # https://pypi.org/classifiers/
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
 
   # Indication for whom the project is for
   "Environment :: X11 Applications :: GTK",

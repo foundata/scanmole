@@ -79,25 +79,35 @@ Main features:
 
 ## Installation<a id="installation"></a>
 
-ScanMole consists of two Python packages, currently installed from a repository checkout into a [uv](https://docs.astral.sh/uv/)-managed virtualenv. On a desktop, install both:
+[![PyPI package version: scanmole](https://img.shields.io/pypi/v/scanmole.svg?logo=pypi&label=scanmole)](https://pypi.org/project/scanmole/)
+[![PyPI package version: scanmole-gui](https://img.shields.io/pypi/v/scanmole-gui.svg?logo=pypi&label=scanmole-gui)](https://pypi.org/project/scanmole-gui/)
+
+ScanMole needs Python ≥ 3.12. Its two packages are available on PyPI: [`scanmole`](https://pypi.org/project/scanmole/) (the CLI) and [`scanmole-gui`](https://pypi.org/project/scanmole-gui/) (the desktop frontend, pulls the CLI automatically).
+
+**Desktop (CLI + GUI), using [`uv`](https://docs.astral.sh/uv/getting-started/installation/) (recommended):** the GUI uses the distribution's PyGObject/GTK (see the packages below), so its virtualenv must see the system site packages:
 
 ```sh
-git clone https://github.com/foundata/scanmole.git
-cd scanmole
-uv venv --system-site-packages # venv that can see the distribution's PyGObject
-uv sync                        # installs the scanmole and scanmole-gui commands
+uv venv --system-site-packages ~/.venvs/scanmole
+source ~/.venvs/scanmole/bin/activate
+uv pip install scanmole-gui
 ```
 
-The `--system-site-packages` flag matters for the GUI only. On a server or for scripting, the CLI installs alone into any venv (it is pure stdlib and needs neither GTK nor PyGObject):
+Tip: after the first `scanmole-gui` start, the settings dialog can install a menu entry, so later starts come straight from the desktop's application grid without any venv activation.
+
+**Server or scripting (CLI only):** the CLI is pure stdlib and installs into any isolated environment:
 
 ```sh
-git clone https://github.com/foundata/scanmole.git
-cd scanmole
-uv venv
-uv sync --package scanmole     # installs only the scanmole command
+uv tool install scanmole
 ```
 
-Afterwards, activate the venv (`source .venv/bin/activate`) or prefix the commands with `uv run`.
+**Using `pip` or `pipx` instead of uv:**
+
+```sh
+pipx install --system-site-packages scanmole-gui   # desktop
+pip install scanmole                               # CLI only
+```
+
+For development installs from a repository checkout, see [`DEVELOPMENT.md`](DEVELOPMENT.md#getting-started).
 
 ScanMole's runtime shells out to external tools, which come from distribution packages. Install them as follows (on a CLI-only machine, the GTK/PyGObject packages at the end of each list can be skipped):
 
@@ -216,7 +226,7 @@ The settings dialog can install a menu entry (`.desktop` file) for your user, so
 One JSON object per line on stdout; human-readable log on stderr:
 
 ```
-{"event":"hello","version":"0.3.0"}
+{"event":"hello","version":"1.0.0"}
 {"event":"devices","devices":[{"device":"...","vendor":"...","model":"...","type":"..."}]}
 {"event":"start","device":"...","source":"adf-duplex","mode":"lineart","resolution":300,"page_size":"a4","output":"..."}
 {"event":"settings","device":"...","source":"ADF Duplex","mode":"Lineart","resolution":300}

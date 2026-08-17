@@ -2,7 +2,7 @@
 
 [project]
 name = "scanmole"
-version = "0.1.0"
+version = "1.0.0"
 description = "Scan documents from a SANE scanner straight to a searchable PDF."
 keywords = ["scanning", "scanner", "sane", "adf", "pdf", "ocr", "paperless"]
 license = "GPL-3.0-or-later"
@@ -20,7 +20,7 @@ dependencies = []
 
 # https://pypi.org/classifiers/
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
 
   # Indication for whom the project is for
   "Environment :: Console",
