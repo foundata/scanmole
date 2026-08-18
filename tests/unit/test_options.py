@@ -184,7 +184,7 @@ def test_probe_capabilities_applies_the_source(
 
     monkeypatch.setattr("scanmole.options.run_command", fake_run)
 
-    probe_capabilities("test:0", source="ADF Duplex")
+    probe_capabilities("test:0", settings=(("--source", "ADF Duplex"),))
     probe_capabilities("test:0")
 
     assert seen[0] == ["scanimage", "-d", "test:0", "--source", "ADF Duplex", "-A"]
@@ -210,16 +210,20 @@ def test_parse_single_choice_option_keeps_its_choice() -> None:
     assert caps["source"].choices == ["Flatbed"]
 
 
-def test_parse_skips_inactive_options() -> None:
-    # Inactive options cannot be set in the device's current state; passing
-    # them would be rejected, so they must not appear as capabilities.
+def test_parse_preserves_inactive_options_as_inactive() -> None:
+    # Inactive options cannot be set in the device's current state; they are
+    # preserved as evidence (negotiation distinguishes inactive from absent)
+    # but the mappers and command construction must never use them.
     caps = parse_capabilities(
         "    --source Flatbed [inactive]\n"
         "        Selects the scan source (such as a document-feeder).\n"
         "    --mode Lineart|Gray [Lineart]\n"
     )
 
-    assert "source" not in caps
+    assert caps["source"].active is False
+    assert caps["source"].choices == ["Flatbed"]
+    assert caps["mode"].active is True
+    assert map_source("flatbed", caps) is None  # inactive: not usable
     assert caps["mode"].choices == ["Lineart", "Gray"]
 
 
@@ -242,7 +246,7 @@ def test_epson_ds730n_epson2_fixture_is_effectively_sourceless() -> None:
     # and reports its only --source as inactive; the option must vanish.
     caps = _fixture_caps("epson-ds730n-epson2.txt")
 
-    assert "source" not in caps
+    assert caps["source"].active is False
     assert map_source("adf-duplex", caps) is None
     assert map_mode("lineart", caps) == "Lineart"
     assert snap_resolution(300, caps) == 300

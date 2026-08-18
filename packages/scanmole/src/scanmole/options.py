@@ -56,12 +56,27 @@ _MODE_FALLBACKS: dict[str, list[str]] = {
 
 @dataclass
 class Capability:
-    """A single ``scanimage`` option discovered from ``-A``."""
+    """A single ``scanimage`` option discovered from ``-A``.
+
+    ``active=False`` preserves options the backend lists as ``[inactive]``
+    (not settable in the device's current state). They are evidence for
+    capability negotiation, which must distinguish inactive from absent, but
+    command construction never passes them.
+    """
 
     kind: CapabilityKind = "other"
     choices: list[str] = field(default_factory=list)
     minimum: float | None = None
     maximum: float | None = None
+    active: bool = True
+
+
+def active_capability(caps: dict[str, Capability], name: str) -> Capability | None:
+    """The named capability if it is present and currently settable."""
+    capability = caps.get(name)
+    if capability is None or not capability.active:
+        return None
+    return capability
 
 
 def _strip_default_marker(spec: str) -> str:
@@ -80,24 +95,29 @@ def _strip_default_marker(spec: str) -> str:
     return spec
 
 
-def probe_capabilities(device: str, source: str | None = None) -> dict[str, Capability]:
+def probe_capabilities(
+    device: str,
+    settings: Sequence[tuple[str, str]] = (),
+    timeout_seconds: float = PROBE_TIMEOUT_SECONDS,
+) -> dict[str, Capability]:
     """Parse ``scanimage -d DEV -A`` into a capability per option name.
 
-    Some backends advertise option constraints relative to the currently
-    selected source (eSCL devices report a different scan window per source),
-    so ``source`` applies a backend source name before the listing is read.
+    Backends advertise option constraints relative to the currently applied
+    settings (eSCL devices report a different scan window per source, mode
+    choices can depend on the source), so ``settings`` applies ordered
+    ``(option, value)`` pairs, as argv entries, before the listing is read.
 
     Raises:
         DeviceError: If the device cannot be queried.
     """
     command = ["scanimage", "-d", device]
-    if source is not None:
-        command += ["--source", source]
+    for option, value in settings:
+        command += [option, value]
     command.append("-A")
     try:
         result = run_command(
             command,
-            timeout_seconds=PROBE_TIMEOUT_SECONDS,
+            timeout_seconds=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         raise DeviceError(f"timed out probing options of {device}") from exc
@@ -133,13 +153,14 @@ def parse_capabilities(listing: str) -> dict[str, Capability]:
         if not match:
             continue
         name, rest = match.group(1), match.group(2).strip()
+        capability = Capability()
         if rest.endswith("[inactive]"):
             # Not settable in the device's current state (e.g. the epson2
-            # backend lists "--source Flatbed [inactive]"); passing such an
-            # option would be rejected, so treat it as absent.
-            continue
+            # backend lists "--source Flatbed [inactive]"). Preserved as
+            # evidence with active=False; never passed to scanimage.
+            capability.active = False
+            rest = rest[: -len("[inactive]")].strip()
         spec = _strip_default_marker(rest)
-        capability = Capability()
         if "yes|no" in rest:
             capability.kind = "bool"
         elif "|" in spec:
@@ -219,8 +240,9 @@ def is_flatbed_source(choice: str) -> bool:
 def map_source(want: str, caps: dict[str, Capability]) -> str | None:
     """Map ``adf-duplex``/``adf``/``adf-back``/``flatbed`` onto ``--source``.
 
-    Degrades to a related source with a warning when the requested one is
-    absent (see ``_SOURCE_FALLBACKS``).
+    Degrades to a related source when the requested one is absent (see
+    ``_SOURCE_FALLBACKS``). Pure selection: the capability negotiation layer
+    owns user-facing fallback notices.
 
     Returns:
         The device's matching source string, or ``None`` when the device has no
@@ -229,20 +251,15 @@ def map_source(want: str, caps: dict[str, Capability]) -> str | None:
     Raises:
         DeviceError: If no source (requested or fallback) is available.
     """
-    capability = caps.get("source")
+    capability = active_capability(caps, "source")
     if capability is None or not capability.choices:
-        LOGGER.debug("device has no --source option; not passing one")
+        LOGGER.debug("device has no active --source option; not passing one")
         return None
     choices = capability.choices
     for attempt in [want, *_SOURCE_FALLBACKS[want]]:
         got = _pick(choices, _SOURCE_PREDICATES[attempt])
         if got is not None:
-            if attempt != want:
-                LOGGER.warning(
-                    "device has no '%s' source; falling back to '%s'", want, got
-                )
-            else:
-                LOGGER.debug("source '%s' -> '%s'", want, got)
+            LOGGER.debug("source '%s' -> '%s'", want, got)
             return got
     raise DeviceError(
         f"device has no source matching '{want}'; available: {', '.join(choices)}"
@@ -252,7 +269,8 @@ def map_source(want: str, caps: dict[str, Capability]) -> str | None:
 def map_mode(want: str, caps: dict[str, Capability]) -> str | None:
     """Map ``lineart``/``gray``/``color`` onto the device's ``--mode`` choices.
 
-    Degrades to a related mode with a warning when the requested one is absent.
+    Degrades to a related mode when the requested one is absent. Pure
+    selection: the capability negotiation layer owns user-facing notices.
 
     Returns:
         The device's matching mode string, or ``None`` when the device has no
@@ -261,20 +279,15 @@ def map_mode(want: str, caps: dict[str, Capability]) -> str | None:
     Raises:
         DeviceError: If no mode (requested or fallback) is available.
     """
-    capability = caps.get("mode")
+    capability = active_capability(caps, "mode")
     if capability is None or not capability.choices:
-        LOGGER.debug("device has no --mode option; not passing one")
+        LOGGER.debug("device has no active --mode option; not passing one")
         return None
     choices = capability.choices
     for attempt in [want, *_MODE_FALLBACKS[want]]:
         got = _pick(choices, _MODE_PREDICATES[attempt])
         if got is not None:
-            if attempt != want:
-                LOGGER.warning(
-                    "device has no '%s' mode; falling back to '%s'", want, got
-                )
-            else:
-                LOGGER.debug("mode '%s' -> '%s'", want, got)
+            LOGGER.debug("mode '%s' -> '%s'", want, got)
             return got
     raise DeviceError(
         f"device has no mode matching '{want}'; available: {', '.join(choices)}"
@@ -334,7 +347,7 @@ def snap_resolution(resolution: int, caps: dict[str, Capability]) -> int | None:
         The dpi to request, or ``None`` when the device has no ``--resolution``
         option (so it should not be passed at all).
     """
-    capability = caps.get("resolution")
+    capability = active_capability(caps, "resolution")
     if capability is None:
         return None
     if capability.kind == "enum":
@@ -346,14 +359,9 @@ def snap_resolution(resolution: int, caps: dict[str, Capability]) -> int | None:
             }
         )
         if values and resolution not in values:
-            nearest = min(values, key=lambda value: (abs(value - resolution), value))
-            LOGGER.warning(
-                "device does not offer %d dpi; using %d dpi", resolution, nearest
-            )
-            return nearest
+            return min(values, key=lambda value: (abs(value - resolution), value))
     elif capability.kind == "range" and capability.maximum is not None:
         if resolution > capability.maximum:
-            LOGGER.warning("device maximum is %g dpi; using that", capability.maximum)
             return int(capability.maximum)
         if capability.minimum is not None and resolution < capability.minimum:
             return int(capability.minimum)

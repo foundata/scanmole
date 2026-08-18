@@ -18,6 +18,7 @@ from scanmole.events import EventWriter
 from scanmole.external import SCAN_TIMEOUT_SECONDS
 from scanmole.options import (
     Capability,
+    active_capability,
     format_mm,
     is_flatbed_source,
     map_mode,
@@ -124,14 +125,20 @@ def build_scan_command(
     # (fujitsu reports A4 height until --page-height is raised), so the scan
     # area is clamped against the page geometry maxima where the backend has
     # them; --page-width/--page-height are emitted first to extend the window.
-    width_cap = _window_cap(caps.get("page-width"), caps.get("x"))
-    height_cap = _window_cap(caps.get("page-height"), caps.get("y"))
+    width_cap = _window_cap(
+        active_capability(caps, "page-width"), active_capability(caps, "x")
+    )
+    height_cap = _window_cap(
+        active_capability(caps, "page-height"), active_capability(caps, "y")
+    )
+    has_x = active_capability(caps, "x") is not None
+    has_y = active_capability(caps, "y") is not None
     window: dict[str, float] = {}
     for option, value, capability in (
-        ("--page-width", width, caps.get("page-width")),
-        ("--page-height", height, caps.get("page-height")),
-        ("-x", width, width_cap if "x" in caps else None),
-        ("-y", height, height_cap if "y" in caps else None),
+        ("--page-width", width, active_capability(caps, "page-width")),
+        ("--page-height", height, active_capability(caps, "page-height")),
+        ("-x", width, width_cap if has_x else None),
+        ("-y", height, height_cap if has_y else None),
     ):
         if capability is None:
             continue
@@ -143,7 +150,7 @@ def build_scan_command(
         command += [option, rendered]
         if option in ("-x", "-y"):
             window[option] = float(rendered)
-    if size is None and "ald" in caps:
+    if size is None and active_capability(caps, "ald") is not None:
         # Auto page size: let the scanner detect the paper's lower edge, so
         # frames come back at true paper length instead of the padded window.
         # Essential for native lineart, where the padding below the paper is
@@ -151,24 +158,24 @@ def build_scan_command(
         # cannot tell them apart (verified on the ScanSnap iX100: 297 mm
         # instead of an 895 mm frame).
         command.append("--ald=yes")
-    if size is None and "adf-crp" in caps:
+    if size is None and active_capability(caps, "adf-crp") is not None:
         # Same idea on the epsonds backend ("ADF auto cropping"): the device
         # crops to the detected paper bounds itself. White-backing scanners
         # (Epson DS series) need this, because software edge detection cannot
         # tell white backing from white paper.
         command.append("--adf-crp=yes")
 
-    if config.despeckle > 0 and "swdespeck" in caps:
+    if config.despeckle > 0 and active_capability(caps, "swdespeck") is not None:
         command.append(f"--swdespeck={config.despeckle}")
     deskew_applied = False
-    if "swdeskew" in caps:
+    if active_capability(caps, "swdeskew") is not None:
         command.append(f"--swdeskew={'yes' if config.deskew else 'no'}")
         deskew_applied = config.deskew
-    if "adf-skew" in caps:
+    if active_capability(caps, "adf-skew") is not None:
         # epsonds' hardware skew correction, same contract as --swdeskew.
         command.append(f"--adf-skew={'yes' if config.deskew else 'no'}")
         deskew_applied = deskew_applied or config.deskew
-    if "swcrop" in caps:
+    if active_capability(caps, "swcrop") is not None:
         command.append(f"--swcrop={'yes' if config.crop else 'no'}")
 
     command += ["--format=pnm", f"--batch={batch_pattern}", "--batch-print"]
@@ -320,7 +327,7 @@ def scan_to_files(
         # advertise a different scan window per source: the Brother ADS-4550W reports
         # a 3098.8 mm height for simplex ADF but 355.6 mm for ADF Duplex), so
         # re-read the listing with the mapped source applied.
-        caps = probe_capabilities(device, source=source)
+        caps = probe_capabilities(device, settings=(("--source", source),))
     pattern = str(work_dir / "page_%04d.pnm")
     command, effective = build_scan_command(config, device, caps, pattern)
     if on_settings is not None:
