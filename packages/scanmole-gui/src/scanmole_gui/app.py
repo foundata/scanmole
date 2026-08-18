@@ -43,6 +43,7 @@ from gi.repository import (  # noqa: E402  # after require_version
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
 from scanmole_gui import __version__, incompatible_cli  # noqa: E402
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
+from scanmole_gui.modes import SCAN_MODES, mode_argv  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -64,8 +65,27 @@ SOURCE_TOOLTIPS = (
     _("Automatic Document Feeder — both sides of every sheet"),
     _("Automatic Document Feeder — back sides only"),
 )
-MODES = ((_("B/W"), "lineart"), (_("Gray"), "gray"), (_("Color"), "color"))
-MODE_TOOLTIPS = (_("Black and white (1-bit)"), "", "")
+# Literal labels: xgettext only extracts literal _() calls, so building
+# this from SCAN_MODES would silently drop the labels from the catalog.
+MODES = (
+    (_("B/W"), "lineart"),
+    (_("Gray"), "gray"),
+    (_("Color"), "color"),
+    (_("B/W (faint)"), "lineart-auto"),
+)
+if tuple(value for _label, value in MODES) != tuple(
+    value for _label, value in SCAN_MODES
+):  # pragma: no cover -- import-time consistency guard
+    raise RuntimeError("MODES and scanmole_gui.modes.SCAN_MODES diverged")
+MODE_TOOLTIPS = (
+    _("Black and white (1-bit)"),
+    "",
+    "",
+    _(
+        "Black and White (1-bit) for faint originals "
+        "(e.g., thermal-paper receipts, washed-out copies)"
+    ),
+)
 RESOLUTION_PRESETS = (200, 250, 300, 600)
 RESOLUTION_MINIMUM = 50
 RESOLUTION_MAXIMUM = 1200
@@ -88,7 +108,7 @@ COLOR_SCHEMES = ((_("System default"), ""), (_("Light"), "light"), (_("Dark"), "
 
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
-_SIZE_BASE_MB = {"lineart": 0.1, "gray": 0.3, "color": 0.5}
+_SIZE_BASE_MB = {"lineart": 0.1, "lineart-auto": 0.1, "gray": 0.3, "color": 0.5}
 
 # Friendly texts for the CLI's documented exit codes.
 EXIT_HINTS: dict[int, tuple[str, str]] = {
@@ -1679,11 +1699,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         device = self._selected_device()
         if device:
             argv += ["-d", device]
+        argv += ["--source", self._source_row.value()]
+        argv += mode_argv(self._mode_row.value())
         argv += [
-            "--source",
-            self._source_row.value(),
-            "--mode",
-            self._mode_row.value(),
             "-r",
             str(self._current_resolution()),
             "--page-size",
