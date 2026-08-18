@@ -121,3 +121,38 @@ def test_lineart_request_produces_one_bit_pages_on_a_gray_backend(
     assert pages
     for page in pages:
         assert page.read_bytes().startswith(b"P4\n")
+
+
+@_NEEDS_TEST_BACKEND
+@_NEEDS_IMG2PDF
+def test_faint_request_takes_the_adaptive_gray_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The test backend has no native text enhancement, so B/W (faint) must
+    # negotiate the software path: an 8-bit Gray acquisition (the backend
+    # exposes --depth 1|8|16) that still ends as 1-bit pages.
+    kept = tmp_path / "kept"
+    argv = [
+        "-d",
+        "test:0",
+        "--source",
+        "flatbed",
+        "--mode",
+        "lineart",
+        "--lineart-threshold",
+        "auto",
+        "--no-ocr",
+        "--blank-threshold",
+        "0",
+        "--keep-images",
+        str(kept),
+        "-o",
+        str(tmp_path / "out.pdf"),
+    ]
+
+    assert main(argv) == 0
+
+    pages = sorted((kept / "out").glob("page_*.pnm"))
+    assert pages
+    for page in pages:
+        assert page.read_bytes().startswith(b"P4\n")

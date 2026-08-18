@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -889,7 +890,7 @@ def test_one_axis_brightness_crop_does_not_suppress_the_other(
     assert height < round(393.5 * scale)  # window height content-cropped
 
 
-def _gray_scan_pages(specs: list[bytes]):  # type: ignore[no-untyped-def]
+def _gray_scan_pages(specs: list[bytes], faint_native: bool = False):  # type: ignore[no-untyped-def]
     def fake_scan(
         config: ScanConfig,
         device: str,
@@ -898,7 +899,12 @@ def _gray_scan_pages(specs: list[bytes]):  # type: ignore[no-untyped-def]
         on_page: object,
         on_settings: object = None,
     ) -> ScanResult:
-        settings = EffectiveSettings(source="ADF Duplex", mode="Gray", resolution=300)
+        settings = EffectiveSettings(
+            source="ADF Duplex",
+            mode="Gray",
+            resolution=300,
+            faint_native=faint_native,
+        )
         assert callable(on_settings)
         on_settings(settings)
         pages = []
@@ -936,11 +942,16 @@ def _auto_config(tmp_path: Path, **overrides: object) -> ScanConfig:
 
 
 def _run_capture(
-    config: ScanConfig, monkeypatch: pytest.MonkeyPatch, specs: list[bytes]
+    config: ScanConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    specs: list[bytes],
+    faint_native: bool = False,
 ) -> list[dict[str, object]]:
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
     monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
-    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _gray_scan_pages(specs))
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files", _gray_scan_pages(specs, faint_native)
+    )
     monkeypatch.setattr(
         "scanmole.pipeline.build_pdf",
         lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
@@ -1019,16 +1030,39 @@ def test_auto_and_fixed_emit_identical_page_events(
     assert pages(auto_events) == pages(fixed_events)
 
 
-def test_auto_threshold_leaves_native_p4_untouched(
+def test_auto_threshold_keeps_natively_enhanced_p4_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # On the native text-enhancement path 1-bit frames are the intended
+    # enhanced result and pass through unmodified.
     native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
     keep_dir = tmp_path / "kept"
     config = _auto_config(tmp_path, keep_images=keep_dir)
 
-    _run_capture(config, monkeypatch, [native])
+    _run_capture(config, monkeypatch, [native], faint_native=True)
 
     assert (keep_dir / "out" / "page_0001.pnm").read_bytes() == native
+
+
+def test_auto_threshold_stops_on_an_unenhanced_p4_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unknown capabilities allow a best-effort scan, but a plain 1-bit frame
+    # cannot satisfy the faint request: the run must fail and preserve the
+    # acquired page instead of silently succeeding.
+    native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _gray_scan_pages([native]))
+
+    with pytest.raises(ProcessingError, match="cannot preserve faint") as excinfo:
+        run_pipeline(_auto_config(tmp_path), EventWriter(enabled=False))
+
+    match = re.search(r"kept in (\S+)", str(excinfo.value))
+    assert match is not None
+    preserved = Path(match.group(1))
+    assert (preserved / "page_0001.pnm").read_bytes() == native
+    shutil.rmtree(preserved, ignore_errors=True)
 
 
 def test_auto_threshold_adaptive_reach_protects_recovered_strokes(

@@ -357,6 +357,18 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                     head = page.read_bytes()
                     if head[:2] in (b"P5", b"P6"):
                         gray_snapshot = head
+                    elif head[:2] == b"P4" and not (
+                        negotiated and negotiated[0].faint_native
+                    ):
+                        # Unknown capabilities allow a best-effort scan, but
+                        # a plain 1-bit frame has already lost the faint
+                        # shades the request is about. Stop the batch; the
+                        # recovery contract preserves the acquired pages.
+                        raise ProcessingError(
+                            "the device delivered plain 1-bit pages, which "
+                            "cannot preserve faint content; rescan with the "
+                            "ordinary B/W mode (a numeric --lineart-threshold)"
+                        )
                 fixed = 0.5 if threshold == "auto" else threshold
                 converted = binarize_image(page, fixed)
                 if converted and not binarized:
