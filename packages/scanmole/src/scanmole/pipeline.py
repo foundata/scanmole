@@ -7,6 +7,7 @@ machine-readable event and a human log line.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import shutil
@@ -23,6 +24,7 @@ from scanmole.external import require_tools
 from scanmole.options import is_flatbed_source, parse_page_size
 from scanmole.pdf import build_pdf, run_ocr
 from scanmole.pnm import (
+    adaptive_lineart_threshold,
     autocrop_image,
     binarize_image,
     crop_image,
@@ -65,12 +67,31 @@ def analyze_page(
         Whether the page should be kept and whether it was detected as blank.
     """
     mean = mean_hint if mean_hint is not None else image_mean(page)
+    keep, blank = blank_verdict(mean, config)
+    report_page(page, number, config, events, mean, keep, blank)
+    return keep, blank
+
+
+def blank_verdict(mean: float | None, config: ScanConfig) -> tuple[bool, bool]:
+    """The keep/blank decision for a measured mean (pure)."""
     blank = (
         config.blank_threshold > 0
         and mean is not None
         and mean > config.blank_threshold
     )
-    keep = config.keep_blanks or not blank
+    return config.keep_blanks or not blank, blank
+
+
+def report_page(
+    page: Path,
+    number: int,
+    config: ScanConfig,
+    events: EventWriter,
+    mean: float | None,
+    keep: bool,
+    blank: bool,
+) -> None:
+    """Emit the ``page`` event and log line for a decided page."""
     events.emit(
         "page",
         n=number,
@@ -84,7 +105,6 @@ def analyze_page(
         LOGGER.info("Page %d: %s (%s)", number, state, measured)
     else:
         LOGGER.info("Page %d: blank, dropped (%s)", number, measured)
-    return keep, blank
 
 
 def publish_pdf(source: Path, output: Path) -> None:
@@ -147,6 +167,51 @@ def copy_kept_images(kept: list[KeptPage], destination: Path, stem: str) -> None
         suffix = page.suffix or ".img"
         shutil.copy2(page, batch_dir / f"page_{number:04d}{suffix}")
     LOGGER.info("Kept page images copied to %s", batch_dir)
+
+
+def _adopt_adaptive(
+    page: Path,
+    gray_snapshot: bytes,
+    fraction: float,
+    measured: list[PageContent],
+) -> None:
+    """Replace the fixed-0.5 page with the adaptive conversion, best-effort.
+
+    The fixed result on disk stays authoritative until the adaptive one is
+    complete (staged sibling, atomic adoption). Recovered strokes may lie
+    outside the fixed reach envelope, so the post-conversion envelope is
+    unioned into the page's measurement; the robust bbox stays fixed-0.5,
+    adaptive pixels never choose the paper size.
+    """
+    staging = page.with_name(page.name + ".auto")
+    try:
+        staging.write_bytes(gray_snapshot)
+        if not binarize_image(staging, fraction):
+            return
+        os.replace(staging, page)
+    except OSError:
+        LOGGER.debug("adaptive conversion abandoned for %s", page, exc_info=True)
+        return
+    finally:
+        staging.unlink(missing_ok=True)
+    LOGGER.info(
+        "Page %s: faint-original threshold %d%% applied",
+        page.name,
+        round(fraction * 100),
+    )
+    if measured and measured[-1].path == page:
+        entry = measured[-1]
+        stats = image_content_stats(page, min_ink_px=4)
+        if stats is not None and stats.reach is not None:
+            reach = stats.reach
+            if entry.reach_px is not None:
+                reach = (
+                    min(reach[0], entry.reach_px[0]),
+                    min(reach[1], entry.reach_px[1]),
+                    max(reach[2], entry.reach_px[2]),
+                    max(reach[3], entry.reach_px[3]),
+                )
+            measured[-1] = dataclasses.replace(entry, reach_px=reach)
 
 
 def _apply_content_sizes(
@@ -281,19 +346,25 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # degrade a lineart request to gray; restore the asked-for 1-bit
             # output in software, before blank detection so the 0.995 default
             # keeps its lineart-tuned meaning. --from-images input is
-            # user-curated and never touched.
-            if (
-                not from_images
-                and config.mode == "lineart"
-                and config.lineart_threshold > 0
-            ):
-                converted = binarize_image(page, config.lineart_threshold)
+            # user-curated and never touched. In "auto" threshold mode every
+            # decision metric still comes from a fixed-0.5 conversion; the
+            # gray frame is snapshotted so the guarded adaptive pass can
+            # rerun the conversion after the blank verdict.
+            gray_snapshot: bytes | None = None
+            threshold = config.lineart_threshold
+            if not from_images and config.mode == "lineart" and threshold != 0:
+                if threshold == "auto":
+                    head = page.read_bytes()
+                    if head[:2] in (b"P5", b"P6"):
+                        gray_snapshot = head
+                fixed = 0.5 if threshold == "auto" else threshold
+                converted = binarize_image(page, fixed)
                 if converted and not binarized:
                     binarized = True
                     LOGGER.info(
                         "Device delivered gray/color pages; converting to "
-                        "1-bit lineart in software (threshold %d%%)",
-                        round(config.lineart_threshold * 100),
+                        "1-bit lineart in software (threshold %s)",
+                        "auto" if threshold == "auto" else f"{threshold:g}",
                     )
             # Judge each axis on its own evidence: an axis still at the scan
             # window is unresolved (white backing, white lid, or a detection
@@ -329,7 +400,19 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                         # stamp in gray mode) has no box but is not blank.
                         if stats.bbox is not None:
                             mean_hint = stats.mean
-            keep, blank = analyze_page(page, total, config, events, mean_hint)
+            mean = mean_hint if mean_hint is not None else image_mean(page)
+            keep, blank = blank_verdict(mean, config)
+            # Guarded adaptation only for pages that survive the blank drop:
+            # a dropped backside never needs it, a kept faint-only page (via
+            # --keep-blanks or --blank-threshold 0) is exactly its use case,
+            # and a true blank falls back to the fixed result through the
+            # guards. The page event is emitted only after the final
+            # conversion, and it carries the fixed-0.5 mean either way.
+            if gray_snapshot is not None and keep:
+                fraction = adaptive_lineart_threshold(gray_snapshot)
+                if fraction is not None:
+                    _adopt_adaptive(page, gray_snapshot, fraction, measured)
+            report_page(page, total, config, events, mean, keep, blank)
             if blank:
                 blanks += 1
             if keep:

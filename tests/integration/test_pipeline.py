@@ -887,3 +887,232 @@ def test_one_axis_brightness_crop_does_not_suppress_the_other(
     width, height = map(int, header[1].split())
     assert width == frame_w  # observed width preserved whole
     assert height < round(393.5 * scale)  # window height content-cropped
+
+
+def _gray_scan_pages(specs: list[bytes]):  # type: ignore[no-untyped-def]
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(source="ADF Duplex", mode="Gray", resolution=300)
+        assert callable(on_settings)
+        on_settings(settings)
+        pages = []
+        for index, data in enumerate(specs, start=1):
+            page = work_dir / f"page_{index:04d}.pnm"
+            page.write_bytes(data)
+            assert callable(on_page)
+            on_page(page)
+            pages.append(page)
+        return ScanResult(pages=pages, settings=settings)
+
+    return fake_scan
+
+
+def _faint_page() -> bytes:
+    # Faint-only strokes at 170 on 235 paper: invisible to the fixed cut.
+    return b"P5\n100 100\n255\n" + bytes([170] * 800 + [235] * 9200)
+
+
+def _dark_page() -> bytes:
+    return b"P5\n100 100\n255\n" + bytes([40] * 1500 + [235] * 8500)
+
+
+def _true_blank() -> bytes:
+    return b"P5\n100 100\n255\n" + bytes([240] * 10000)
+
+
+def _auto_config(tmp_path: Path, **overrides: object) -> ScanConfig:
+    base = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        lineart_threshold="auto",
+        page_size="a4",
+    )
+    return dataclasses.replace(base, **overrides)  # type: ignore[arg-type]
+
+
+def _run_capture(
+    config: ScanConfig, monkeypatch: pytest.MonkeyPatch, specs: list[bytes]
+) -> list[dict[str, object]]:
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _gray_scan_pages(specs))
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    stream = io.StringIO()
+    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
+    return [json.loads(line) for line in stream.getvalue().splitlines()]
+
+
+def test_auto_threshold_faint_page_still_drops_under_normal_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The blank verdict is the fixed-0.5 one: the faint-only backside stays
+    # a blank and is dropped, exactly as with a numeric threshold.
+    events = _run_capture(
+        _auto_config(tmp_path), monkeypatch, [_dark_page(), _faint_page()]
+    )
+
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 1
+
+
+def test_auto_threshold_keep_blanks_recovers_a_faint_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, keep_blanks=True, keep_images=keep_dir)
+
+    events = _run_capture(config, monkeypatch, [_faint_page()])
+
+    page_event = next(e for e in events if e["event"] == "page")
+    assert page_event["blank"] is True  # verdict metric stays fixed-0.5
+    mean_value = page_event["mean"]
+    assert isinstance(mean_value, float) and mean_value > 0.99
+    kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
+    assert kept.startswith(b"P4")
+    from scanmole.pnm import pnm_mean
+
+    mean = pnm_mean(keep_dir / "out" / "page_0001.pnm")
+    assert mean is not None and mean < 0.95  # faint strokes recovered
+
+
+def test_auto_threshold_true_blank_stays_clean_with_keep_blanks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, keep_blanks=True, keep_images=keep_dir)
+
+    _run_capture(config, monkeypatch, [_true_blank()])
+
+    from scanmole.pnm import pnm_mean
+
+    mean = pnm_mean(keep_dir / "out" / "page_0001.pnm")
+    assert mean == pytest.approx(1.0)  # guards fell back to the fixed result
+
+
+def test_auto_and_fixed_emit_identical_page_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    specs = [_dark_page(), _true_blank()]
+    (tmp_path / "fixed").mkdir()
+    auto_events = _run_capture(_auto_config(tmp_path), monkeypatch, list(specs))
+    fixed_events = _run_capture(
+        _auto_config(tmp_path / "fixed", lineart_threshold=0.5),
+        monkeypatch,
+        list(specs),
+    )
+
+    def pages(events: list[dict[str, object]]) -> list[dict[str, object]]:
+        return [
+            {k: v for k, v in e.items() if k in ("event", "n", "blank", "mean")}
+            for e in events
+            if e["event"] == "page"
+        ]
+
+    assert pages(auto_events) == pages(fixed_events)
+
+
+def test_auto_threshold_leaves_native_p4_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, keep_images=keep_dir)
+
+    _run_capture(config, monkeypatch, [native])
+
+    assert (keep_dir / "out" / "page_0001.pnm").read_bytes() == native
+
+
+def test_auto_threshold_adaptive_reach_protects_recovered_strokes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Full-window gray frame: dark block chooses the size (fixed-0.5 bbox),
+    # a faint stroke row further down is invisible to the fixed pass but
+    # must survive the crop via the adaptive reach union.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+    faint_row = round(320 * scale)
+    dark = (
+        round(30 * scale),
+        round(170 * scale),
+        round(40 * scale),
+        round(120 * scale),
+    )
+    faint = (round(20 * scale), round(170 * scale), faint_row, round(354 * scale))
+    rows = []
+    for y in range(frame_h):
+        # Slight background noise: real sensor data is never bit-uniform,
+        # and a perfectly flat background would trip the synthetic-padding
+        # stripper of the edge walk.
+        row = bytearray(234 + (x + y) % 3 for x in range(frame_w))
+        if dark[2] <= y < dark[3]:
+            row[dark[0] : dark[1]] = bytes([110]) * (dark[1] - dark[0])
+        if faint[2] <= y < faint[3]:
+            row[faint[0] : faint[1]] = bytes([170]) * (faint[1] - faint[0])
+        rows.append(bytes(row))
+    frame = b"P5\n%d %d\n255\n" % (frame_w, frame_h) + b"".join(rows)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Duplex", mode="Gray", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, page_size="auto", keep_images=keep_dir)
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    header = (keep_dir / "out" / "page_0001.pnm").read_bytes().split(b"\n", 2)
+    width, height = map(int, header[1].split())
+    assert height >= faint_row + 8  # recovered strokes inside the crop
+    assert width < frame_w  # the width was still sized (fixed bbox decided)
+
+
+def test_cli_accepts_auto_and_rejects_garbage(tmp_path: Path) -> None:
+    from scanmole.cli import _build_config, build_parser
+
+    parser = build_parser()
+    auto = parser.parse_args(
+        ["--lineart-threshold", "auto", "-o", str(tmp_path / "a.pdf")]
+    )
+    assert _build_config(auto).lineart_threshold == "auto"
+
+    bad = parser.parse_args(
+        ["--lineart-threshold", "1.2", "-o", str(tmp_path / "a.pdf")]
+    )
+    with pytest.raises(Exception, match="lineart-threshold"):
+        _build_config(bad)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--lineart-threshold", "abc", "-o", str(tmp_path / "a.pdf")])

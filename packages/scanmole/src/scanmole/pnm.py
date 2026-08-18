@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -589,6 +590,177 @@ def image_content_stats(path: Path, *, min_ink_px: int) -> ContentStats | None:
     except (ValueError, OSError) as exc:
         LOGGER.warning("cannot measure %s: %s", path, exc)
         return None
+
+
+_OTSU_MIN_CLASS_WEIGHT = 0.005
+"""Both histogram classes need at least this pixel fraction; a threshold
+that separates almost nothing from almost everything is noise, not paper
+versus ink (blank backsides must not come out peppered)."""
+
+_OTSU_MIN_SEPARATION = 0.12
+"""Minimum normalized distance between the class means. Below it, the
+histogram is essentially unimodal and a split would binarize noise."""
+
+_OTSU_MIN_SEPARABILITY = 0.8
+"""Minimum Otsu separability (between-class over total variance, 0..1).
+
+Two real populations (paper and ink) push this toward 1; a uniform spread
+peaks at about 0.75 at its best split, so it is rejected even though its
+class means sit far apart."""
+
+_OTSU_MIN_FRACTION = 0.2
+_OTSU_MAX_FRACTION = 0.9
+"""Clamp band for the adaptive cutoff, applied only after Otsu ran. The
+upper bound is deliberately high: washed-out originals put their strokes
+near the paper brightness, and a tight cap (an earlier draft said 0.7)
+would defeat exactly those pages."""
+
+_OTSU_MAX_COVERAGE = 0.5
+"""The adaptive foreground must stay document-like; more than half the
+page as ink means the split found a photo or backing, not text."""
+
+_OTSU_MAX_EXTRA_COVERAGE = 0.25
+"""How much more of the page the adaptive threshold may turn to ink than
+the fixed 0.5 cut. Recovering faint strokes adds a few percent; an
+explosion relative to the fixed result means the split is wrong."""
+
+_FIXED_CUT_8BIT = 128
+"""The 8-bit integer cut of the fixed 0.5 threshold (round(0.5 * 255))."""
+
+
+def otsu_cut(histogram: list[int]) -> int | None:
+    """Otsu's threshold over a 256-bin histogram, as an integer cut.
+
+    Pure decision logic, no I/O. The returned cut ``c`` is defined for the
+    existing ``value < c`` conversion: when Otsu assigns bin ``t`` to the
+    dark class, the cut is ``t + 1``, computed in integers so no float
+    rounding can shift the boundary. Ties resolve to the smallest ``t``
+    (the darkest split), and the result is clamped to the documented band
+    only after the maximization.
+
+    Returns:
+        The cut, or ``None`` when the class-weight or mean-separation
+        guards reject the split (empty, unimodal or near-unimodal input).
+    """
+    total = sum(histogram)
+    if total == 0:
+        return None
+    total_mass = sum(index * count for index, count in enumerate(histogram))
+
+    best_t = -1
+    best_variance = -1.0
+    weight_dark = 0
+    mass_dark = 0
+    for t in range(255):  # bin 255 in the dark class would leave no light class
+        weight_dark += histogram[t]
+        mass_dark += t * histogram[t]
+        weight_light = total - weight_dark
+        if weight_dark == 0 or weight_light == 0:
+            continue
+        mean_dark = mass_dark / weight_dark
+        mean_light = (total_mass - mass_dark) / weight_light
+        variance = weight_dark * weight_light * (mean_dark - mean_light) ** 2
+        if variance > best_variance:
+            best_variance = variance
+            best_t = t
+
+    if best_t < 0:
+        return None
+    weight_dark = sum(histogram[: best_t + 1])
+    weight_light = total - weight_dark
+    if (
+        weight_dark < total * _OTSU_MIN_CLASS_WEIGHT
+        or weight_light < total * _OTSU_MIN_CLASS_WEIGHT
+    ):
+        return None
+    mean_dark = sum(i * c for i, c in enumerate(histogram[: best_t + 1])) / weight_dark
+    mean_light = (
+        sum(i * c for i, c in enumerate(histogram) if i > best_t) / weight_light
+    )
+    if (mean_light - mean_dark) / 255.0 < _OTSU_MIN_SEPARATION:
+        return None
+    total_mean = total_mass / total
+    total_variance = sum(
+        count * (index - total_mean) ** 2 for index, count in enumerate(histogram)
+    )
+    if total_variance == 0:
+        return None
+    if best_variance / (total * total_variance) < _OTSU_MIN_SEPARABILITY:
+        return None
+    cut = best_t + 1
+    return min(
+        round(_OTSU_MAX_FRACTION * 255), max(round(_OTSU_MIN_FRACTION * 255), cut)
+    )
+
+
+def gray_histogram(buffer: bytes) -> list[int] | None:
+    """256-bin brightness histogram of a raw gray or color PNM, from bytes.
+
+    Uses the exact channel semantics of :func:`binarize_pnm`: gray samples
+    as-is, the green channel for color, the high bytes for 16-bit depth.
+
+    Returns:
+        The histogram, or ``None`` for 1-bit or non-PNM input (nothing to
+        adapt there).
+
+    Raises:
+        ValueError: If the buffer starts as a PNM but is malformed.
+    """
+    if len(buffer) < 8 or buffer[:1] != b"P" or buffer[1:2] not in (b"5", b"6"):
+        return None
+    kind = buffer[1:2]
+    tokens, offset = _read_header(buffer, 3)
+    try:
+        width, height, maxval = int(tokens[0]), int(tokens[1]), int(tokens[2])
+    except ValueError as exc:
+        raise ValueError("bad PNM header") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError("bad PNM dimensions")
+    if not 0 < maxval < 65536:
+        raise ValueError("bad PNM maxval")
+    channels = 3 if kind == b"6" else 1
+    deep = maxval > 255
+    row_bytes = width * channels * (2 if deep else 1)
+    if len(buffer) - offset < row_bytes * height:
+        raise ValueError("truncated PNM raster")
+    raster = buffer[offset : offset + row_bytes * height]
+    if deep:  # 16-bit big-endian: the high bytes carry the significant part
+        raster = raster[0::2]
+    if channels == 3:
+        raster = raster[1::3]  # green channel
+    counts = Counter(raster)
+    return [counts.get(value, 0) for value in range(256)]
+
+
+def adaptive_lineart_threshold(buffer: bytes) -> float | None:
+    """A guarded per-page 1-bit threshold from a gray/color frame's bytes.
+
+    Wraps :func:`otsu_cut` with the coverage guards that need the fixed-0.5
+    comparison. The returned fraction reproduces the integer cut exactly
+    through :func:`binarize_pnm`'s ``round(threshold * maxval)``.
+
+    Returns:
+        The threshold fraction, or ``None`` when adaptation is rejected;
+        the caller must then fall back to the fixed ``0.5``, never leave
+        the page gray by accident.
+    """
+    try:
+        histogram = gray_histogram(buffer)
+    except ValueError:
+        return None
+    if histogram is None:
+        return None
+    cut = otsu_cut(histogram)
+    if cut is None:
+        return None
+    total = sum(histogram)
+    coverage_auto = sum(histogram[:cut]) / total
+    coverage_fixed = sum(histogram[:_FIXED_CUT_8BIT]) / total
+    if coverage_auto > _OTSU_MAX_COVERAGE:
+        return None
+    if coverage_auto - coverage_fixed > _OTSU_MAX_EXTRA_COVERAGE:
+        return None
+    return cut / 255.0
 
 
 def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:

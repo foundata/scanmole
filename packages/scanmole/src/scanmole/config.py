@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+LineartThreshold = float | Literal["auto"]
+"""Software 1-bit cutoff: a brightness fraction, ``0`` (off) or ``"auto"``
+(guarded per-page Otsu threshold; see the software lineart fallback)."""
 
 PAGE_SIZES: dict[str, tuple[float, float]] = {
     # name -> (width_mm, height_mm)
@@ -44,4 +49,4 @@ class ScanConfig:
     keep_images: Path | None
     output: Path
     # Defaulted so the record stays constructible from older call sites.
-    lineart_threshold: float = 0.5
+    lineart_threshold: LineartThreshold = 0.5

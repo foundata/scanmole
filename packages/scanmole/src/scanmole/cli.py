@@ -103,6 +103,22 @@ def _nonnegative_int(text: str) -> int:
     return value
 
 
+def _lineart_threshold(text: str) -> float | str:
+    """argparse type: ``auto`` or a brightness fraction.
+
+    The numeric range check stays in ``_build_config`` so both entry points
+    share one error message.
+    """
+    if text.strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid value '{text}' (use a number or 'auto')"
+        ) from None
+
+
 def _threshold_float(text: str) -> float:
     """argparse type: a finite brightness fraction no greater than 1.
 
@@ -250,14 +266,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lineart-threshold",
-        type=float,
+        type=_lineart_threshold,
         default=0.5,
-        metavar="F",
+        metavar="F|auto",
         help=(
             "black/white cutoff (fraction of full brightness) for converting "
             "pages in software when the device cannot scan 1-bit lineart "
-            "itself; 0 keeps the device's gray/color output (default: "
-            "%(default)s)"
+            "itself; 'auto' picks a guarded per-page threshold for faint "
+            "originals, 0 keeps the device's gray/color output; no effect on "
+            "devices that scan native 1-bit (default: %(default)s)"
         ),
     )
     parser.add_argument(
@@ -412,10 +429,10 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         raise InputError(
             "--from-images does not scan; do not combine it with -d/--device"
         )
-    if not 0 <= args.lineart_threshold < 1:
+    if args.lineart_threshold != "auto" and not 0 <= args.lineart_threshold < 1:
         raise InputError(
-            "--lineart-threshold must be 0 (off) or a fraction below 1, "
-            f"got {args.lineart_threshold}"
+            "--lineart-threshold must be 0 (off), a fraction below 1 or "
+            f"'auto', got {args.lineart_threshold}"
         )
     from_images = (
         tuple(Path(image) for image in args.from_images)

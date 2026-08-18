@@ -7,12 +7,15 @@ from pathlib import Path
 import pytest
 
 from scanmole.pnm import (
+    adaptive_lineart_threshold,
     autocrop_image,
     autocrop_pnm,
     binarize_image,
     binarize_pnm,
     crop_pnm,
+    gray_histogram,
     image_mean,
+    otsu_cut,
     pnm_content_stats,
     pnm_mean,
 )
@@ -511,3 +514,90 @@ def test_crop_pnm_crops_gray_frames_pixel_exact(tmp_path: Path) -> None:
     raster = data.split(b"\n", 3)[3]
     assert len(raster) == 20 * 10
     assert raster[0] == 40  # first kept row is source row 10 (10*4)
+
+
+def _hist(spikes: dict[int, int]) -> list[int]:
+    histogram = [0] * 256
+    for value, count in spikes.items():
+        histogram[value] = count
+    return histogram
+
+
+def test_otsu_cut_uses_the_t_plus_one_boundary() -> None:
+    # Otsu assigns bin 100 to the dark class; the `value < cut` conversion
+    # then needs cut 101 so that exactly the dark pixels turn black.
+    assert otsu_cut(_hist({100: 300, 180: 700})) == 101
+
+
+def test_otsu_rejects_uniform_and_narrow_histograms() -> None:
+    uniform = [10] * 256
+    narrow = _hist({200: 500, 205: 500})  # separation below the guard
+    empty = [0] * 256
+    single = _hist({240: 1000})
+
+    assert otsu_cut(uniform) is None  # separability guard
+    assert otsu_cut(narrow) is None
+    assert otsu_cut(empty) is None
+    assert otsu_cut(single) is None
+
+
+def test_otsu_rejects_a_meaningless_class_weight() -> None:
+    # 2 pixels of noise against 10000 of paper: not two populations.
+    assert otsu_cut(_hist({30: 2, 240: 10000})) is None
+
+
+def test_otsu_is_not_capped_at_seventy_percent() -> None:
+    # Washed-out original: strokes at ~79% brightness. A 0.7 upper clamp
+    # would push the cut below the strokes and lose them.
+    cut = otsu_cut(_hist({201: 100, 245: 900}))
+
+    assert cut == 202
+    assert cut > round(0.7 * 255)
+
+
+def test_adaptive_threshold_recovers_faint_next_to_dark_content() -> None:
+    # Moderately dark content, faint strokes, bright paper: the fixed 0.5
+    # cut (128) loses the faint strokes, the adaptive cut keeps both.
+    page = b"P5\n100 100\n255\n" + bytes([110] * 1000 + [170] * 600 + [235] * 8400)
+
+    fraction = adaptive_lineart_threshold(page)
+
+    assert fraction is not None
+    cut = round(fraction * 255)
+    assert 170 < cut <= round(0.9 * 255)  # faint strokes fall on the ink side
+    assert 0.5 * 255 < 170  # ...which the fixed cut would have lost
+
+
+def test_adaptive_threshold_rejects_exploding_coverage() -> None:
+    # Half the page darker than the split: a photo or backing, not text.
+    page = b"P5\n100 100\n255\n" + bytes([100] * 6000 + [200] * 4000)
+
+    assert adaptive_lineart_threshold(page) is None
+
+
+def test_adaptive_threshold_rejects_large_gain_over_fixed() -> None:
+    # Nothing below the fixed cut, but 30% of the page would become ink:
+    # too big a jump to trust.
+    page = b"P5\n100 100\n255\n" + bytes([140] * 3000 + [230] * 7000)
+
+    assert adaptive_lineart_threshold(page) is None
+
+
+def test_gray_histogram_channel_semantics() -> None:
+    # P6 counts the green channel; 16-bit input counts the high bytes.
+    color = b"P6\n2 1\n255\n" + bytes([255, 10, 255, 0, 250, 0])
+    hist = gray_histogram(color)
+    assert hist is not None
+    assert hist[10] == 1 and hist[250] == 1 and sum(hist) == 2
+
+    deep = b"P5\n2 1\n65535\n" + bytes([0x30, 0xFF, 0xE0, 0x01])
+    hist = gray_histogram(deep)
+    assert hist is not None
+    assert hist[0x30] == 1 and hist[0xE0] == 1 and sum(hist) == 2
+
+
+def test_gray_histogram_skips_p4_and_rejects_malformed() -> None:
+    assert gray_histogram(b"P4\n8 1\n\x00") is None
+    assert adaptive_lineart_threshold(b"P5\n4 2\n255\n" + bytes(3)) is None
+    with pytest.raises(ValueError, match="truncated"):
+        gray_histogram(b"P5\n4 2\n255\n" + bytes(3))
