@@ -16,16 +16,14 @@ from scanmole.config import ScanConfig
 from scanmole.errors import DeviceError, NoPagesError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import SCAN_TIMEOUT_SECONDS
+from scanmole.negotiation import Plan, log_notices, negotiate, require_supported
 from scanmole.options import (
     Capability,
     active_capability,
     format_mm,
     is_flatbed_source,
-    map_mode,
-    map_source,
     parse_page_size,
     probe_capabilities,
-    snap_resolution,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -94,23 +92,43 @@ def build_scan_command(
     device: str,
     caps: dict[str, Capability],
     batch_pattern: str,
+    plan: Plan | None = None,
 ) -> tuple[list[str], EffectiveSettings]:
     """Assemble the ``scanimage`` command for a batch scan.
 
-    Only options the device actually advertises (per ``caps``) are included.
+    Only options the device actively advertises (per ``caps``) are included.
+    The source, mode and resolution come from the negotiated ``plan`` (one
+    is computed from ``caps`` when the caller has none), so fallback policy
+    lives in one place.
+
+    Raises:
+        DeviceError: If the plan marks the source or mode UNSUPPORTED.
 
     Returns:
         The command and the settings the scan will actually run with.
     """
+    if plan is None:
+        plan = negotiate(
+            caps,
+            source=config.source,
+            mode=config.mode,
+            resolution=config.resolution,
+            lineart_threshold=config.lineart_threshold,
+        )
+    require_supported(plan)
     command = ["scanimage", "-d", device]
 
-    source = map_source(config.source, caps)
+    source = plan.source.backend_value
     if source is not None:
         command += ["--source", source]
-    mode = map_mode(config.mode, caps)
+    mode = plan.mode.backend_value
     if mode is not None:
         command += ["--mode", mode]
-    resolution = snap_resolution(config.resolution, caps)
+    resolution = (
+        int(plan.resolution.backend_value)
+        if plan.resolution.backend_value is not None
+        else None
+    )
     if resolution is not None:
         command += ["--resolution", str(resolution)]
 
@@ -182,8 +200,8 @@ def build_scan_command(
     # Keyed on the *mapped* source: a feeder request degraded to the flatbed
     # (flatbed-only device) must not batch-scan "infinity pages" on hardware
     # that never reports "feeder empty".
-    flatbed = (
-        is_flatbed_source(source) if source is not None else config.source == "flatbed"
+    flatbed = plan.source.effective == "flatbed" or (
+        source is not None and is_flatbed_source(source)
     )
     if flatbed:
         command.append("--batch-count=1")  # a flatbed never reports "feeder empty"
@@ -321,15 +339,32 @@ def scan_to_files(
             (keep acquired pages, name the path) applies.
     """
     caps = probe_capabilities(device)
-    source = map_source(config.source, caps)
-    if source is not None:
+
+    def negotiated(snapshot: dict[str, Capability]) -> Plan:
+        return negotiate(
+            snapshot,
+            source=config.source,
+            mode=config.mode,
+            resolution=config.resolution,
+            lineart_threshold=config.lineart_threshold,
+        )
+
+    plan = negotiated(caps)
+    require_supported(plan)
+    if plan.source.backend_value is not None:
         # Option constraints can depend on the selected source (eSCL devices
-        # advertise a different scan window per source: the Brother ADS-4550W reports
-        # a 3098.8 mm height for simplex ADF but 355.6 mm for ADF Duplex), so
-        # re-read the listing with the mapped source applied.
-        caps = probe_capabilities(device, settings=(("--source", source),))
+        # advertise a different scan window per source: the Brother ADS-4550W
+        # reports a 3098.8 mm height for simplex ADF but 355.6 mm for ADF
+        # Duplex), so re-read the listing with the negotiated source applied
+        # and negotiate again on the authoritative snapshot.
+        caps = probe_capabilities(
+            device, settings=(("--source", plan.source.backend_value),)
+        )
+        plan = negotiated(caps)
+        require_supported(plan)
+    log_notices(plan, LOGGER)
     pattern = str(work_dir / "page_%04d.pnm")
-    command, effective = build_scan_command(config, device, caps, pattern)
+    command, effective = build_scan_command(config, device, caps, pattern, plan)
     if on_settings is not None:
         on_settings(effective)
     events.emit(

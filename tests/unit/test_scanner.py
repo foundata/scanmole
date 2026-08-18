@@ -426,3 +426,36 @@ def test_backend_deskew_marks_the_request_as_applied() -> None:
     assert with_deskew.deskew_applied is True
     assert without.deskew_applied is False  # the option was set to =no
     assert no_option.deskew_applied is False  # nothing there to take the job
+
+
+def test_scan_to_files_warns_exactly_once_per_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Negotiation runs twice (initial probe, source-applied reprobe) but the
+    # selected plan's notices must reach the user exactly once.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    caps = {"source": Capability(kind="enum", choices=["ADF Front"])}
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
+    )
+
+    with caplog.at_level("INFO"):
+        scan_to_files(
+            _config(),  # requests adf-duplex; only a front side exists
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p: None,
+        )
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= 30 and "backs will not be scanned" in r.message
+    ]
+    assert len(warnings) == 1
