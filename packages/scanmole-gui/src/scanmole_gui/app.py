@@ -832,6 +832,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._set_language_model()
         self._lang_row.connect("notify::selected", self._on_language_selected)
         self._proc_grp.add(self._lang_row)
+        self._deskew_row = Adw.SwitchRow(
+            title=_("Deskew"),
+            subtitle=_("Straighten skewed pages"),
+            active=True,
+        )
+        self._proc_grp.add(self._deskew_row)
 
     def _build_log_area(self) -> None:
         """Build the collapsed, copyable log below the form."""
@@ -958,6 +964,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._set_resolution(resolution)
         combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
+        self._deskew_row.set_active(bool(settings.get("deskew", True)))
         self._select_language(str(settings.get("lang", "deu+eng")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
@@ -1052,6 +1059,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "resolution": str(self._current_resolution()),
             "page_size": combo_value(self._size_row, PAGE_SIZES),
             "ocr": self._ocr_row.get_active(),
+            "deskew": self._deskew_row.get_active(),
             "lang": self._selected_language(),
             "skip_blanks": self._blank_row.get_active(),
             "filename_template": self._current_template(),
@@ -1612,6 +1620,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             argv += ["-l", self._selected_language()]
         else:
             argv.append("--no-ocr")
+        argv.append("--deskew" if self._deskew_row.get_active() else "--no-deskew")
         if not self._blank_row.get_active():
             argv.append("--keep-blanks")
         # The CLI expands the filename placeholders and picks the next free
