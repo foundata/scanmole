@@ -125,6 +125,15 @@ EXIT_HINTS: dict[int, tuple[str, str]] = {
     ),
 }
 
+DEVICE_POLL_SECONDS = 15
+"""Pause between device searches while no scanner has been found.
+
+Counted from the end of the previous search, so slow probes never shrink
+the quiet gap. A probe costs a second or two of backend I/O plus discovery
+traffic (sane-airscan emits mDNS/WSD queries): cheap at this cadence, so no
+backoff; a suspended (minimized/hidden) window defers instead.
+"""
+
 SIGKILL_GRACE_SECONDS = 10
 """Between SIGTERM and SIGKILL on cancel.
 
@@ -421,6 +430,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._cancelled = False
         self._closing = False
         self._close_patience = 0
+        self._searching = False
+        self._device_poll_id: int | None = None
         self._devices: list[dict[str, str]] = []
         self._pages = 0
         self._blanks = 0
@@ -1104,8 +1115,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _refresh_devices(self, *_args: object) -> None:
         """Start an asynchronous ``scanmole --list-devices`` in a worker thread."""
-        if self._proc is not None:
+        if self._proc is not None or self._searching:
             return
+        self._searching = True
         self._refresh_btn.set_sensitive(False)
         self._device_row.set_subtitle(_("Searching for scanners…"))
         prefer = self._selected_device() or str(self._settings.get("device") or "")
@@ -1205,6 +1217,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self, devices: list[dict[str, str]], err: str, prefer: str
     ) -> None:
         """Populate the device dropdown on the main loop."""
+        self._searching = False
         self._refresh_btn.set_sensitive(self._proc is None)
         self._scan_btn.set_sensitive(self._proc is None and not self._cli_blocked)
         if self._cli_blocked and err and not self._version_alert_shown:
@@ -1242,6 +1255,34 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._set_result_bar("idle", _("No scanners found."))
             if err:
                 self._append_log(f"[gui] {err}")
+        # Plug-in-after-start flow: keep looking on our own while nothing was
+        # found, stop the moment something is (issue #7). One-shot chain, so
+        # the pause counts from the end of a search, not its start; every
+        # completed search (auto or manual refresh) restarts the countdown.
+        if self._device_poll_id is not None:
+            GLib.source_remove(self._device_poll_id)
+            self._device_poll_id = None
+        if not devices and not self._cli_blocked:
+            self._device_poll_id = GLib.timeout_add_seconds(
+                DEVICE_POLL_SECONDS, self._poll_devices
+            )
+
+    def _poll_devices(self) -> bool:
+        """One automatic re-search attempt; only while the list is empty."""
+        self._device_poll_id = None
+        if self._devices or self._cli_blocked:
+            return bool(GLib.SOURCE_REMOVE)
+        suspended = self.is_suspended() if hasattr(self, "is_suspended") else False
+        if self._proc is not None or self._searching or suspended:
+            # Transient: defer a full interval; the next completed search
+            # would reschedule anyway, this covers scans and hidden windows.
+            self._device_poll_id = GLib.timeout_add_seconds(
+                DEVICE_POLL_SECONDS, self._poll_devices
+            )
+            return bool(GLib.SOURCE_REMOVE)
+        self._append_log("[gui] no scanner yet — searching again")
+        self._refresh_devices()
+        return bool(GLib.SOURCE_REMOVE)  # the search result schedules the next
 
     def _selected_device(self) -> str | None:
         """Return the SANE id of the selected device, or ``None``."""
