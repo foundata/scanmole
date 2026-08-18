@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Content-based automatic page size: where neither the device nor software edge detection can find the paper boundary (white ADF backings as on the Epson DS series, white flatbed lids), pages are now sized from their printed content, snapping to standard paper sizes with a batch majority vote.
+- Content-based automatic page size: where neither the device nor software edge detection can find the paper boundary (white ADF backings as on the Epson DS series, white flatbed lids), pages are now sized from their printed content, snapping to standard paper sizes with a batch majority vote. Detection is judged per axis, so a device that shortens only the paper length still gets its width sized, and an observed hardware extent pins the standard size against both sparse content and the batch majority.
 - Hardware paper detection on the `epsonds` backend: `auto` page size requests the device's ADF auto cropping (`--adf-crp`), and `--deskew` drives its hardware skew correction (`--adf-skew`).
 
 ### Changed

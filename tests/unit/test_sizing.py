@@ -18,14 +18,19 @@ def _mm(value: float) -> int:
 
 
 def _page(
-    number: int, bbox_mm: tuple[float, float, float, float] | None
+    number: int,
+    bbox_mm: tuple[float, float, float, float] | None,
+    frame_mm: tuple[float, float] | None = None,
+    unresolved: tuple[bool, bool] = (True, True),
 ) -> PageContent:
     bbox_px = tuple(_mm(value) for value in bbox_mm) if bbox_mm is not None else None
+    frame_px = (_mm(frame_mm[0]), _mm(frame_mm[1])) if frame_mm is not None else _FRAME
     return PageContent(
         number=number,
         path=Path(f"page_{number:04d}.pnm"),
-        frame_px=_FRAME,
+        frame_px=frame_px,
         bbox_px=bbox_px,  # type: ignore[arg-type]
+        unresolved=unresolved,
     )
 
 
@@ -237,3 +242,97 @@ def test_full_frame_content_degenerates_to_a_no_op() -> None:
     )
 
     assert decisions[0].box_px is None
+
+
+def test_resolved_height_sizes_the_window_width() -> None:
+    # The scan_006 field case: hardware shortened the height to ~302 mm but
+    # left the width at the scan window. The height observation makes A4 the
+    # only compatible standard; the width gets sized.
+    page = _page(1, (7, 0, 209, 266), frame_mm=(215.3, 302.6), unresolved=(True, False))
+
+    decisions = choose_crops([page], _DPI, flatbed=False)
+
+    assert decisions[0].label == "a4"
+    assert decisions[0].box_px is not None
+    x0, y0, x1, y1 = decisions[0].box_px
+    assert x1 - x0 == _mm(210)  # width cropped to the standard
+    assert (y0, y1) == (0, _mm(297))  # height cut to A4, tail overhang gone
+
+
+def test_observed_extent_beats_sparse_content() -> None:
+    # Sparse content on legal- and letter-height hardware crops: content
+    # alone would snap far smaller, but the observed extent pins the size.
+    legal = _page(
+        1, (10, 0, 200, 180), frame_mm=(215.9, 358.0), unresolved=(True, False)
+    )
+    letter = _page(
+        3, (10, 0, 200, 180), frame_mm=(215.9, 282.0), unresolved=(True, False)
+    )
+
+    labels = [
+        decision.label
+        for decision in choose_crops([legal, letter], _DPI, flatbed=False)
+    ]
+
+    assert labels == ["legal", "letter"]
+
+
+def test_extent_pinned_size_resists_the_batch_majority() -> None:
+    # Two A4 content sheets outvote everything, but the legal sheet's
+    # observed 358 mm extent is a per-sheet fact the majority cannot rewrite.
+    pages = [
+        _page(1, (5, 0, 205, 270)),
+        _page(2, (5, 0, 205, 270)),
+        _page(3, (10, 0, 200, 180), frame_mm=(215.9, 358.0), unresolved=(True, False)),
+    ]
+
+    decisions = choose_crops(pages, _DPI, flatbed=False)
+
+    assert [decision.label for decision in decisions] == ["a4", "a4", "legal"]
+
+
+def test_custom_extent_keeps_its_axes_without_a_standard() -> None:
+    # A hardware-cropped 120 mm receipt: no standard size is compatible with
+    # the observation, and the A4 majority must not force one. The observed
+    # height survives whole; only the window-width axis is content-cropped.
+    pages = [
+        _page(1, (5, 0, 205, 270)),
+        _page(2, (5, 0, 205, 270)),
+        _page(3, (70, 0, 130, 100), frame_mm=(215.9, 120.0), unresolved=(True, False)),
+    ]
+
+    decisions = choose_crops(pages, _DPI, flatbed=False)
+
+    assert [decision.label for decision in decisions] == ["a4", "a4", "content"]
+    receipt = decisions[2]
+    assert receipt.box_px is not None
+    x0, y0, x1, y1 = receipt.box_px
+    assert (y0, y1) == (0, _mm(120.0))  # observed height preserved whole
+    assert x1 - x0 < _mm(215.9)  # window width content-cropped
+
+
+def test_blank_sheet_with_observed_extent_snaps_to_it() -> None:
+    page = _page(1, None, frame_mm=(215.3, 302.6), unresolved=(True, False))
+
+    decisions = choose_crops([page], _DPI, flatbed=False)
+
+    assert decisions[0].label == "a4"
+
+
+def test_duplex_sides_share_extent_evidence() -> None:
+    # Hardware height observations jitter per side; the sheet uses the
+    # smallest observation and both sides come out identical.
+    pages = [
+        _page(1, (7, 0, 209, 266), frame_mm=(215.3, 303.4), unresolved=(True, False)),
+        _page(2, (60, 10, 130, 90), frame_mm=(215.3, 302.0), unresolved=(True, False)),
+    ]
+
+    decisions = choose_crops(pages, _DPI, flatbed=False, duplex=True)
+
+    assert [decision.label for decision in decisions] == ["a4", "a4"]
+    heights = {
+        decision.box_px[3] - decision.box_px[1]
+        for decision in decisions
+        if decision.box_px is not None
+    }
+    assert heights == {_mm(297)}

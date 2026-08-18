@@ -275,9 +275,8 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # crop to the paper first so backing strips and end-of-paper
             # padding reach neither the 1-bit conversion nor blank detection,
             # and the PDF page gets the paper's real size.
-            edge_cropped = False
             if not from_images and auto_page_size:
-                edge_cropped = autocrop_image(page, crop_trim_px)
+                autocrop_image(page, crop_trim_px)
             # Backends without a 1-bit mode (eSCL offers only Gray/Color)
             # degrade a lineart request to gray; restore the asked-for 1-bit
             # output in software, before blank detection so the 0.995 default
@@ -296,37 +295,40 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                         "1-bit lineart in software (threshold %d%%)",
                         round(config.lineart_threshold * 100),
                     )
-            # White backing or white lid: neither the device (a full-window
-            # frame proves it) nor the edge walk found a paper edge. Record
-            # the content box for the batch-level size decision and judge
-            # blankness inside it, where a sparse page cannot drown in the
-            # padding. Frames a hardware detection did shorten never qualify.
+            # Judge each axis on its own evidence: an axis still at the scan
+            # window is unresolved (white backing, white lid, or a detection
+            # that only measures the other axis), a shortened axis is an
+            # observed paper extent. Frames with any unresolved axis are
+            # measured for the batch-level size decision; frames resolved on
+            # both axes are the device's own result and stay untouched.
             mean_hint: float | None = None
             window = negotiated[0].window_mm if negotiated else None
-            if not from_images and auto_page_size and not edge_cropped and window:
+            if not from_images and auto_page_size and window:
                 dpi_now = negotiated[0].resolution or config.resolution
                 scale = dpi_now / 25.4
                 stats = image_content_stats(page, min_ink_px=max(4, round(scale)))
-                if (
-                    stats is not None
-                    and stats.frame[0] / scale >= window[0] - _WINDOW_MATCH_MM
-                    and stats.frame[1] / scale >= window[1] - _WINDOW_MATCH_MM
-                ):
-                    measured.append(
-                        PageContent(
-                            number=total,
-                            path=page,
-                            frame_px=stats.frame,
-                            bbox_px=stats.bbox,
-                            reach_px=stats.reach,
-                        )
+                if stats is not None:
+                    unresolved = (
+                        stats.frame[0] / scale >= window[0] - _WINDOW_MATCH_MM,
+                        stats.frame[1] / scale >= window[1] - _WINDOW_MATCH_MM,
                     )
-                    # Hint only when a content box exists. Without one, the
-                    # whole-frame brightness mean must keep deciding: faint
-                    # gray content below the ink cutoff (a light stamp in
-                    # gray mode) has no box but is not blank.
-                    if stats.bbox is not None:
-                        mean_hint = stats.mean
+                    if any(unresolved):
+                        measured.append(
+                            PageContent(
+                                number=total,
+                                path=page,
+                                frame_px=stats.frame,
+                                bbox_px=stats.bbox,
+                                reach_px=stats.reach,
+                                unresolved=unresolved,
+                            )
+                        )
+                        # Hint only when a content box exists. Without one,
+                        # the whole-frame brightness mean must keep deciding:
+                        # faint gray content below the ink cutoff (a light
+                        # stamp in gray mode) has no box but is not blank.
+                        if stats.bbox is not None:
+                            mean_hint = stats.mean
             keep, blank = analyze_page(page, total, config, events, mean_hint)
             if blank:
                 blanks += 1

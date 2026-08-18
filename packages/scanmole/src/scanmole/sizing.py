@@ -45,6 +45,15 @@ fraction of the majority width. Sparse pages of the same paper have full-width
 text lines and adopt; receipts and genuinely smaller paper are narrower and
 keep their own size, which is what keeps mixed stacks mixed."""
 
+HARDWARE_EXTENT_TOLERANCE_MM = 8.0
+"""How far a hardware-shortened axis may overshoot the true paper size.
+
+A resolved axis is an *observation* of the paper extent, not an exact
+measurement: the Epson DS-730N delivers A4 sheets as 301.3 to 303.6 mm
+frames, up to ~7 mm of backing tail past the 297 mm paper. A standard size
+is compatible with an observed extent when it lies within this tolerance
+below it (and at most :data:`SNAP_TOLERANCE_MM` above, for jitter)."""
+
 _RECEIPT_MAX_WIDTH_MM = 100.0
 _RECEIPT_MIN_ASPECT = 2.2
 """Narrow, tall content (receipt-shaped) skips standard-size snapping:
@@ -71,6 +80,11 @@ class PageContent:
     frame_px: tuple[int, int]
     bbox_px: tuple[int, int, int, int] | None
     reach_px: tuple[int, int, int, int] | None = None
+    unresolved: tuple[bool, bool] = (True, True)
+    """Per axis (width, height): whether the frame still sits at the scan
+    window there. A shortened (resolved) axis carries an observed paper
+    extent and is preserved unless a compatible standard size replaces it;
+    an unresolved axis is what content sizing is for."""
 
 
 @dataclass(frozen=True)
@@ -131,6 +145,41 @@ def _snap(
         if entry[1] * entry[2] <= smallest * _SNAP_AREA_SLACK:
             return entry
     return None  # pragma: no cover -- the smallest entry always matches
+
+
+def _unit_extent(
+    unit: list[PageContent], scale: float
+) -> tuple[float | None, float | None]:
+    """The sheet's observed paper extent per axis in mm, or ``None``.
+
+    Duplex sides share the same physical sheet, so the smallest resolved
+    observation per axis bounds the paper.
+    """
+    extents: list[float | None] = []
+    for axis in (0, 1):
+        observed = [
+            page.frame_px[axis] / scale for page in unit if not page.unresolved[axis]
+        ]
+        extents.append(min(observed) if observed else None)
+    return (extents[0], extents[1])
+
+
+def _extent_compatible(
+    candidate: tuple[str, float, float],
+    extent: tuple[float | None, float | None],
+) -> bool:
+    """Whether a standard size agrees with the observed paper extents."""
+    _label, width, height = candidate
+    for observed, dimension in ((extent[0], width), (extent[1], height)):
+        if observed is None:
+            continue
+        if not (
+            observed - HARDWARE_EXTENT_TOLERANCE_MM
+            <= dimension
+            <= observed + SNAP_TOLERANCE_MM
+        ):
+            return False
+    return True
 
 
 def _union(
@@ -216,6 +265,25 @@ def _free_box(page: PageContent, dpi: int, flatbed: bool) -> tuple[int, int, int
     return (max(0, x0 - side), 0, min(frame_w, x1 + side), min(frame_h, y1 + tail))
 
 
+def _conservative_box(
+    page: PageContent, dpi: int, flatbed: bool
+) -> tuple[int, int, int, int]:
+    """Crop only the page's unresolved axes; keep observed extents whole.
+
+    Used when extent evidence rules out every standard size (custom paper,
+    hardware-cropped receipts): the shortened axis is the device's own
+    measurement and must survive, the window axis gets the content-based
+    conservative treatment.
+    """
+    frame_w, frame_h = page.frame_px
+    x0, y0, x1, y1 = _free_box(page, dpi, flatbed)
+    if not page.unresolved[0]:
+        x0, x1 = 0, frame_w
+    if not page.unresolved[1]:
+        y0, y1 = 0, frame_h
+    return (x0, y0, x1, y1)
+
+
 def _covering(
     box: tuple[int, int, int, int], page: PageContent
 ) -> tuple[int, int, int, int]:
@@ -266,14 +334,37 @@ def choose_crops(
         units = [[page] for page in pages]
 
     unit_boxes = [_union([page.bbox_px for page in unit]) for unit in units]
+    unit_extents = [_unit_extent(unit, scale) for unit in units]
     snapped: list[tuple[str, float, float] | None] = []
-    for unit, bbox in zip(units, unit_boxes, strict=True):
+    pinned: list[bool] = []
+    for unit, bbox, extent in zip(units, unit_boxes, unit_extents, strict=True):
+        frame = unit[0].frame_px
+        frame_mm = (frame[0] / scale, frame[1] / scale)
+        has_extent = any(observed is not None for observed in extent)
+        # Observed extents are stronger evidence than content: they come
+        # from an actual edge detection and filter the candidates first.
+        options = [
+            candidate
+            for candidate in _candidates(frame_mm)
+            if _extent_compatible(candidate, extent)
+        ]
         candidate: tuple[str, float, float] | None = None
-        if bbox is not None and not _receipt_shaped(bbox, scale):
-            frame = unit[0].frame_px
-            frame_mm = (frame[0] / scale, frame[1] / scale)
-            candidate = _snap(_candidates(frame_mm), _demand_mm(bbox, scale, flatbed))
+        if bbox is not None:
+            # The receipt shape rule guards against inventing paper from
+            # content alone; an observed extent overrules it.
+            if has_extent or not _receipt_shaped(bbox, scale):
+                candidate = _snap(options, _demand_mm(bbox, scale, flatbed))
+        elif has_extent and options:
+            # A blank sheet with an observed extent: the smallest size the
+            # observation allows, table order on near-ties.
+            smallest = min(entry[1] * entry[2] for entry in options)
+            candidate = next(
+                entry
+                for entry in options
+                if entry[1] * entry[2] <= smallest * _SNAP_AREA_SLACK
+            )
         snapped.append(candidate)
+        pinned.append(has_extent and candidate is not None)
 
     # Strict majority over the sheets that carry content: a plurality must
     # not rewrite a genuinely mixed stack (50/50 stays 50/50).
@@ -286,11 +377,17 @@ def choose_crops(
             majority = top
 
     decisions: list[CropDecision] = []
-    for unit, bbox, own in zip(units, unit_boxes, snapped, strict=True):
+    for unit, bbox, extent, own, pin in zip(
+        units, unit_boxes, unit_extents, snapped, pinned, strict=True
+    ):
         chosen = own
-        if majority is not None:
+        # A size established by an observed extent is a per-sheet fact; the
+        # batch majority only fills in where the evidence was content alone,
+        # and never against a sheet's observed extent.
+        if majority is not None and not pin and _extent_compatible(majority, extent):
             if bbox is None:
-                chosen = majority  # blank sheet: the majority is the best guess
+                if chosen is None:
+                    chosen = majority  # blank sheet: majority is the best guess
             elif chosen != majority and _contains(
                 majority, _demand_mm(bbox, scale, flatbed)
             ):
@@ -300,12 +397,15 @@ def choose_crops(
                 width_mm = (bbox[2] - bbox[0]) / scale
                 if width_mm >= _ADOPT_WIDTH_FRACTION * majority[1]:
                     chosen = majority
+        has_extent = any(observed is not None for observed in extent)
         for page in unit:
             if chosen is not None:
                 box = _place((chosen[1], chosen[2]), page, dpi, flatbed)
                 label = chosen[0]
-            elif bbox is not None:
-                box = _free_box(page, dpi, flatbed)
+            elif bbox is not None or has_extent:
+                # No standard size fits the evidence: content margins on the
+                # unresolved axes, observed extents preserved whole.
+                box = _conservative_box(page, dpi, flatbed)
                 label = "content"
             else:
                 decisions.append(CropDecision(page=page, box_px=None, label="frame"))

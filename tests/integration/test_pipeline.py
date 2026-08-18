@@ -576,12 +576,13 @@ def test_keyboard_interrupt_preserves_scanned_pages(
 def test_hardware_cropped_frames_stay_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A frame shorter than the scan window proves the device's own paper
-    # length detection worked (--ald/--adf-crp); content sizing must not run.
+    # A frame shortened on BOTH axes is the device's own complete result;
+    # content sizing must not touch it. (One shortened axis resolves only
+    # that axis: see the partial-crop test below.)
     dpi = 100
     scale = dpi / 25.4
     window = (215.9, 393.7)
-    frame_w, frame_h = round(window[0] * scale), round(215 * scale)
+    frame_w, frame_h = round(210 * scale), round(215 * scale)
 
     def fake_scan(
         config: ScanConfig,
@@ -778,3 +779,111 @@ def test_deskew_dead_end_warns_instead_of_staying_silent(
         assert run_pipeline(config, EventWriter(enabled=False)) == 0
 
     assert any("deskew requested" in record.message for record in caplog.records)
+
+
+def _p4_window_frame(
+    frame_w: int, frame_h: int, boxes: list[tuple[int, int, int, int]]
+) -> bytes:
+    row_bytes = (frame_w + 7) // 8
+    raster = bytearray(row_bytes * frame_h)
+    for x0, y0, x1, y1 in boxes:
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                raster[y * row_bytes + x // 8] |= 0x80 >> (x % 8)
+    return b"P4\n%d %d\n" % (frame_w, frame_h) + bytes(raster)
+
+
+def _partial_crop_scan(frame_w: int, frame_h: int, boxes, dpi: int, window):  # type: ignore[no-untyped-def]
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(_p4_window_frame(frame_w, frame_h, boxes))
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    return fake_scan
+
+
+def test_partially_cropped_frame_gets_the_window_axis_sized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The scan_006 field case: hardware shortened the height (~302 mm) but
+    # left the width at the scan window. The width must be sized instead of
+    # the frame being bypassed as "hardware handled it".
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(215.3 * scale), round(302.6 * scale)
+    content = (round(10 * scale), 0, round(205 * scale), round(270 * scale))
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _partial_crop_scan(frame_w, frame_h, [content], dpi, window),
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    header = (keep_dir / "out" / "page_0001.pnm").read_bytes().split(b"\n", 2)
+    width, height = map(int, header[1].split())
+    assert abs(width - round(210 * scale)) < 8  # width sized to A4
+    assert height == round(297 * scale)  # observed height snapped to A4
+
+
+def test_one_axis_brightness_crop_does_not_suppress_the_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A frame already narrow (as after a side-only brightness crop) but still
+    # at window height: the height axis is unresolved and must be sized.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(180 * scale), round(393.5 * scale)
+    content = (round(10 * scale), 0, round(170 * scale), round(200 * scale))
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _partial_crop_scan(frame_w, frame_h, [content], dpi, window),
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    header = (keep_dir / "out" / "page_0001.pnm").read_bytes().split(b"\n", 2)
+    width, height = map(int, header[1].split())
+    assert width == frame_w  # observed width preserved whole
+    assert height < round(393.5 * scale)  # window height content-cropped
