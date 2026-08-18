@@ -847,7 +847,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._proc_grp.add(self._lang_row)
         self._deskew_row = Adw.SwitchRow(
             title=_("Deskew"),
-            subtitle=_("Straighten skewed pages"),
+            subtitle=_("Correct skewed scanned pages"),
             active=True,
         )
         self._proc_grp.add(self._deskew_row)
