@@ -44,6 +44,7 @@ from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E4
 from scanmole.negotiation import (  # noqa: E402
     ADVISORY_PROBE_TIMEOUT_SECONDS,
     Support,
+    advisory_faint_assessment,
     assess_mode,
     assess_resolution,
     assess_source,
@@ -1483,8 +1484,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         capabilities = caps if isinstance(caps, dict) else None
         blocked: dict[str, str] = {}
         for value in ("lineart", "gray", "color", "lineart-auto"):
-            assessment = assess_mode(
-                capabilities, value, "auto" if value == "lineart-auto" else 0.5
+            # The faint mode takes the optimistic advisory verdict: a
+            # visible native-enhancement signature keeps it selectable, and
+            # the engine confirms the path with staged probes at scan time.
+            assessment = (
+                advisory_faint_assessment(capabilities)
+                if value == "lineart-auto"
+                else assess_mode(capabilities, value)
             )
             if selection_blocked(assessment.support):
                 blocked[value] = assessment.consequence

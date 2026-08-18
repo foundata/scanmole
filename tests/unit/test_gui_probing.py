@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from scanmole.negotiation import Support
+from scanmole.negotiation import Support, advisory_faint_assessment
+from scanmole.options import Capability
 from scanmole_gui.probing import ProbeCoordinator, ProbeRequest, selection_blocked
 
 
@@ -64,6 +65,53 @@ def test_forget_drops_only_the_named_device() -> None:
 
     assert coordinator.cached(ProbeRequest("dev-a"))[0] is False
     assert coordinator.cached(ProbeRequest("dev-b"))[0] is True
+
+
+def test_faint_availability_follows_the_source_applied_probe() -> None:
+    # Mirrors the app flow: the snapshot probed with the selected source
+    # applied decides the faint choice via the advisory verdict. A device
+    # that conclusively offers only plain 1-bit blocks the choice; one with
+    # a gray mode (or a visible native-enhancement signature) keeps it
+    # selectable, and the engine confirms the actual path at scan time.
+    coordinator = ProbeCoordinator()
+    lineart_only = ProbeRequest("dev-a", (("--source", "ADF"),))
+    gray_capable = ProbeRequest("dev-b", (("--source", "ADF"),))
+    for request, caps in (
+        (lineart_only, {"mode": Capability(kind="enum", choices=["Lineart"])}),
+        (gray_capable, {"mode": Capability(kind="enum", choices=["Lineart", "Gray"])}),
+    ):
+        token = coordinator.begin(request)
+        assert token is not None
+        coordinator.complete(token, caps)
+
+    verdicts = {}
+    for name, request in (("dev-a", lineart_only), ("dev-b", gray_capable)):
+        hit, snapshot = coordinator.cached(request)
+        assert hit is True
+        assert isinstance(snapshot, dict)
+        verdicts[name] = advisory_faint_assessment(snapshot)
+
+    assert selection_blocked(verdicts["dev-a"].support) is True
+    assert "ordinary B/W" in verdicts["dev-a"].consequence
+    assert selection_blocked(verdicts["dev-b"].support) is False
+
+
+def test_stale_candidate_probe_never_downgrades_a_newer_selection() -> None:
+    # The user switches devices while a candidate probe is in flight: its
+    # late lineart-only answer must not block the faint choice of the newly
+    # selected, gray-capable device.
+    coordinator = ProbeCoordinator()
+    stale = coordinator.begin(ProbeRequest("dev-a", (("--source", "ADF"),)))
+    assert stale is not None
+    coordinator.complete(stale, None)  # the switch obsoletes the probe
+    fresh = coordinator.begin(ProbeRequest("dev-b", (("--source", "ADF"),)))
+    assert fresh is not None
+
+    current, _ = coordinator.complete(
+        stale, {"mode": Capability(kind="enum", choices=["Lineart"])}
+    )
+
+    assert current is False  # the caller must drop it before any blocking
 
 
 def test_selection_blocking_policy() -> None:

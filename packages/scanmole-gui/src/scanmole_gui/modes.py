@@ -21,9 +21,10 @@ def mode_argv(value: str) -> list[str]:
     """The ``scanmole`` arguments for a mode value.
 
     Plain ``B/W`` deliberately omits the threshold option and inherits the
-    CLI's fixed default; the faint variant opts into ``auto``. On devices
-    that scan native 1-bit both behave identically, since no software
-    conversion happens at all.
+    CLI's fixed default; the faint variant opts into ``auto``, which the
+    engine serves through a recognized native text enhancement or an 8-bit
+    acquisition with the guarded adaptive conversion, never through an
+    ordinary 1-bit scan.
     """
     if value == "lineart-auto":
         return ["--mode", "lineart", "--lineart-threshold", "auto"]
