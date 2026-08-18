@@ -163,7 +163,7 @@ scanned pages and removes the output reservation. Killing the group earlier
 would destroy exactly the recovery the escalation is meant to allow.
 """
 
-DEFAULT_WINDOW_SIZE = (650, 810)  # starts in the single-column layout
+DEFAULT_WINDOW_SIZE = (645, 840)  # starts in the single-column layout
 
 # App-level styling: compact resolution preset chips, a dpi entry sized to
 # its digits, and no separator between the .joined-below/.joined-above row
