@@ -117,7 +117,7 @@ Default action: scan a batch and produce one PDF.
 | `-r`, `--resolution DPI` | `200` | Scan resolution; snapped to what the device offers |
 | `--page-size SIZE` | `auto` | `auto` (scan the full device window, crop each page to the detected paper edges, see [automatic page size](#pipeline-autosize)), `a4`, `a5`, `a6`, `letter`, `legal`, or `WxH` in mm (`210x297`) |
 | `--despeckle N` | `1` | Despeckle radius, `0` = off; passed only when the backend has `--swdespeck` |
-| `--deskew` / `--no-deskew` | off | Software deskew (backend `--swdeskew`, when present) |
+| `--deskew` / `--no-deskew` | on | Straighten skewed pages: backend deskew where offered (e.g. `--swdeskew`, `--adf-skew`), otherwise during OCR; a warning when neither applies |
 | `--crop` / `--no-crop` | off | Software auto-crop (backend `--swcrop`, when present) |
 | `--ocr` / `--no-ocr` | on | Run ocrmypdf |
 | `-l`, `--lang LANGS` | `deu+eng` | Tesseract language(s), `+`-joined. Tesseract uses ISO 639-2/T three-letter codes (`deu`, `eng`, `fra`, ...), not the two-letter ISO 639-1 codes of locales |
@@ -339,7 +339,7 @@ Load-bearing detail: **PNM carries no DPI metadata.** img2pdf must be told the r
 
 - `--rotate-pages`: fixes upside-down/rotated pages via tesseract OSD, essential for ADF stacks fed the wrong way.
 - `--skip-text`: passes pages that already contain text through, which makes the step idempotent: safe to re-run over a folder, safe for `--from-images` recovery of a partially processed batch.
-- `--deskew`: not passed today. ScanMole's own `--deskew` drives the backend's deskew where one exists; a device-independent fallback through ocrmypdf for backends without one (e.g. eSCL) is tracked in the issue tracker.
+- `--deskew`: passed exactly when ScanMole's own `--deskew` (default: on) found no backend deskew to take the job, so each page is straightened by one mechanism at most. ocrmypdf derives the angle from tesseract and rotates itself. Runs without OCR on such devices get a warning instead; the request is never a silent no-op.
 - PDF/A (archival-grade, ocrmypdf's default output type) is ScanMole's default too; `--no-pdfa` switches to plain PDF. Runs without OCR always produce plain PDF, because img2pdf does the writing then.
 
 ocrmypdf drives tesseract underneath; the default `deu+eng` needs both language packs (`tesseract-langpack-deu` plus the always-installed English data on Fedora, `tesseract-ocr-deu` on Debian/Ubuntu). Pure single-language stacks can drop to `-l deu` for a small accuracy gain on faint text. `--rotate-pages` needs the OSD model (`osd.traineddata`, packaged as `tesseract-osd` on Fedora and `tesseract-ocr-osd` on Debian/Ubuntu): it is missing on minimal installs, which fails every OCR run with "Failed loading language 'osd'". Note: ocrmypdf uses Ghostscript internally and inherits its steady CVE cadence; ocrmypdf's own flags and defaults also move across major versions, where the golden tests catch behavioral drift.

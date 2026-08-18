@@ -370,13 +370,25 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
 
         raw_pdf = work_dir / "raw.pdf"
         build_pdf([page for _, page in kept], raw_pdf, dpi)
+        # Deskew cascade, one mechanism per page: the backend where it offers
+        # deskew, otherwise ocrmypdf during OCR, otherwise a warning. The
+        # request must never be a silent no-op.
+        deskew_pending = config.deskew and not (
+            negotiated[0].deskew_applied if negotiated else False
+        )
         if config.ocr:
             events.emit("ocr_start", lang=config.lang)
             LOGGER.info("Running OCR (%s) ...", config.lang)
             final_pdf = work_dir / "ocr.pdf"
-            run_ocr(raw_pdf, final_pdf, config)
+            run_ocr(raw_pdf, final_pdf, config, deskew=deskew_pending)
         else:
             final_pdf = raw_pdf
+            if deskew_pending:
+                LOGGER.warning(
+                    "deskew requested, but the device offers no deskew and "
+                    "OCR is off; pages keep their skew (enable --ocr or use "
+                    "--no-deskew to silence this)"
+                )
         publish_pdf(final_pdf, config.output)
 
         events.emit(

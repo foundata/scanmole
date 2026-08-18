@@ -374,3 +374,11 @@ def test_blank_threshold_zero_and_fractions_still_parse(tmp_path: Path) -> None:
 
     assert _build_config(zero).blank_threshold == 0
     assert _build_config(frac).blank_threshold == 0.98
+
+
+def test_deskew_defaults_on_and_can_be_disabled(tmp_path: Path) -> None:
+    default = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+    disabled = _build_config(_parse(["--no-deskew", "-o", str(tmp_path / "a.pdf")]))
+
+    assert default.deskew is True
+    assert disabled.deskew is False

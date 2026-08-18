@@ -55,6 +55,13 @@ class EffectiveSettings:
     Lets the pipeline recognize frames that came back at the full window:
     the proof that no hardware paper-length detection took place.
     """
+    deskew_applied: bool = False
+    """Whether a backend deskew option took the deskew request.
+
+    Decides the next step of the deskew cascade: without a backend option
+    the pipeline hands the job to OCR, and failing that warns, so the
+    request is never a silent no-op.
+    """
 
 
 @dataclass(frozen=True)
@@ -153,11 +160,14 @@ def build_scan_command(
 
     if config.despeckle > 0 and "swdespeck" in caps:
         command.append(f"--swdespeck={config.despeckle}")
+    deskew_applied = False
     if "swdeskew" in caps:
         command.append(f"--swdeskew={'yes' if config.deskew else 'no'}")
+        deskew_applied = config.deskew
     if "adf-skew" in caps:
         # epsonds' hardware skew correction, same contract as --swdeskew.
         command.append(f"--adf-skew={'yes' if config.deskew else 'no'}")
+        deskew_applied = deskew_applied or config.deskew
     if "swcrop" in caps:
         command.append(f"--swcrop={'yes' if config.crop else 'no'}")
 
@@ -175,6 +185,7 @@ def build_scan_command(
         mode=mode,
         resolution=resolution,
         window_mm=(window["-x"], window["-y"]) if len(window) == 2 else None,
+        deskew_applied=deskew_applied,
     )
 
 

@@ -204,8 +204,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--deskew",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="software deskew (default: off)",
+        default=True,
+        help=(
+            "straighten skewed pages: via the device where it offers deskew, "
+            "otherwise during OCR (default: on)"
+        ),
     )
     parser.add_argument(
         "--crop",

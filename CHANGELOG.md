@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Deskew is on by default and works on every device through a cascade: the device's own deskew where the backend offers it, otherwise straightening during OCR, otherwise a warning; the request is never a silent no-op anymore. `--no-deskew` turns it off, and the GUI got a matching toggle.
 - `--keep-images` archives each batch into its own subdirectory named after the output file (`scan/`, `scan_2/`, ...), so reused and concurrent archive directories no longer overwrite or mix batches.
 
 ### Fixed

@@ -400,3 +400,27 @@ def test_scan_to_files_reports_scan_failures(
         scan_to_files(
             _config(), "test:0", tmp_path, EventWriter(enabled=False), lambda p: None
         )
+
+
+def test_backend_deskew_marks_the_request_as_applied() -> None:
+    caps = {
+        "source": Capability(kind="enum", choices=["ADF Duplex"]),
+        "swdeskew": Capability(kind="bool"),
+    }
+
+    _, with_deskew = build_scan_command(
+        _config(deskew=True), "dev", caps, "out/page_%04d.pnm"
+    )
+    _, without = build_scan_command(
+        _config(deskew=False), "dev", caps, "out/page_%04d.pnm"
+    )
+    _, no_option = build_scan_command(
+        _config(deskew=True),
+        "dev",
+        {"source": Capability(kind="enum", choices=["ADF Duplex"])},
+        "out/page_%04d.pnm",
+    )
+
+    assert with_deskew.deskew_applied is True
+    assert without.deskew_applied is False  # the option was set to =no
+    assert no_option.deskew_applied is False  # nothing there to take the job

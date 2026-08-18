@@ -674,3 +674,107 @@ def test_keep_images_batches_never_collide(tmp_path: Path) -> None:
 
     assert (archive / "scan" / "page_0001.pnm").is_file()
     assert (archive / "scan_2" / "page_0001.pnm").is_file()
+
+
+def _deskew_scan(settings: EffectiveSettings):  # type: ignore[no-untyped-def]
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(settings)
+        page = _gray_page(work_dir / "page_0001.pnm")
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    return fake_scan
+
+
+def test_deskew_falls_through_to_ocr_when_the_backend_has_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ocr_calls: list[bool] = []
+
+    def fake_ocr(
+        source: Path, output: Path, config: ScanConfig, deskew: bool = False
+    ) -> None:
+        ocr_calls.append(deskew)
+        output.write_bytes(b"%PDF-fake")
+
+    settings = EffectiveSettings(
+        source="ADF Duplex", mode="Gray", resolution=300, deskew_applied=False
+    )
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _deskew_scan(settings))
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    monkeypatch.setattr("scanmole.pipeline.run_ocr", fake_ocr)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"), deskew=True, ocr=True
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+    assert ocr_calls == [True]
+
+
+def test_deskew_stays_off_in_ocr_when_the_backend_took_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ocr_calls: list[bool] = []
+
+    def fake_ocr(
+        source: Path, output: Path, config: ScanConfig, deskew: bool = False
+    ) -> None:
+        ocr_calls.append(deskew)
+        output.write_bytes(b"%PDF-fake")
+
+    settings = EffectiveSettings(
+        source="ADF Duplex", mode="Lineart", resolution=300, deskew_applied=True
+    )
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _deskew_scan(settings))
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    monkeypatch.setattr("scanmole.pipeline.run_ocr", fake_ocr)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"), deskew=True, ocr=True
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+    assert ocr_calls == [False]  # the backend already straightened the pages
+
+
+def test_deskew_dead_end_warns_instead_of_staying_silent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = EffectiveSettings(
+        source="ADF Duplex", mode="Gray", resolution=300, deskew_applied=False
+    )
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _deskew_scan(settings))
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"), deskew=True, ocr=False
+    )
+
+    with caplog.at_level("WARNING"):
+        assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    assert any("deskew requested" in record.message for record in caplog.records)

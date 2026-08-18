@@ -94,6 +94,19 @@ def test_run_ocr_defaults_to_pdfa_output(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "--output-type" not in command
 
 
+def test_run_ocr_passes_deskew_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record(monkeypatch)
+
+    run_ocr(Path("raw.pdf"), Path("out.pdf"), _CONFIG)
+    run_ocr(Path("raw.pdf"), Path("out.pdf"), _CONFIG, deskew=True)
+
+    without, with_deskew = calls
+    assert "--deskew" not in without
+    assert "--deskew" in with_deskew
+
+
 def test_run_ocr_uses_plain_pdf_when_pdfa_is_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

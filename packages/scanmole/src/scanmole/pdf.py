@@ -40,11 +40,16 @@ def build_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
         raise ProcessingError(f"img2pdf failed: {result.stderr.strip()}")
 
 
-def run_ocr(source: Path, output: Path, config: ScanConfig) -> None:
+def run_ocr(
+    source: Path, output: Path, config: ScanConfig, deskew: bool = False
+) -> None:
     """Add an OCR text layer to ``source``, writing the result to ``output``.
 
     Uses ``ocrmypdf`` (Tesseract underneath) with page rotation, optimization
-    and idempotent ``--skip-text`` handling.
+    and idempotent ``--skip-text`` handling. ``deskew`` additionally
+    straightens each page (ocrmypdf derives the angle from tesseract); the
+    pipeline requests this only when no backend deskew took the job, so a
+    page is never resampled twice.
 
     Raises:
         ProcessingError: If ``ocrmypdf`` fails or times out.
@@ -57,6 +62,8 @@ def run_ocr(source: Path, output: Path, config: ScanConfig) -> None:
         "--optimize",
         str(config.optimize),
     ]
+    if deskew:
+        command.append("--deskew")
     if config.rotate_pages:
         command.append("--rotate-pages")
     if not config.pdfa:
