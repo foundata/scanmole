@@ -16,7 +16,15 @@ from scanmole.config import ScanConfig
 from scanmole.errors import DeviceError, NoPagesError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import SCAN_TIMEOUT_SECONDS
-from scanmole.negotiation import Plan, log_notices, negotiate, require_supported
+from scanmole.negotiation import (
+    Plan,
+    Prober,
+    Support,
+    log_notices,
+    negotiate,
+    require_supported,
+    resolve_faint_plan,
+)
 from scanmole.options import (
     Capability,
     active_capability,
@@ -60,6 +68,13 @@ class EffectiveSettings:
     Decides the next step of the deskew cascade: without a backend option
     the pipeline hands the job to OCR, and failing that warns, so the
     request is never a silent no-op.
+    """
+    faint_native: bool = False
+    """Whether a native text enhancement serves the faint request.
+
+    On this path 1-bit frames are the enhanced result the user asked for;
+    on every other ``lineart-auto`` path an arriving 1-bit frame proves
+    the faint request cannot be satisfied and the pipeline must stop.
     """
 
 
@@ -124,6 +139,13 @@ def build_scan_command(
     mode = plan.mode.backend_value
     if mode is not None:
         command += ["--mode", mode]
+    # A native faint-text enhancement's ordered settings follow the mode
+    # they were verified against; the adaptive faint path pins the 8-bit
+    # depth the guarded threshold needs.
+    for extra_option, extra_value in plan.extra_options:
+        command += [extra_option, extra_value]
+    if plan.depth.backend_value is not None:
+        command += ["--depth", plan.depth.backend_value]
     resolution = (
         int(plan.resolution.backend_value)
         if plan.resolution.backend_value is not None
@@ -211,6 +233,10 @@ def build_scan_command(
         resolution=resolution,
         window_mm=(window["-x"], window["-y"]) if len(window) == 2 else None,
         deskew_applied=deskew_applied,
+        faint_native=(
+            plan.mode.requested == "lineart-auto"
+            and plan.mode.support is Support.NATIVE
+        ),
     )
 
 
@@ -311,6 +337,24 @@ def run_scanimage(
     return exit_code, "\n".join(lines)
 
 
+def _staged_prober(device: str) -> Prober:
+    """A prober for the faint mode's candidate probes: failure means None.
+
+    The bare and source-applied probes stay hard errors (without them no
+    scan makes sense); a candidate-mode probe only decides between the
+    native and the software faint path, so failure falls back safely.
+    """
+
+    def probe(settings: tuple[tuple[str, str], ...]) -> dict[str, Capability] | None:
+        try:
+            return probe_capabilities(device, settings)
+        except (DeviceError, subprocess.SubprocessError, OSError) as exc:
+            LOGGER.debug("candidate capability probe failed: %s", exc)
+            return None
+
+    return probe
+
+
 def scan_to_files(
     config: ScanConfig,
     device: str,
@@ -350,7 +394,11 @@ def scan_to_files(
         )
 
     plan = negotiated(caps)
-    require_supported(plan)
+    faint = plan.mode.requested == "lineart-auto"
+    if not faint or plan.source.support is Support.UNSUPPORTED:
+        # The faint mode verdict stays provisional until the staged
+        # candidate probes below have run; everything else fails fast here.
+        require_supported(plan)
     if plan.source.backend_value is not None:
         # Option constraints can depend on the selected source (eSCL devices
         # advertise a different scan window per source: the Brother ADS-4550W
@@ -361,7 +409,18 @@ def scan_to_files(
             device, settings=(("--source", plan.source.backend_value),)
         )
         plan = negotiated(caps)
-        require_supported(plan)
+    if faint:
+        # Native faint-text enhancement is recognized on a snapshot taken
+        # with the candidate 1-bit mode applied (option activity is
+        # state-dependent), so probing goes one stage further; a failed
+        # probe falls back to the software path instead of aborting.
+        base = (
+            (("--source", plan.source.backend_value),)
+            if plan.source.backend_value is not None
+            else ()
+        )
+        plan = resolve_faint_plan(plan, caps, _staged_prober(device), base)
+    require_supported(plan)
     log_notices(plan, LOGGER)
     pattern = str(work_dir / "page_%04d.pnm")
     command, effective = build_scan_command(config, device, caps, pattern, plan)

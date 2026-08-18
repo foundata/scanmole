@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from scanmole.config import LineartThreshold
@@ -88,12 +89,19 @@ class Assessment:
 
 @dataclass(frozen=True)
 class Plan:
-    """A negotiated acquisition plan for one scan request."""
+    """A negotiated acquisition plan for one scan request.
+
+    ``extra_options`` carries additional backend options the plan needs
+    beyond source/mode/depth/resolution (a native faint-text enhancement's
+    ordered settings), explicitly and in emission order; the mode's backend
+    value is never overloaded with such arguments.
+    """
 
     source: Assessment
     mode: Assessment
     depth: Assessment
     resolution: Assessment
+    extra_options: tuple[tuple[str, str], ...] = ()
 
 
 # Exact-source semantics per request. Stricter than the mapper's fallback
@@ -193,9 +201,14 @@ def assess_mode(
 
     ``want`` is ``lineart``, ``gray``, ``color`` or ``lineart-auto`` (the
     faint-originals variant of lineart, selected in the engine by
-    ``--lineart-threshold auto``).
+    ``--lineart-threshold auto``). The ``lineart-auto`` verdict here is the
+    command-safe software view; a native enhancement path is only ever
+    claimed by the staged :func:`resolve_faint_plan` (authoritative) or the
+    optimistic :func:`advisory_faint_assessment` (display only).
     """
-    base = "lineart" if want == "lineart-auto" else want
+    if want == "lineart-auto":
+        return _software_faint(caps)
+    base = want
     if caps is None:
         return Assessment(
             requested=want,
@@ -218,20 +231,6 @@ def assess_mode(
     choices = capability.choices
     native = _pick(choices, _MODE_PREDICATES[base])
     if native is not None:
-        if want == "lineart-auto":
-            # The current acquisition prefers the device's own 1-bit mode,
-            # and the adaptive threshold cannot operate on a P4 frame.
-            return Assessment(
-                requested=want,
-                support=Support.DEGRADED,
-                reason="native-1bit-defeats-adaptive",
-                consequence=(
-                    "the device scans 1-bit itself; the faint-originals "
-                    "threshold cannot be applied"
-                ),
-                backend_value=native,
-                effective="lineart",
-            )
         return Assessment(
             requested=want,
             support=Support.NATIVE,
@@ -291,8 +290,278 @@ def assess_mode(
     )
 
 
-def _assess_depth(mode: Assessment) -> Assessment:
-    """The internal acquisition depth implied by the negotiated mode."""
+Settings = tuple[tuple[str, str], ...]
+
+Prober = Callable[[Settings], "dict[str, Capability] | None"]
+"""A capability probe with ordered settings applied; failure returns None."""
+
+_TET_CHOICE = "Text Enhanced Technology"
+
+
+@dataclass(frozen=True)
+class NativeEnhancement:
+    """An evidence-backed native faint-text enhancement path.
+
+    ``settings`` are the ordered backend options that engage the
+    enhancement, beyond selecting the 1-bit mode itself. ``verify_option``,
+    when set, must still be active after a reprobe with the complete
+    ordered settings applied, or the path is rejected.
+    """
+
+    reason: str
+    notice: str
+    settings: Settings
+    verify_option: str | None = None
+
+
+def detect_native_enhancement(
+    caps: dict[str, Capability],
+) -> NativeEnhancement | None:
+    """Recognize a native faint-text enhancement in a 1-bit-mode snapshot.
+
+    Matches the active option topology only, never device identities, and
+    only profiles with fixture-backed evidence:
+
+    - Epson TET: an active ``--halftoning`` whose choices contain exactly
+      ``Text Enhanced Technology`` (background filtering plus dynamic
+      thresholding in the scanner).
+    - Fujitsu SDTC: an active ``--threshold`` range containing 0 (0 selects
+      the automatic DTC circuit) together with an active ``--variance``
+      (the SDTC sensitivity, where 0 is the documented default).
+
+    Deliberately not evidence: generic threshold/brightness/contrast
+    controls, halftone or error-diffusion *mode choices* (Canon
+    ``Halftone``, Brother ``Gray[Error Diffusion]``), ``threshold-curve``
+    style controls, and any inactive option.
+    """
+    halftoning = active_capability(caps, "halftoning")
+    if halftoning is not None and _TET_CHOICE in halftoning.choices:
+        return NativeEnhancement(
+            reason="native-epson-tet",
+            notice=(
+                "using the scanner's built-in text enhancement "
+                "(Text Enhanced Technology)"
+            ),
+            settings=(("--halftoning", _TET_CHOICE),),
+        )
+    threshold = active_capability(caps, "threshold")
+    variance = active_capability(caps, "variance")
+    if (
+        variance is not None
+        and threshold is not None
+        and threshold.kind == "range"
+        and threshold.minimum is not None
+        and threshold.maximum is not None
+        and threshold.minimum <= 0 <= threshold.maximum
+    ):
+        return NativeEnhancement(
+            reason="native-fujitsu-sdtc",
+            notice="using the scanner's built-in text enhancement (SDTC)",
+            settings=(("--threshold", "0"), ("--variance", "0")),
+            verify_option="variance",
+        )
+    return None
+
+
+def _native_lineart_choice(caps: dict[str, Capability] | None) -> str | None:
+    """The device's own 1-bit mode choice, the candidate for enhancement."""
+    if caps is None:
+        return None
+    capability = active_capability(caps, "mode")
+    if capability is None or not capability.choices:
+        return None
+    return _pick(capability.choices, _MODE_PREDICATES["lineart"])
+
+
+def _native_faint_assessment(
+    candidate: str, enhancement: NativeEnhancement
+) -> Assessment:
+    return Assessment(
+        requested="lineart-auto",
+        support=Support.NATIVE,
+        reason=enhancement.reason,
+        consequence=enhancement.notice,
+        backend_value=candidate,
+        effective="lineart-auto",
+    )
+
+
+def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
+    """The information-preserving software path for ``lineart-auto``.
+
+    Prefers Gray, then Color, both converted by the guarded adaptive
+    threshold. A device that conclusively offers only ordinary 1-bit modes
+    is UNSUPPORTED: an unenhanced 1-bit scan cannot preserve the faint
+    shades the request is about, which is a failure to deliver, not a
+    warnable degradation. Missing or inactive evidence stays UNKNOWN
+    (best-effort; the pipeline still refuses an unenhanced 1-bit result).
+    """
+    if caps is None:
+        return Assessment(
+            requested="lineart-auto",
+            support=Support.UNKNOWN,
+            reason="probe-failed",
+            consequence="capabilities could not be read; trying as requested",
+            effective="lineart-auto",
+        )
+    capability = active_capability(caps, "mode")
+    if capability is None or not capability.choices:
+        inactive = caps.get("mode") is not None
+        return Assessment(
+            requested="lineart-auto",
+            support=Support.UNKNOWN,
+            reason="mode-option-inactive" if inactive else "no-mode-option",
+            consequence="the device does not advertise usable modes; "
+            "trying as requested",
+            effective="lineart-auto",
+        )
+    for fallback, reason in (("gray", "adaptive-gray"), ("color", "adaptive-color")):
+        got = _pick(capability.choices, _MODE_PREDICATES[fallback])
+        if got is not None:
+            return Assessment(
+                requested="lineart-auto",
+                support=Support.EMULATED,
+                reason=reason,
+                consequence=(
+                    f"the device scans '{got}'; ScanMole applies the guarded "
+                    "faint-originals threshold in software"
+                ),
+                backend_value=got,
+                effective="lineart-auto",
+            )
+    if _pick(capability.choices, _MODE_PREDICATES["lineart"]) is not None:
+        return Assessment(
+            requested="lineart-auto",
+            support=Support.UNSUPPORTED,
+            reason="no-information-preserving-path",
+            consequence=(
+                "the device offers only plain 1-bit scanning, which cannot "
+                "preserve faint shades; select the ordinary B/W mode "
+                "(a numeric --lineart-threshold) instead"
+            ),
+        )
+    return Assessment(
+        requested="lineart-auto",
+        support=Support.UNSUPPORTED,
+        reason="no-matching-mode",
+        consequence=(
+            "device has no mode matching 'lineart'; "
+            f"available: {', '.join(capability.choices)}"
+        ),
+    )
+
+
+def advisory_faint_assessment(caps: dict[str, Capability] | None) -> Assessment:
+    """A frontend's optimistic ``lineart-auto`` verdict from one snapshot.
+
+    A native enhancement signature visible in the snapshot makes the choice
+    tentatively NATIVE, pending the scan-time set-and-reprobe confirmation;
+    otherwise the software verdict applies. Display only: command
+    construction never uses this (a tentative claim without the staged
+    settings would emit plain 1-bit lineart, the exact bug the faint mode
+    exists to avoid).
+    """
+    candidate = _native_lineart_choice(caps)
+    if caps is not None and candidate is not None:
+        enhancement = detect_native_enhancement(caps)
+        if enhancement is not None:
+            return _native_faint_assessment(candidate, enhancement)
+    return _software_faint(caps)
+
+
+def resolve_faint_plan(
+    plan: Plan,
+    caps: dict[str, Capability] | None,
+    prober: Prober,
+    base_settings: Settings = (),
+) -> Plan:
+    """Resolve a ``lineart-auto`` plan through staged set-and-reprobe.
+
+    SANE option activity is state-dependent, so native recognition applies
+    the candidate 1-bit mode on top of ``base_settings`` (normally the
+    negotiated source) and classifies the reprobed snapshot; the Fujitsu
+    SDTC profile additionally requires ``--variance`` to stay active with
+    the complete ordered settings applied. Any failed or rejected probe
+    falls back to the information-preserving software path. ``prober``
+    performs the I/O; classification stays pure over the snapshots.
+    """
+    assessment, extra = _resolve_faint_mode(caps, prober, base_settings)
+    return Plan(
+        source=plan.source,
+        mode=assessment,
+        depth=_assess_depth(assessment, caps),
+        resolution=plan.resolution,
+        extra_options=extra,
+    )
+
+
+def _resolve_faint_mode(
+    caps: dict[str, Capability] | None,
+    prober: Prober,
+    base_settings: Settings,
+) -> tuple[Assessment, Settings]:
+    candidate = _native_lineart_choice(caps)
+    if candidate is not None:
+        applied = (*base_settings, ("--mode", candidate))
+        staged = prober(applied)
+        if staged is not None:
+            enhancement = detect_native_enhancement(staged)
+            if enhancement is not None and _enhancement_verified(
+                enhancement, applied, prober
+            ):
+                return (
+                    _native_faint_assessment(candidate, enhancement),
+                    enhancement.settings,
+                )
+    return _software_faint(caps), ()
+
+
+def _enhancement_verified(
+    enhancement: NativeEnhancement, applied: Settings, prober: Prober
+) -> bool:
+    if enhancement.verify_option is None:
+        return True
+    verified = prober((*applied, *enhancement.settings))
+    return (
+        verified is not None
+        and active_capability(verified, enhancement.verify_option) is not None
+    )
+
+
+def _eight_bit_choice(caps: dict[str, Capability] | None) -> str | None:
+    """The value engaging an explicit 8-bit depth, if the device has one."""
+    if caps is None:
+        return None
+    capability = active_capability(caps, "depth")
+    if capability is None:
+        return None
+    if capability.kind == "enum":
+        for choice in capability.choices:
+            found = re.search(r"\d+", choice)
+            if found is not None and int(found.group()) == 8:
+                return "8"
+        return None
+    if (
+        capability.kind == "range"
+        and capability.minimum is not None
+        and capability.maximum is not None
+        and capability.minimum <= 8 <= capability.maximum
+    ):
+        return "8"
+    return None
+
+
+def _assess_depth(
+    mode: Assessment, caps: dict[str, Capability] | None = None
+) -> Assessment:
+    """The internal acquisition depth implied by the negotiated mode.
+
+    The adaptive faint path pins an explicit 8-bit depth where the device
+    exposes an active one: the guarded threshold needs true 8-bit
+    brightness data, so the backend must not fall back to a 1-bit or
+    16-bit delivery. The value is carried as ``backend_value`` and emitted
+    by the scan command.
+    """
     one_bit_out = mode.effective in ("lineart", "lineart-auto")
     requested = "1" if mode.requested in ("lineart", "lineart-auto") else "8"
     if mode.support is Support.UNKNOWN:
@@ -303,11 +572,13 @@ def _assess_depth(mode: Assessment) -> Assessment:
             effective=requested,
         )
     if mode.support is Support.EMULATED:
+        adaptive = mode.reason in ("adaptive-gray", "adaptive-color")
         return Assessment(
             requested="1",
             support=Support.EMULATED,
             reason="software-1bit",
             consequence="acquired at 8 bit, reduced to 1 bit in software",
+            backend_value=_eight_bit_choice(caps) if adaptive else None,
             effective="1",
         )
     return Assessment(
@@ -380,7 +651,7 @@ def negotiate(
     return Plan(
         source=assess_source(caps, source),
         mode=mode_assessment,
-        depth=_assess_depth(mode_assessment),
+        depth=_assess_depth(mode_assessment, caps),
         resolution=assess_resolution(caps, resolution),
     )
 
@@ -391,11 +662,15 @@ def log_notices(plan: Plan, logger: logging.Logger) -> None:
     DEGRADED paths warn and name the consequence; EMULATED paths inform
     (the requested semantics are preserved); UNKNOWN stays at debug, since
     best-effort behavior is the documented contract there. NATIVE is silent
-    and UNSUPPORTED raises before this point.
+    unless it carries a consequence note (a native faint-text enhancement
+    names itself once), and UNSUPPORTED raises before this point.
     """
     seen: set[tuple[int, str]] = set()
     for assessment in (plan.source, plan.mode, plan.resolution):
-        if assessment.support is Support.DEGRADED:
+        if assessment.support is Support.NATIVE and assessment.consequence:
+            level = logging.INFO
+            message = assessment.consequence
+        elif assessment.support is Support.DEGRADED:
             level = logging.WARNING
             message = (
                 f"no exact '{assessment.requested}' support"
@@ -446,7 +721,11 @@ def choice_support(caps: dict[str, Capability] | None) -> ChoiceSupport:
             for value in ("flatbed", "adf", "adf-duplex", "adf-back")
         },
         modes={
-            value: assess_mode(caps, value).support
+            value: (
+                advisory_faint_assessment(caps)
+                if value == "lineart-auto"
+                else assess_mode(caps, value)
+            ).support
             for value in ("lineart", "gray", "color", "lineart-auto")
         },
     )

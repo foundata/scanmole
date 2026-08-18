@@ -1,3 +1,5 @@
 # `scanimage -A` fixtures
 
 One file per backend family, feeding the parser and fuzzy-mapper tests in `tests/unit/test_options.py`. The fixtures are modeled on the option formats the backends document (fujitsu, brscan4, sane-airscan/eSCL, the SANE `test` backend); they are not yet verbatim captures. When touching a fleet device, capture the real listing with `scanimage -d <dev> -A > tests/fixtures/scanimage-A/<name>.txt` and replace the modeled file, keeping the test expectations honest.
+
+`epson-perfection1660-epson2.txt` is not a fleet device: it pins the active Epson Text Enhanced Technology evidence for the faint-mode negotiation. Its `--mode`, `--halftoning`, `--source`, `--film-type` and `--bay` lines are taken verbatim from a real Perfection 1660 Photo listing posted at <https://www.linux-club.de/forum/t/epson-perfection-1660-photo-in-xsane-umschalter-von-flatbed-auf-durchlicht-verschwunden.124711/>; the surrounding options are modeled on the epson2 backend format (compare `epson-ds730n-epson2.txt`, whose inactive `--halftoning` is the negative TET case).

@@ -10,14 +10,18 @@ import pytest
 
 from scanmole.errors import DeviceError
 from scanmole.negotiation import (
+    Plan,
     Support,
+    advisory_faint_assessment,
     assess_mode,
     assess_source,
     choice_support,
+    detect_native_enhancement,
     log_notices,
     negotiate,
     probe_snapshot,
     require_supported,
+    resolve_faint_plan,
 )
 from scanmole.options import Capability, parse_capabilities
 
@@ -141,7 +145,10 @@ def test_epson2_misdetection_keeps_the_source_unknown() -> None:
     assert plan.source.backend_value is None  # never passed to the command
 
 
-def test_epsonds_faint_mode_is_degraded_by_native_lineart() -> None:
+def test_epsonds_faint_mode_acquires_gray_with_pinned_depth() -> None:
+    # No native enhancement on the epsonds DS-730N: the faint request must
+    # not settle on the device's plain Lineart, but acquire Gray at an
+    # explicit 8 bit for the guarded adaptive conversion.
     plan = negotiate(
         _fixture("epson-ds730n-epsonds.txt"),
         source="adf-duplex",
@@ -151,15 +158,17 @@ def test_epsonds_faint_mode_is_degraded_by_native_lineart() -> None:
     )
 
     assert plan.mode.requested == "lineart-auto"
-    assert plan.mode.support is Support.DEGRADED
-    assert plan.mode.reason == "native-1bit-defeats-adaptive"
-    assert plan.mode.backend_value == "Lineart"
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.reason == "adaptive-gray"
+    assert plan.mode.backend_value == "Gray"
+    assert plan.depth.backend_value == "8"  # --depth 1|8bit is active
 
 
 def test_escl_faint_mode_is_emulated() -> None:
     assessment = assess_mode(_fixture("sane-airscan-escl.txt"), "lineart-auto", "auto")
 
     assert assessment.support is Support.EMULATED
+    assert assessment.reason == "adaptive-gray"
 
 
 # ---- evidence classes: absent, inactive, active-but-nonmatching -----------
@@ -311,7 +320,9 @@ def test_choice_support_covers_every_gui_choice() -> None:
     assert support.sources["adf"] is Support.NATIVE  # ADF Front is exact
     assert support.sources["flatbed"] is Support.UNSUPPORTED
     assert support.modes["lineart"] is Support.NATIVE
-    assert support.modes["lineart-auto"] is Support.DEGRADED
+    # Tentatively NATIVE: the SDTC signature (active --variance plus an
+    # active --threshold range containing 0) is visible in the snapshot.
+    assert support.modes["lineart-auto"] is Support.NATIVE
 
 
 def test_choice_support_with_failed_probe_is_all_unknown() -> None:
@@ -319,6 +330,236 @@ def test_choice_support_with_failed_probe_is_all_unknown() -> None:
 
     assert set(support.sources.values()) == {Support.UNKNOWN}
     assert set(support.modes.values()) == {Support.UNKNOWN}
+
+
+# ---- faint mode: native recognition, staged probes, fallbacks -------------
+
+
+class _Prober:
+    """A fake staged prober recording the ordered settings of every call."""
+
+    def __init__(self, *results: dict[str, Capability] | None) -> None:
+        self.calls: list[tuple[tuple[str, str], ...]] = []
+        self._results = list(results)
+
+    def __call__(
+        self, settings: tuple[tuple[str, str], ...]
+    ) -> dict[str, Capability] | None:
+        self.calls.append(settings)
+        return self._results.pop(0) if self._results else None
+
+
+def _faint_plan(caps: dict[str, Capability] | None) -> Plan:
+    return negotiate(
+        caps,
+        source="adf-duplex",
+        mode="lineart",
+        resolution=300,
+        lineart_threshold="auto",
+    )
+
+
+def test_fujitsu_sdtc_is_recognized_with_ordered_set_and_reprobe() -> None:
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+    prober = _Prober(caps, caps)
+    base = (("--source", "ADF Duplex"),)
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, prober, base)
+
+    assert plan.mode.support is Support.NATIVE
+    assert plan.mode.reason == "native-fujitsu-sdtc"
+    assert plan.mode.backend_value == "Lineart"
+    assert plan.extra_options == (("--threshold", "0"), ("--variance", "0"))
+    assert plan.depth.effective == "1"
+    assert prober.calls == [
+        (("--source", "ADF Duplex"), ("--mode", "Lineart")),
+        (
+            ("--source", "ADF Duplex"),
+            ("--mode", "Lineart"),
+            ("--threshold", "0"),
+            ("--variance", "0"),
+        ),
+    ]
+
+
+def test_ix100_carries_the_same_sdtc_evidence() -> None:
+    caps = _fixture("fujitsu-scansnap-ix100.txt")
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps, caps))
+
+    assert plan.mode.support is Support.NATIVE
+    assert plan.mode.reason == "native-fujitsu-sdtc"
+
+
+def test_epson_tet_is_recognized_without_a_verification_reprobe() -> None:
+    caps = _fixture("epson-perfection1660-epson2.txt")
+    prober = _Prober(caps)
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, prober)
+
+    assert plan.mode.support is Support.NATIVE
+    assert plan.mode.reason == "native-epson-tet"
+    assert plan.extra_options == (("--halftoning", "Text Enhanced Technology"),)
+    assert prober.calls == [(("--mode", "Lineart"),)]  # source is inactive
+
+
+def test_sdtc_is_rejected_when_variance_goes_inactive_on_reprobe() -> None:
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+    reprobed = _fixture("fujitsu-scansnap-ix500.txt")
+    reprobed["variance"].active = False
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps, reprobed))
+
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.reason == "adaptive-gray"
+    assert plan.extra_options == ()
+
+
+def test_failed_candidate_probe_falls_back_to_software() -> None:
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(None))
+
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.reason == "adaptive-gray"
+    assert plan.mode.backend_value == "Gray"
+
+
+def test_lineart_only_device_is_unsupported_with_guidance() -> None:
+    caps = {"mode": _enum("Lineart")}
+    prober = _Prober(caps)
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, prober)
+
+    assert prober.calls  # the candidate probe ran before the verdict
+    assert plan.mode.support is Support.UNSUPPORTED
+    assert plan.mode.reason == "no-information-preserving-path"
+    assert "ordinary B/W" in plan.mode.consequence
+    with pytest.raises(DeviceError, match="ordinary B/W"):
+        require_supported(plan)
+
+
+def test_faint_falls_back_to_color_when_gray_is_missing() -> None:
+    assessment = assess_mode({"mode": _enum("Color", "Lineart")}, "lineart-auto")
+
+    assert assessment.support is Support.EMULATED
+    assert assessment.reason == "adaptive-color"
+    assert assessment.backend_value == "Color"
+
+
+def test_faint_with_inconclusive_capabilities_stays_unknown() -> None:
+    absent = assess_mode({}, "lineart-auto")
+    inactive = assess_mode(
+        {"mode": Capability(kind="enum", choices=["Lineart"], active=False)},
+        "lineart-auto",
+    )
+
+    assert absent.support is Support.UNKNOWN
+    assert absent.reason == "no-mode-option"
+    assert inactive.support is Support.UNKNOWN
+    assert inactive.reason == "mode-option-inactive"
+
+
+# ---- faint mode: signatures that must NOT count as native -----------------
+
+
+def test_brother_error_diffusion_is_not_native_and_gray_is_true_gray() -> None:
+    caps = _fixture("brother-brscan4.txt")
+
+    assert detect_native_enhancement(caps) is None
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.backend_value == "True Gray"  # never Gray[Error Diffusion]
+
+
+def test_canon_halftone_mode_choice_is_not_native() -> None:
+    caps = {"mode": _enum("Color", "Gray", "Halftone", "Lineart")}
+
+    assert detect_native_enhancement(caps) is None
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.reason == "adaptive-gray"
+
+
+def test_pixma_threshold_curve_is_not_native() -> None:
+    caps = {
+        "mode": _enum("Color", "Gray", "Lineart"),
+        "threshold-curve": Capability(kind="range", minimum=0, maximum=127),
+    }
+
+    assert detect_native_enhancement(caps) is None
+
+
+def test_generic_threshold_and_inactive_tet_are_not_native() -> None:
+    # The epson2 DS-730N listing has an active generic --threshold and an
+    # inactive --halftoning with the TET choice: neither is evidence.
+    caps = _fixture("epson-ds730n-epson2.txt")
+
+    assert detect_native_enhancement(caps) is None
+    assert advisory_faint_assessment(caps).support is Support.EMULATED
+
+
+def test_inactive_variance_is_not_native() -> None:
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+    caps["variance"].active = False
+
+    assert detect_native_enhancement(caps) is None
+
+
+def test_threshold_range_must_contain_zero() -> None:
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+    caps["threshold"].minimum = 1.0
+
+    assert detect_native_enhancement(caps) is None
+
+
+# ---- faint mode: advisory versus authoritative ----------------------------
+
+
+def test_advisory_verdict_is_tentatively_native_on_visible_signature() -> None:
+    assessment = advisory_faint_assessment(_fixture("fujitsu-scansnap-ix500.txt"))
+
+    assert assessment.support is Support.NATIVE
+    assert assessment.reason == "native-fujitsu-sdtc"
+
+
+def test_negotiate_without_staged_probes_stays_command_safe() -> None:
+    # Without the staged confirmation a plan must never select the plain
+    # 1-bit mode for a faint request, signature or not.
+    plan = _faint_plan(_fixture("fujitsu-scansnap-ix500.txt"))
+
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.backend_value == "Gray"
+
+
+def test_scan_time_verdict_overrules_the_advisory_claim() -> None:
+    # The GUI may have shown the choice as native; if the authoritative
+    # set-and-reprobe cannot confirm it, the scan takes the software path.
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+    staged = _fixture("fujitsu-scansnap-ix500.txt")
+    staged["variance"].active = False
+
+    advisory = advisory_faint_assessment(caps)
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(staged))
+
+    assert advisory.support is Support.NATIVE
+    assert plan.mode.support is Support.EMULATED
+    assert plan.extra_options == ()
+
+
+def test_native_faint_plan_logs_one_info_notice(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps, caps))
+    logger = logging.getLogger("test-negotiation")
+
+    with caplog.at_level(logging.INFO, logger="test-negotiation"):
+        log_notices(plan, logger)
+
+    notices = [r for r in caplog.records if "text enhancement" in r.message]
+    assert len(notices) == 1
+    assert all(r.levelno == logging.INFO for r in notices)
 
 
 def test_probe_snapshot_turns_failures_into_none(

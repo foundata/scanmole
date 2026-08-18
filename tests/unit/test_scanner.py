@@ -428,6 +428,193 @@ def test_backend_deskew_marks_the_request_as_applied() -> None:
     assert no_option.deskew_applied is False  # nothing there to take the job
 
 
+def _fixture_caps(name: str) -> dict[str, Capability]:
+    from scanmole.options import parse_capabilities
+
+    fixtures = Path(__file__).parent.parent / "fixtures" / "scanimage-A"
+    return parse_capabilities((fixtures / name).read_text())
+
+
+def test_faint_command_engages_fujitsu_sdtc_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    probes: list[tuple[tuple[str, str], ...]] = []
+    commands: list[list[str]] = []
+
+    def fake_probe(
+        device: str, settings: tuple[tuple[str, str], ...] = (), **_kw: object
+    ) -> dict[str, Capability]:
+        probes.append(tuple(settings))
+        return _fixture_caps("fujitsu-scansnap-ix500.txt")
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(lineart_threshold="auto"),
+        "fujitsu:iX500",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    source = ("--source", "ADF Duplex")
+    assert probes == [
+        (),
+        (source,),
+        (source, ("--mode", "Lineart")),
+        (source, ("--mode", "Lineart"), ("--threshold", "0"), ("--variance", "0")),
+    ]
+    command = commands[0]
+    mode_at = command.index("--mode")
+    assert command[mode_at : mode_at + 6] == [
+        "--mode",
+        "Lineart",
+        "--threshold",
+        "0",
+        "--variance",
+        "0",
+    ]
+    assert "--depth" not in command
+    assert result.settings.faint_native is True
+
+
+def test_faint_command_engages_epson_tet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(), **_kw: _fixture_caps(
+            "epson-perfection1660-epson2.txt"
+        ),
+    )
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 0, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    scan_to_files(
+        _config(lineart_threshold="auto", source="flatbed", page_size="a4"),
+        "epson2:libusb:001:004",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    command = commands[0]
+    mode_at = command.index("--mode")
+    assert command[mode_at : mode_at + 4] == [
+        "--mode",
+        "Lineart",
+        "--halftoning",
+        "Text Enhanced Technology",
+    ]
+
+
+def test_faint_fallback_scans_gray_with_pinned_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The epsonds DS-730N has no native enhancement: the faint scan must
+    # acquire Gray at an explicit 8 bit, never the device's plain Lineart.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P5\n1 1\n255\n\x80")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(), **_kw: _fixture_caps("epson-ds730n-epsonds.txt"),
+    )
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(lineart_threshold="auto"),
+        "epsonds:net:192.168.0.167",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    command = commands[0]
+    assert command[command.index("--mode") + 1] == "Gray"
+    assert command[command.index("--depth") + 1] == "8"
+    assert result.settings.faint_native is False
+
+
+def test_faint_on_a_lineart_only_device_fails_before_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    caps = {
+        "source": Capability(kind="enum", choices=["ADF Duplex"]),
+        "mode": Capability(kind="enum", choices=["Lineart"]),
+    }
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(), **_kw: caps,
+    )
+
+    def never_run(command: list[str], on_page: object) -> tuple[int, str]:
+        raise AssertionError("acquisition must not start")
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", never_run)
+
+    with pytest.raises(DeviceError, match="ordinary B/W"):
+        scan_to_files(
+            _config(lineart_threshold="auto"),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p: None,
+        )
+
+
+def test_faint_candidate_probe_failure_falls_back_to_gray(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bare and source-applied probes succeed; the candidate-mode probe
+    # raises. The scan must fall back to the software path, not abort.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P5\n1 1\n255\n\x80")
+    caps = _fixture_caps("fujitsu-scansnap-ix500.txt")
+    commands: list[list[str]] = []
+
+    def fake_probe(
+        device: str, settings: tuple[tuple[str, str], ...] = (), **_kw: object
+    ) -> dict[str, Capability]:
+        if any(option == "--mode" for option, _value in settings):
+            raise DeviceError("timed out probing options")
+        return caps
+
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(lineart_threshold="auto"),
+        "fujitsu:iX500",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    assert commands[0][commands[0].index("--mode") + 1] == "Gray"
+    assert result.settings.faint_native is False
+
+
 def test_scan_to_files_warns_exactly_once_per_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
