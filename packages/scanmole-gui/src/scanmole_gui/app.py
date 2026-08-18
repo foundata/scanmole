@@ -41,9 +41,22 @@ from gi.repository import (  # noqa: E402  # after require_version
 # The GUI holds no pipeline logic; the pure naming helper is imported only so
 # the live filename preview matches what the CLI will produce.
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
+from scanmole.negotiation import (  # noqa: E402
+    ADVISORY_PROBE_TIMEOUT_SECONDS,
+    Support,
+    assess_mode,
+    assess_resolution,
+    assess_source,
+    probe_snapshot,
+)
 from scanmole_gui import __version__, incompatible_cli  # noqa: E402
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES, mode_argv  # noqa: E402
+from scanmole_gui.probing import (  # noqa: E402
+    ProbeCoordinator,
+    ProbeRequest,
+    selection_blocked,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -376,6 +389,10 @@ class ChoiceRow:
         """
         self._items = items
         self._on_change = on_change
+        self._blocked: dict[str, str] = {}
+        self._on_blocked: Callable[[str, str], None] | None = None
+        self._reverting = False
+        self._current = items[0][1]
         if hasattr(Adw, "ToggleGroup"):
             self.row: Adw.ActionRow = Adw.ActionRow(title=title)
             self._toggles = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
@@ -396,8 +413,47 @@ class ChoiceRow:
         group.add(self.row)
 
     def _changed(self, *_args: object) -> None:
+        if self._reverting:
+            return
+        value = self.value()
+        if value in self._blocked:
+            # Visible but not selectable: revert to the previous choice and
+            # tell the window why (both the ToggleGroup and the ComboRow
+            # fallback enforce this identically).
+            self._reverting = True
+            try:
+                self.select(self._current)
+            finally:
+                self._reverting = False
+            if self._on_blocked is not None:
+                self._on_blocked(value, self._blocked[value])
+            return
+        self._current = value
         if self._on_change is not None:
             self._on_change()
+
+    def set_availability(
+        self,
+        blocked: dict[str, str],
+        on_blocked: Callable[[str, str], None] | None = None,
+    ) -> None:
+        """Mark values as not selectable (value -> reason), keep them visible.
+
+        The active selection is not changed here even when it is blocked;
+        the caller decides how to surface that (disable Start, show the
+        reason) instead of silently switching the user's choice.
+        """
+        self._blocked = blocked
+        self._on_blocked = on_blocked
+        if self._toggles is not None and hasattr(self._toggles, "get_toggle"):
+            for index, (_label, value) in enumerate(self._items):
+                toggle = self._toggles.get_toggle(index)
+                if toggle is not None and hasattr(toggle, "set_enabled"):
+                    toggle.set_enabled(value not in blocked)
+
+    def blocked_reason(self) -> str | None:
+        """The reason the current selection is unavailable, if it is."""
+        return self._blocked.get(self.value())
 
     def value(self) -> str:
         """Return the CLI value of the selected item."""
@@ -416,6 +472,7 @@ class ChoiceRow:
         """Select the item whose CLI value equals ``value`` (no-op if absent)."""
         for index, (_label, item_value) in enumerate(self._items):
             if item_value == value:
+                self._current = value
                 if self._toggles is not None:
                     self._toggles.set_active(index)
                 else:
@@ -452,6 +509,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._close_patience = 0
         self._searching = False
         self._device_poll_id: int | None = None
+        self._probes = ProbeCoordinator()
+        self._base_snapshot: object = None
+        self._negotiation_logged_failure = False
+        self._last_caps: object = None
+        self._selection_block_reason: str | None = None
         self._devices: list[dict[str, str]] = []
         self._pages = 0
         self._blanks = 0
@@ -651,7 +713,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._device_row.add_suffix(self._refresh_btn)
         self._scanner_grp.add(self._device_row)
         self._source_row = ChoiceRow(
-            self._scanner_grp, _("Source"), SOURCES, tooltips=SOURCE_TOOLTIPS
+            self._scanner_grp,
+            _("Source"),
+            SOURCES,
+            self._on_source_changed,
+            tooltips=SOURCE_TOOLTIPS,
         )
 
         # One primary action: Scan is the only accented control, full width at
@@ -1239,7 +1305,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """Populate the device dropdown on the main loop."""
         self._searching = False
         self._refresh_btn.set_sensitive(self._proc is None)
-        self._scan_btn.set_sensitive(self._proc is None and not self._cli_blocked)
+        self._scan_btn.set_sensitive(
+            self._proc is None
+            and not self._cli_blocked
+            and self._selection_block_reason is None
+        )
         if self._cli_blocked and err and not self._version_alert_shown:
             self._version_alert_shown = True
             self._alert(_("Incompatible scanmole CLI"), err)
@@ -1267,6 +1337,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 ngettext("Found %d scanner.", "Found %d scanners.", len(devices))
                 % len(devices),
             )
+            self._start_negotiation()
         else:
             self._device_row.set_tooltip_text("")
             self._device_row.set_subtitle(
@@ -1319,6 +1390,125 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """
         self._device_row.set_tooltip_text(self._selected_device() or "")
         self._update_name_preview()
+        self._start_negotiation()
+
+    # -------------------------------------------- capability negotiation
+
+    def _on_source_changed(self) -> None:
+        """The source choice changed: refine mode-dependent options."""
+        self._update_selection_block()
+        device = self._selected_device()
+        caps = self._base_snapshot
+        if device is None or self._proc is not None or not isinstance(caps, dict):
+            return
+        assessment = assess_source(caps, self._source_row.value())
+        if assessment.backend_value is not None:
+            self._launch_probe(
+                ProbeRequest(device, (("--source", assessment.backend_value),))
+            )
+
+    def _start_negotiation(self) -> None:
+        """Kick off an advisory capability probe for the selected device.
+
+        Two stages: a bare probe derives source availability, a follow-up
+        with the negotiated source applied refines the mode-dependent
+        options. Serialized through the coordinator; stale results are
+        dropped by generation token. Never probes while a scan owns the
+        device. Advisory only: the engine re-negotiates before every scan.
+        """
+        device = self._selected_device()
+        if device is None or self._proc is not None:
+            return
+        self._launch_probe(ProbeRequest(device))
+
+    def _launch_probe(self, request: ProbeRequest) -> None:
+        hit, snapshot = self._probes.cached(request)
+        if hit:
+            self._apply_snapshot(request, snapshot)
+            return
+        token = self._probes.begin(request)
+        if token is None:
+            return  # queued behind the running probe
+        threading.Thread(
+            target=self._probe_worker, args=(token, request), daemon=True
+        ).start()
+
+    def _probe_worker(self, token: int, request: ProbeRequest) -> None:
+        snapshot = probe_snapshot(
+            request.device, request.settings, ADVISORY_PROBE_TIMEOUT_SECONDS
+        )
+        GLib.idle_add(self._on_probe_done, token, request, snapshot)
+
+    def _on_probe_done(
+        self, token: int, request: ProbeRequest, snapshot: object
+    ) -> None:
+        current, follow_up = self._probes.complete(token, snapshot)
+        if follow_up is not None:
+            self._launch_probe(follow_up)
+        if not current or request.device != self._selected_device():
+            return  # stale: the user moved on
+        self._apply_snapshot(request, snapshot)
+
+    def _apply_snapshot(self, request: ProbeRequest, snapshot: object) -> None:
+        caps = snapshot if isinstance(snapshot, dict) else None
+        if caps is None and not self._negotiation_logged_failure:
+            self._negotiation_logged_failure = True
+            self._append_log(
+                "[gui] capability probe failed; leaving all options selectable"
+            )
+        if not request.settings:
+            # Bare snapshot: source availability, then refine the modes with
+            # the currently selected source applied.
+            self._base_snapshot = caps
+            blocked: dict[str, str] = {}
+            for value in ("flatbed", "adf", "adf-duplex", "adf-back"):
+                assessment = assess_source(caps, value)
+                if selection_blocked(assessment.support):
+                    blocked[value] = assessment.consequence
+            self._source_row.set_availability(blocked, self._on_choice_blocked)
+            selected = assess_source(caps, self._source_row.value())
+            if caps is not None and selected.backend_value is not None:
+                self._launch_probe(
+                    ProbeRequest(
+                        request.device,
+                        (("--source", selected.backend_value),),
+                    )
+                )
+        self._last_caps = caps
+        self._apply_mode_availability(caps)
+        self._on_document_changed()
+        self._update_selection_block()
+
+    def _apply_mode_availability(self, caps: object) -> None:
+        capabilities = caps if isinstance(caps, dict) else None
+        blocked: dict[str, str] = {}
+        for value in ("lineart", "gray", "color", "lineart-auto"):
+            assessment = assess_mode(
+                capabilities, value, "auto" if value == "lineart-auto" else 0.5
+            )
+            if selection_blocked(assessment.support):
+                blocked[value] = assessment.consequence
+        self._mode_row.set_availability(blocked, self._on_choice_blocked)
+
+    def _on_choice_blocked(self, value: str, reason: str) -> None:
+        """A visible-but-unavailable choice was clicked: explain, keep state."""
+        self._set_result_bar("idle", _("Not available on this scanner: %s") % reason)
+
+    def _update_selection_block(self) -> None:
+        """Disable Start while the active saved choice is unavailable.
+
+        The selection is never changed silently; the user must pick another
+        value themselves.
+        """
+        reason = self._source_row.blocked_reason() or self._mode_row.blocked_reason()
+        self._selection_block_reason = reason
+        self._scan_btn.set_sensitive(
+            self._proc is None and not self._cli_blocked and reason is None
+        )
+        if reason is not None:
+            self._set_result_bar(
+                "idle", _("Selected option not available: %s") % reason
+            )
 
     # ------------------------------------------------- live consequences
 
@@ -1404,6 +1594,27 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         dpi = self._current_resolution()
         base = _SIZE_BASE_MB.get(self._mode_row.value(), 0.3)
         estimate = max(base * (dpi / 300.0) ** 2, 0.1)
+        capabilities = self._last_caps if isinstance(self._last_caps, dict) else None
+        assessment = assess_resolution(capabilities, dpi)
+        effective = (
+            int(assessment.effective)
+            if assessment.support is Support.DEGRADED
+            else None
+        )
+        if effective is not None and effective != dpi:
+            self._res_row.set_subtitle(
+                _(
+                    "%(dpi)d dpi · scans at %(effective)d dpi · "
+                    "approx. %(size).1f MB per page"
+                )
+                % {
+                    "dpi": dpi,
+                    "effective": effective,
+                    "size": max(base * (effective / 300.0) ** 2, 0.1),
+                }
+            )
+            self._update_name_preview()
+            return
         self._res_row.set_subtitle(
             _("%(dpi)d dpi · approx. %(size).1f MB per page")
             % {"dpi": dpi, "size": estimate}
