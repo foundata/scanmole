@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--lineart-threshold auto` (GUI: the new "B/W (faint)" mode): a guarded per-page threshold recovers faint originals such as thermal-paper receipts and washed-out copies, while blank detection and page sizing keep behaving exactly like the fixed default.
 - The GUI keeps searching for scanners automatically (every 15 seconds) until one is found, so plugging in the device after starting the application just works.
 - Hardware paper detection on the `epsonds` backend: `auto` page size requests the device's ADF auto cropping (`--adf-crp`), and `--deskew` drives its hardware skew correction (`--adf-skew`).
+- Capability negotiation: the engine, CLI and GUI now share one support model (native, emulated in software, degraded, unsupported, unknown). The CLI warns once per scan when a fallback loses something (naming the consequence, e.g. "backs will not be scanned") and only notes equivalent software emulation; the GUI grays out degraded and unsupported source/mode choices after probing the selected device and disables Start with a reason when a saved choice is unavailable, instead of silently changing it.
 
 ### Changed
 
