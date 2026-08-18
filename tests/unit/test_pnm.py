@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from scanmole.pnm import (
     autocrop_pnm,
     binarize_image,
     binarize_pnm,
+    coherent_ink,
     crop_pnm,
     gray_histogram,
     image_mean,
@@ -468,6 +470,104 @@ def test_content_stats_mean_ignores_ink_outside_the_box(tmp_path: Path) -> None:
     assert plain is not None and with_streak is not None
     assert plain.bbox == with_streak.bbox
     assert plain.mean == pytest.approx(with_streak.mean)
+
+
+def _dashed_lines(
+    lines: list[int], *, x0: int = 100, x1: int = 820, tall: int = 24
+) -> list[tuple[int, int, int, int]]:
+    """Text-line stand-ins: rows of word-sized dashes with gaps between."""
+    return [(x, y, x + 36, y + tall) for y in lines for x in range(x0, x1 - 36, 60)]
+
+
+def test_coherent_ink_accepts_faint_text_lines() -> None:
+    frame = _p4_frame(1000, 1400, _dashed_lines([300, 360, 420]))
+
+    found = coherent_ink(frame, 300)
+
+    assert found is not None
+    x0, y0, x1, y1 = found.box
+    assert x0 <= 100 and y0 <= 300 and x1 >= 800 and y1 >= 440
+    assert found.mean < 1.0
+
+
+def test_coherent_ink_accepts_a_page_number() -> None:
+    digits = [(500, 1330, 512, 1360), (516, 1330, 528, 1360)]
+    frame = _p4_frame(1000, 1400, digits)
+
+    found = coherent_ink(frame, 300)
+
+    assert found is not None
+    x0, y0, x1, y1 = found.box
+    assert x0 <= 500 and x1 >= 528 and y0 <= 1330 and y1 >= 1360
+    assert found.mean < 0.9  # a compact region is mostly ink
+
+
+def test_coherent_ink_rejects_a_uniform_blank() -> None:
+    assert coherent_ink(_p4_frame(1000, 1400), 300) is None
+
+
+def test_coherent_ink_rejects_scattered_noise() -> None:
+    # Deterministic ~1% scatter: the per-tile density stays far below the
+    # cut, exactly like binarized unimodal sensor noise.
+    specks = [
+        (x, y, x + 1, y + 1)
+        for y in range(1400)
+        for x in range(1000)
+        if (x * 31 + y * 17) % 101 == 0
+    ]
+    assert coherent_ink(_p4_frame(1000, 1400, specks), 300) is None
+
+
+def test_coherent_ink_rejects_thin_streaks() -> None:
+    roller = _p4_frame(1000, 1400, [(300, 0, 302, 1400)])
+    vertical_edge = _p4_frame(1000, 1400, [(0, 0, 2, 1400)])
+    centered_bar = _p4_frame(1000, 1400, [(0, 700, 1000, 702)])
+    straddling_bar = _p4_frame(1000, 1400, [(0, 707, 1000, 709)])
+
+    assert coherent_ink(roller, 300) is None
+    assert coherent_ink(vertical_edge, 300) is None
+    assert coherent_ink(centered_bar, 300) is None
+    assert coherent_ink(straddling_bar, 300) is None
+
+
+def test_coherent_ink_rejects_the_pepper_page_otsu_accepts(tmp_path: Path) -> None:
+    # The mandatory false-positive regression: paper at 235 with 1% of the
+    # pixels at 170, randomly distributed. Otsu accepts the split (the
+    # histogram is perfectly bimodal) and the projection bbox spans nearly
+    # the whole frame, so only local coherence can tell it from text.
+    width, height = 1000, 1400
+    rng = random.Random(42)
+    raster = bytearray([235]) * (width * height)
+    for _ in range(width * height // 100):
+        raster[rng.randrange(width * height)] = 170
+    page = b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+
+    fraction = adaptive_lineart_threshold(page)
+    assert fraction is not None and 0.6 < fraction < 0.75  # Otsu is fooled
+
+    candidate = _write(tmp_path / "candidate.pgm", page)
+    assert binarize_pnm(candidate, fraction) is True
+    stats = pnm_content_stats(candidate, min_ink_px=4)
+    assert stats is not None and stats.bbox is not None
+    assert stats.bbox[2] - stats.bbox[0] > width * 0.9  # projections fooled too
+
+    assert coherent_ink(candidate.read_bytes(), 300) is None  # coherence is not
+
+
+def test_coherent_ink_ignores_non_p4_input() -> None:
+    assert coherent_ink(b"P5\n4 4\n255\n" + bytes(16), 300) is None
+    assert coherent_ink(b"not a pnm", 300) is None
+
+
+def test_coherent_ink_mean_reflects_the_region_only() -> None:
+    # A solid 200x120 block: the union box is tile-aligned around it, so
+    # the mean must reflect mostly ink, not the surrounding white page.
+    frame = _p4_frame(1000, 1400, [(200, 240, 400, 360)])
+
+    found = coherent_ink(frame, 300)
+
+    assert found is not None
+    assert found.mean < 0.2
 
 
 def test_crop_pnm_aligns_p4_origin_and_keeps_the_right_edge(tmp_path: Path) -> None:

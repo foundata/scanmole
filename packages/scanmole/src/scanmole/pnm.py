@@ -9,6 +9,7 @@ them instead of pulling in an image library.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import Counter
 from dataclasses import dataclass
@@ -761,6 +762,159 @@ def adaptive_lineart_threshold(buffer: bytes) -> float | None:
     if coverage_auto - coverage_fixed > _OTSU_MAX_EXTRA_COVERAGE:
         return None
     return cut / 255.0
+
+
+_TILE_INK_FRACTION = 0.12
+"""Ink coverage at which an analysis tile counts as inked. Glyph regions
+cover 15-30% of their tiles; distributed pepper noise (1% of the page)
+stays far below. The cut sits above one hairline pixel row per tile
+(8/96 = 8.3%), so a 1-2 px streak straddling a tile boundary dilutes
+below density instead of forming a two-tile-tall band."""
+
+_COHERENT_MIN_WIDTH_MM = 2.0
+_COHERENT_MIN_HEIGHT_MM = 1.2
+"""Minimum physical size of a coherent region. A normally sized page
+number clears both; a streak that stays dense concentrates its ink in a
+single tile column or row and fails one of them."""
+
+_COHERENT_MIN_TILES = 4
+"""Minimum tiles in a coherent region; a lone dense tile is a speck."""
+
+
+@dataclass(frozen=True)
+class CoherentInk:
+    """Locally coherent, text-like ink found in a 1-bit candidate frame.
+
+    Attributes:
+        box: Union box ``(x0, y0, x1, y1)`` of the accepted coherent
+            regions, exclusive ends, aligned to the analysis tiles.
+        mean: Brightness (0..1, ``1.0`` = empty) measured inside ``box``.
+    """
+
+    box: tuple[int, int, int, int]
+    mean: float
+
+
+def coherent_ink(buffer: bytes, dpi: int) -> CoherentInk | None:
+    """Find locally coherent text-like ink in a 1-bit ``P4`` frame.
+
+    The projection-based content box is no evidence of real content on its
+    own: distributed bimodal noise (1% pepper over a page) satisfies every
+    row and column profile. Blank rescue therefore needs local coherence.
+    The frame is classified in coarse DPI-aware tiles (one raster byte = 8
+    px wide, about one millimetre tall); a tile counts as inked at
+    :data:`_TILE_INK_FRACTION` coverage, adjacent inked tiles form regions
+    (4-connected, on tiles rather than pixels, so an A4/300 dpi pass stays
+    within a few milliseconds), and a region counts as coherent at about
+    2 x 1.2 mm and four tiles minimum. That accepts text lines and page
+    numbers while rejecting uniform blanks, scattered or unimodal noise
+    (far below the tile density cut) and thin edge or roller streaks
+    (dense in at most one tile column or row, so their regions stay
+    degenerate).
+
+    Returns:
+        The union box of the accepted regions with the brightness mean
+        inside it, or ``None`` when the buffer is not 1-bit ``P4`` or
+        holds no coherent region.
+
+    Raises:
+        ValueError: If the buffer starts as a ``P4`` but is malformed.
+    """
+    if len(buffer) < 8 or buffer[:2] != b"P4":
+        return None
+    tokens, offset = _read_header(buffer, 2)
+    try:
+        width, height = int(tokens[0]), int(tokens[1])
+    except ValueError as exc:
+        raise ValueError("bad PNM dimensions") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError("bad PNM dimensions")
+    row_bytes = (width + 7) // 8
+    if len(buffer) - offset < row_bytes * height:
+        raise ValueError("truncated PNM raster")
+    raster = bytearray(buffer[offset : offset + row_bytes * height])
+    if width % 8:  # row padding bits are don't-care; keep them out
+        pad_mask = 0xFF ^ (0xFF >> (width % 8))
+        raster[row_bytes - 1 :: row_bytes] = bytes(
+            byte & pad_mask for byte in raster[row_bytes - 1 :: row_bytes]
+        )
+    ink = bytes(raster).translate(_POPCOUNT)
+
+    # Per-tile ink via big-integer row addition: each ink byte is <= 8, so
+    # up to 31 rows sum carry-free into per-byte-column totals at C speed.
+    tile_h = min(31, max(4, round(dpi / 25.4)))
+    tile_rows = (height + tile_h - 1) // tile_h
+    grid: list[bytes] = []
+    for index in range(tile_rows):
+        first, last = index * tile_h, min((index + 1) * tile_h, height)
+        acc = 0
+        for row in range(first, last):
+            acc += int.from_bytes(ink[row * row_bytes : (row + 1) * row_bytes], "big")
+        grid.append(acc.to_bytes(row_bytes, "big"))
+
+    dense: set[tuple[int, int]] = set()
+    marks: dict[int, bytes] = {}
+    for index, sums in enumerate(grid):
+        rows_in_tile = min(tile_h, height - index * tile_h)
+        cut = max(1, round(_TILE_INK_FRACTION * 8 * rows_in_tile))
+        mark = marks.setdefault(
+            cut, bytes(1 if value >= cut else 0 for value in range(256))
+        )
+        flags = sums.translate(mark)
+        column = flags.find(1)
+        while column != -1:
+            dense.add((index, column))
+            column = flags.find(1, column + 1)
+    if not dense:
+        return None
+
+    min_w_tiles = max(2, math.ceil(dpi * _COHERENT_MIN_WIDTH_MM / 25.4 / 8))
+    min_h_tiles = max(2, math.ceil(dpi * _COHERENT_MIN_HEIGHT_MM / 25.4 / tile_h))
+    accepted: list[tuple[int, int, int, int]] = []  # tile coords, inclusive
+    remaining = set(dense)
+    while remaining:
+        seed = remaining.pop()
+        stack = [seed]
+        r0 = r1 = seed[0]
+        c0 = c1 = seed[1]
+        count = 1
+        while stack:
+            row, column = stack.pop()
+            for neighbor in (
+                (row - 1, column),
+                (row + 1, column),
+                (row, column - 1),
+                (row, column + 1),
+            ):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    stack.append(neighbor)
+                    count += 1
+                    r0, r1 = min(r0, neighbor[0]), max(r1, neighbor[0])
+                    c0, c1 = min(c0, neighbor[1]), max(c1, neighbor[1])
+        if (
+            c1 - c0 + 1 >= min_w_tiles
+            and r1 - r0 + 1 >= min_h_tiles
+            and count >= _COHERENT_MIN_TILES
+        ):
+            accepted.append((c0, r0, c1, r1))
+    if not accepted:
+        return None
+
+    tc0 = min(region[0] for region in accepted)
+    tr0 = min(region[1] for region in accepted)
+    tc1 = max(region[2] for region in accepted)
+    tr1 = max(region[3] for region in accepted)
+    box = (
+        tc0 * 8,
+        tr0 * tile_h,
+        min(width, (tc1 + 1) * 8),
+        min(height, (tr1 + 1) * tile_h),
+    )
+    box_ink = sum(sum(grid[row][tc0 : tc1 + 1]) for row in range(tr0, tr1 + 1))
+    area = (box[2] - box[0]) * (box[3] - box[1])
+    mean = min(1.0, max(0.0, 1.0 - box_ink / area))
+    return CoherentInk(box=box, mean=mean)
 
 
 def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:
