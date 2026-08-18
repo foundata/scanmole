@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
+import random
 import re
 import shutil
 import tempfile
@@ -961,11 +962,12 @@ def _run_capture(
     return [json.loads(line) for line in stream.getvalue().splitlines()]
 
 
-def test_auto_threshold_faint_page_still_drops_under_normal_policy(
+def test_auto_threshold_thin_faint_band_still_drops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The blank verdict is the fixed-0.5 one: the faint-only backside stays
-    # a blank and is dropped, exactly as with a numeric threshold.
+    # The 8-row faint band is a thin-band negative for the coherent rescue:
+    # its ink forms a single tile row, so the page stays a fixed-0.5 blank
+    # and is dropped, exactly as with a numeric threshold.
     events = _run_capture(
         _auto_config(tmp_path), monkeypatch, [_dark_page(), _faint_page()]
     )
@@ -1028,6 +1030,183 @@ def test_auto_and_fixed_emit_identical_page_events(
         ]
 
     assert pages(auto_events) == pages(fixed_events)
+
+
+def _faint_text_page(width: int = 600, height: int = 400) -> bytes:
+    """Wholly faint text: dashed lines at 170 on noisy 235 paper.
+
+    Every stroke sits above the fixed 0.5 cut, so the fixed conversion
+    yields an all-white P4; only the coherent rescue can keep this page.
+    """
+    raster = bytearray(234 + (x + y) % 3 for y in range(height) for x in range(width))
+    for y0 in (100, 160, 220):
+        for x0 in range(60, 504, 60):
+            for y in range(y0, y0 + 24):
+                raster[y * width + x0 : y * width + x0 + 36] = b"\xaa" * 36
+    return b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+
+
+def _pepper_page(width: int = 1000, height: int = 1400) -> bytes:
+    """1% random pixels at 170 on 235 paper: Otsu accepts, coherence must not."""
+    rng = random.Random(42)
+    raster = bytearray([235]) * (width * height)
+    for _ in range(width * height // 100):
+        raster[rng.randrange(width * height)] = 170
+    return b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+
+
+def test_auto_threshold_rescues_a_wholly_faint_text_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, keep_images=keep_dir)
+
+    events = _run_capture(config, monkeypatch, [_faint_text_page()])
+
+    page_event = next(e for e in events if e["event"] == "page")
+    assert page_event["blank"] is False
+    mean_value = page_event["mean"]
+    # The reported mean is the coherent region's adaptive mean: it explains
+    # why the page is nonblank instead of claiming an all-white 1.0.
+    assert isinstance(mean_value, float) and 0.5 < mean_value < 0.9
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 0
+    kept = keep_dir / "out" / "page_0001.pnm"
+    assert kept.read_bytes().startswith(b"P4")
+    from scanmole.pnm import pnm_mean
+
+    mean = pnm_mean(kept)
+    assert mean is not None and mean < 0.95  # the recovered strokes are real ink
+
+
+def test_pepper_noise_is_never_rescued(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The mandatory false-positive regression end-to-end: Otsu accepts the
+    # bimodal split, the projection bbox spans the frame, but the candidate
+    # holds no coherent region, so the page stays a dropped blank.
+    events = _run_capture(
+        _auto_config(tmp_path), monkeypatch, [_dark_page(), _pepper_page()]
+    )
+
+    second = [e for e in events if e["event"] == "page"][1]
+    assert second["blank"] is True
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 1
+
+
+def test_rescue_respects_a_custom_blank_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The coherent region mean (~0.7) must pass the *configured* threshold;
+    # at 0.5 the rescue is refused and the page stays dropped.
+    heavy = b"P5\n100 100\n255\n" + bytes([40] * 6000 + [235] * 4000)
+    config = _auto_config(tmp_path, blank_threshold=0.5)
+
+    events = _run_capture(config, monkeypatch, [heavy, _faint_text_page()])
+
+    second = [e for e in events if e["event"] == "page"][1]
+    assert second["blank"] is True
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 1
+
+
+def test_failed_adoption_never_rescues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Coherence evidence alone must not flip the verdict: if the atomic
+    # adoption fails, the fixed all-white page stands and stays dropped.
+    monkeypatch.setattr(
+        "scanmole.pipeline._adopt_candidate", lambda staging, page: False
+    )
+
+    events = _run_capture(
+        _auto_config(tmp_path), monkeypatch, [_dark_page(), _faint_text_page()]
+    )
+
+    second = [e for e in events if e["event"] == "page"][1]
+    assert second["blank"] is True
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 1
+
+
+def test_failed_candidate_staging_never_rescues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "scanmole.pipeline._stage_adaptive", lambda page, snapshot, fraction: None
+    )
+
+    events = _run_capture(
+        _auto_config(tmp_path), monkeypatch, [_dark_page(), _faint_text_page()]
+    )
+
+    second = [e for e in events if e["event"] == "page"][1]
+    assert second["blank"] is True
+
+
+def _gray_window_scan(page_bytes: bytes, dpi: int, window):  # type: ignore[no-untyped-def]
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Front", mode="Gray", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(page_bytes)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    return fake_scan
+
+
+def test_rescued_page_is_sized_from_the_coherent_box(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A full-window white-backed frame whose only content is wholly faint:
+    # the fixed measurement sees a blank, so the coherent box must become
+    # the robust sizing evidence. Content demanding ~138 x 83 mm from the
+    # leading edge snaps to A6 landscape (148 x 105 mm), the smallest
+    # standard cover, instead of keeping the full A4 window.
+    dpi = 75
+    scale = dpi / 25.4
+    width, height = round(210 * scale), round(297 * scale)
+    raster = bytearray(234 + (x + y) % 3 for y in range(height) for x in range(width))
+    for y0 in range(30, 260, 40):
+        for x0 in range(30, 410, 40):
+            for y in range(y0, y0 + 12):
+                raster[y * width + x0 : y * width + x0 + 24] = b"\xaa" * 24
+    frame = b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, page_size="auto", keep_images=keep_dir)
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _gray_window_scan(frame, dpi, (210.0, 297.0)),
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
+    assert kept.startswith(b"P4")
+    kept_w, kept_h = (int(v) for v in kept.split(b"\n")[1].split(b" "))
+    assert kept_w < width and kept_h < height  # the window was not kept
+    assert abs(kept_w - round(148 * scale)) <= 8  # A6 landscape (byte-aligned)
+    assert abs(kept_h - round(105 * scale)) <= 2
 
 
 def test_auto_threshold_keeps_natively_enhanced_p4_untouched(
