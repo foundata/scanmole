@@ -136,11 +136,16 @@ would destroy exactly the recovery the escalation is meant to allow.
 
 DEFAULT_WINDOW_SIZE = (650, 810)  # starts in the single-column layout
 
-# App-level styling: compact resolution preset chips and a dpi entry sized
-# to its digits.
+# App-level styling: compact resolution preset chips, a dpi entry sized to
+# its digits, and no separator between the .joined-below/.joined-above row
+# pair (the preset row reads as the continuation of the Resolution row, not
+# a new setting); both border directions covered, themes differ in which
+# side they draw the hairline on.
 _APP_CSS = """
-button.chip { min-height: 20px; padding: 0px 8px; font-size: 0.85em; }
+button.chip { min-height: 24px; padding: 0px 8px; font-size: 0.85em; }
 entry.dpi { min-width: 0px; padding-left: 8px; padding-right: 8px; }
+list.boxed-list > row.joined-above { border-top: none; box-shadow: none; }
+list.boxed-list > row.joined-below { border-bottom: none; box-shadow: none; }
 """
 
 
@@ -534,6 +539,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._build_output_group()
         self._build_document_group()
         self._build_processing_group()
+        self._equalize_form_rows()
         self._build_log_area()
 
         self._form_groups = (
@@ -750,15 +756,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # only; the CLI snaps the value to what the device actually supports
         # during capability negotiation.
         self._res_row = Adw.ActionRow(title=_("Resolution"))
-        res_box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=6,
-            valign=Gtk.Align.CENTER,
-            margin_top=6,
-            margin_bottom=6,
-        )
         entry_box = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL, spacing=6, halign=Gtk.Align.END
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            halign=Gtk.Align.END,
+            valign=Gtk.Align.CENTER,
         )
         self._res_value = 300
         self._res_entry = Gtk.Entry(
@@ -795,8 +797,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         plus_btn.connect("clicked", lambda *_a: self._step_resolution(10))
         stepper.append(plus_btn)
         entry_box.append(stepper)
-        res_box.append(entry_box)
-        chips = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END)
+        self._res_row.add_suffix(entry_box)
+        self._res_row.add_css_class("joined-below")
+        self._doc_grp.add(self._res_row)
+
+        # The dpi presets get their own row directly below Resolution: the
+        # split gives Document the same four-row shape as Processing, which
+        # _equalize_form_rows() then locks to identical heights.
+        self._chips_row = Adw.ActionRow()
+        self._chips_row.add_css_class("joined-above")
+        chips = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            halign=Gtk.Align.END,
+            valign=Gtk.Align.CENTER,
+        )
         chips.add_css_class("linked")
         self._res_chips: list[tuple[Gtk.ToggleButton, int]] = []
         for preset in RESOLUTION_PRESETS:
@@ -805,9 +819,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             chip.connect("toggled", self._on_resolution_chip, preset)
             chips.append(chip)
             self._res_chips.append((chip, preset))
-        res_box.append(chips)
-        self._res_row.add_suffix(res_box)
-        self._doc_grp.add(self._res_row)
+        self._chips_row.add_suffix(chips)
+        self._doc_grp.add(self._chips_row)
 
     def _build_processing_group(self) -> None:
         """Build the Processing group (blank pages, OCR, language)."""
@@ -838,6 +851,26 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             active=True,
         )
         self._proc_grp.add(self._deskew_row)
+
+    def _equalize_form_rows(self) -> None:
+        """Lock Document and Processing to the same height, row by row.
+
+        Both cards have four rows; a vertical size group per cross-column
+        pair makes the sections end flush, with the resolution entry and
+        preset rows together exactly as tall as OCR language plus deskew.
+        The groups must outlive this method (widgets do not reference them).
+        """
+        self._row_size_groups: list[Gtk.SizeGroup] = []
+        for left, right in (
+            (self._mode_row.row, self._blank_row),
+            (self._size_row, self._ocr_row),
+            (self._res_row, self._lang_row),
+            (self._chips_row, self._deskew_row),
+        ):
+            size_group = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.VERTICAL)
+            size_group.add_widget(left)
+            size_group.add_widget(right)
+            self._row_size_groups.append(size_group)
 
     def _build_log_area(self) -> None:
         """Build the collapsed, copyable log below the form."""
