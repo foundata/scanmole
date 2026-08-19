@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Flatbed-only devices (e.g. Canon CanoScan LiDE 220) no longer batch-scan endlessly when a feeder source is requested: single-choice source options are parsed correctly and missing sources degrade with a warning.
 - Nearly empty pages on full scan windows are no longer dropped as blank: blank detection measures inside the detected content area instead of the whole frame.
-- Interrupting a run (Ctrl-C, SIGTERM) or an unexpected error no longer deletes already-scanned pages; they are preserved for recovery like other failures.
+- Interrupting a run (Ctrl-C, SIGTERM) or an unexpected error no longer deletes already-scanned pages; they are preserved for recovery like other failures. Pages the scanner had already announced also finish their processing before the interrupt takes effect, so recovery can no longer race a page that is still being analyzed.
 - A slow backlog of page processing can no longer race the end of the batch; every scanned page reaches the PDF even when the scanner finishes first.
 - Image transformations and GUI settings are written atomically; a full disk or an interrupt can no longer corrupt the only copy of a scanned page or reset the GUI preferences.
 - A failing device discovery (e.g. access denied) is reported as an error instead of being presented as "no scanners found" with a success exit code.
