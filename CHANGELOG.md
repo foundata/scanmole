@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A failing device discovery (e.g. access denied) is reported as an error instead of being presented as "no scanners found" with a success exit code.
 - Nonsensical numeric arguments (a dpi of 0, negative despeckle radius, NaN blank threshold, 0x0 page sizes) are rejected as usage errors instead of crashing later or silently changing behavior.
 - Cancelling or closing the GUI mid-scan waits for the engine's cleanup instead of killing it halfway or leaving it running invisibly; malformed CLI events can no longer freeze the device search.
+- The GUI can no longer miss the end of a scan's event stream: the result summary and error details are always delivered before the exit is reported, a pipe kept open by a stray helper process cannot stall completion, and an invalid byte in the CLI's output no longer silently stops the log and progress updates.
 - Release artifacts are built litter-free: the 1.0.0 GUI wheel had shipped stale mypy cache files (harmless, but 262 KB of dead weight).
 - The OCR install hints now include the tesseract OSD data package (Fedora: `tesseract-osd`, Debian/Ubuntu: `tesseract-ocr-osd`).
 
