@@ -66,10 +66,12 @@ class Capability:
     ``active=False`` preserves options the backend lists as ``[inactive]``
     (not settable in the device's current state). They are evidence for
     capability negotiation, which must distinguish inactive from absent, but
-    command construction never passes them. ``current`` is the option's
-    value from its trailing bracket marker (``[600]``, ``[ADF Front]``),
-    ``step`` the increment of a stepped range (``(in steps of 100)``);
-    both feed the effective-resolution policy and grid snapping.
+    command construction never passes them. ``settable=False`` marks
+    ``[read-only]`` options: readable state that must never be emitted.
+    ``current`` is the option's value from its trailing bracket marker
+    (``[600]``, ``[ADF Front]``), ``step`` the increment of a stepped
+    range (``(in steps of 100)``); both feed the effective-resolution
+    policy and grid snapping.
     """
 
     kind: CapabilityKind = "other"
@@ -77,6 +79,7 @@ class Capability:
     minimum: float | None = None
     maximum: float | None = None
     active: bool = True
+    settable: bool = True
     current: str | None = None
     step: float | None = None
 
@@ -178,6 +181,8 @@ def parse_capabilities(listing: str) -> dict[str, Capability]:
         # then the option's current value ([600], [ADF Front]).
         spec, marker = _take_marker(rest)
         while marker in _QUALIFIER_MARKERS:
+            if marker == "read-only":
+                capability.settable = False
             spec, marker = _take_marker(spec)
         if marker:
             capability.current = marker
@@ -389,6 +394,20 @@ def format_mm(value: float, capability: Capability | None, option: str) -> str:
     return f"{clamped:g}"
 
 
+def parse_dpi(text: str) -> int | None:
+    """Parse an exact positive dpi value: ``300`` or ``300dpi``, nothing else.
+
+    Strict on purpose: a loose digit search would promote opaque markers
+    like ``<int>`` neighbors or composite strings into trusted physical
+    resolution evidence.
+    """
+    match = re.fullmatch(r"(\d+)\s*(?:dpi)?", text.strip())
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
+
+
 def snap_resolution(resolution: int, caps: dict[str, Capability]) -> int | None:
     """Adjust a requested dpi to what the device actually offers.
 
@@ -402,9 +421,9 @@ def snap_resolution(resolution: int, caps: dict[str, Capability]) -> int | None:
     if capability.kind == "enum":
         values = sorted(
             {
-                int(found.group())
+                parsed
                 for choice in capability.choices
-                if (found := re.search(r"\d+", choice)) is not None
+                if (parsed := parse_dpi(choice)) is not None
             }
         )
         if values and resolution not in values:

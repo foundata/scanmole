@@ -299,6 +299,62 @@ def test_unknown_resolution_never_fakes_an_effective_value() -> None:
     assert inactive_unreadable.effective == ""
 
 
+def test_read_only_current_value_establishes_the_dpi() -> None:
+    caps = parse_capabilities(
+        "    --resolution <int> [300] [read-only]\n        Fixed scan resolution.\n"
+    )
+
+    degraded = assess_resolution(caps, 600)
+    matching = assess_resolution(caps, 300)
+
+    assert degraded.support is Support.DEGRADED
+    assert degraded.reason == "fixed-resolution"
+    assert degraded.backend_value is None  # read-only: never emitted
+    assert degraded.effective == "300"
+    assert matching.support is Support.NATIVE and matching.effective == "300"
+
+
+def test_inactive_adjustable_range_stays_unknown() -> None:
+    # 75..600dpi [75] [inactive]: adjustable when active, so its current
+    # value proves nothing about what the backend would actually use.
+    caps = parse_capabilities(
+        "    --resolution 75..600dpi [75] [inactive]\n"
+        "        Sets the resolution of the scanned image.\n"
+    )
+
+    assessment = assess_resolution(caps, 300)
+
+    assert assessment.support is Support.UNKNOWN
+    assert assessment.reason == "resolution-option-inactive"
+    assert assessment.effective == ""
+
+
+def test_opaque_or_nonnumeric_active_resolution_stays_unknown() -> None:
+    opaque = {"resolution": Capability(kind="other", current="300")}
+    words = {"resolution": Capability(kind="enum", choices=["draft", "best"])}
+
+    for caps in (opaque, words):
+        assessment = assess_resolution(caps, 300)
+        assert assessment.support is Support.UNKNOWN
+        assert assessment.reason == "resolution-not-parseable"
+        assert assessment.backend_value is None and assessment.effective == ""
+
+
+def test_genuinely_fixed_inactive_constraints_establish_the_dpi() -> None:
+    singleton_enum = {
+        "resolution": Capability(kind="enum", choices=["200dpi"], active=False)
+    }
+    equal_range = {
+        "resolution": Capability(
+            kind="range", minimum=300.0, maximum=300.0, active=False
+        )
+    }
+
+    assert assess_resolution(singleton_enum, 300).effective == "200"
+    assert assess_resolution(equal_range, 600).effective == "300"
+    assert assess_resolution(equal_range, 600).support is Support.DEGRADED
+
+
 def test_stepped_range_resolution_snaps_with_lower_ties() -> None:
     caps = {
         "resolution": Capability(kind="range", minimum=100, maximum=600, step=100.0)

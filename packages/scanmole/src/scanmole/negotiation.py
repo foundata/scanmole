@@ -34,6 +34,7 @@ from scanmole.options import (
     Capability,
     _pick,
     active_capability,
+    parse_dpi,
     probe_capabilities,
     snap_resolution,
 )
@@ -591,26 +592,50 @@ def _assess_depth(
     )
 
 
-def _fixed_resolution(capability: Capability | None) -> int | None:
-    """The dpi an inactive resolution option is pinned to, if readable.
+def _singleton_resolution(capability: Capability) -> int | None:
+    """The dpi of a genuinely fixed constraint, if it really is one.
 
-    An inactive option cannot be set, but its current value (``[200]``) or
-    a single fixed choice (``200dpi``) still states the dpi the backend
-    will scan at, which is exactly the physical-geometry evidence the
-    pipeline needs.
+    Only a single exact numeric enum choice or a range with equal bounds
+    counts: an *adjustable* inactive range (``75..600dpi [75]``) states
+    nothing about what the backend would use, and its current value must
+    not be promoted to physical-geometry evidence.
     """
-    if capability is None:
-        return None
-    texts = []
-    if capability.current:
-        texts.append(capability.current)
     if capability.kind == "enum" and len(capability.choices) == 1:
-        texts.append(capability.choices[0])
-    for text in texts:
-        found = re.search(r"\d+", text)
-        if found is not None and int(found.group()) > 0:
-            return int(found.group())
+        return parse_dpi(capability.choices[0])
+    if (
+        capability.kind == "range"
+        and capability.minimum is not None
+        and capability.minimum == capability.maximum
+    ):
+        value = int(capability.minimum)
+        return value if value == capability.minimum and value > 0 else None
     return None
+
+
+def _numeric_resolution_evidence(capability: Capability) -> bool:
+    """Whether an option's constraint is usable for snapping and emission."""
+    if capability.kind == "range":
+        return capability.minimum is not None and capability.maximum is not None
+    if capability.kind == "enum":
+        return any(parse_dpi(choice) is not None for choice in capability.choices)
+    return False
+
+
+def _fixed_assessment(requested: int, fixed: int) -> Assessment:
+    if fixed == requested:
+        return Assessment(
+            requested=str(requested),
+            support=Support.NATIVE,
+            reason="fixed-resolution",
+            effective=str(fixed),
+        )
+    return Assessment(
+        requested=str(requested),
+        support=Support.DEGRADED,
+        reason="fixed-resolution",
+        consequence=f"the device is fixed at {fixed} dpi instead of {requested} dpi",
+        effective=str(fixed),
+    )
 
 
 def assess_resolution(
@@ -618,12 +643,15 @@ def assess_resolution(
 ) -> Assessment:
     """Negotiate the dpi that establishes the pages' physical geometry.
 
-    An active option is set explicitly after enum/range/step snapping; an
-    inactive option with a readable fixed value establishes the effective
-    dpi without emitting ``--resolution``. Everything else stays UNKNOWN
-    with an empty ``effective``: the requested dpi must never masquerade
-    as an established one, because PDF page dimensions are derived from
-    it (scan-time acquisition refuses to run on UNKNOWN).
+    A writable, numerically parseable option is set explicitly after
+    enum/range/step snapping. A read-only option with an exact numeric
+    current value, or an inactive option whose constraint is genuinely
+    fixed (one numeric choice, equal range bounds), establishes the
+    effective dpi without emitting ``--resolution``. Everything else
+    (opaque, non-numeric, or adjustable-but-inactive) stays UNKNOWN with
+    an empty ``effective``: the requested dpi must never masquerade as an
+    established one, because PDF page dimensions are derived from it
+    (scan-time acquisition refuses to run on UNKNOWN).
     """
     requested = str(resolution)
     if caps is None:
@@ -632,30 +660,47 @@ def assess_resolution(
             support=Support.UNKNOWN,
             reason="probe-failed",
         )
-    if active_capability(caps, "resolution") is None:
-        fixed = _fixed_resolution(caps.get("resolution"))
-        if fixed is not None:
-            if fixed == resolution:
-                return Assessment(
-                    requested=requested,
-                    support=Support.NATIVE,
-                    reason="fixed-resolution",
-                    effective=str(fixed),
-                )
-            return Assessment(
-                requested=requested,
-                support=Support.DEGRADED,
-                reason="fixed-resolution",
-                consequence=(
-                    f"the device is fixed at {fixed} dpi instead of {resolution} dpi"
-                ),
-                effective=str(fixed),
-            )
-        inactive = caps.get("resolution") is not None
+    capability = caps.get("resolution")
+    if capability is None:
         return Assessment(
             requested=requested,
             support=Support.UNKNOWN,
-            reason="resolution-option-inactive" if inactive else "no-resolution-option",
+            reason="no-resolution-option",
+        )
+    if not capability.active:
+        # Inactive evidence counts only when the constraint is genuinely
+        # fixed; the current value of an adjustable inactive range states
+        # nothing about what the backend would use.
+        fixed = _singleton_resolution(capability)
+        if fixed is not None:
+            return _fixed_assessment(resolution, fixed)
+        return Assessment(
+            requested=requested,
+            support=Support.UNKNOWN,
+            reason="resolution-option-inactive",
+        )
+    if not capability.settable:
+        # Read-only state: an exact numeric current value (or a genuinely
+        # fixed constraint) establishes the dpi without emission.
+        fixed = (
+            parse_dpi(capability.current) if capability.current is not None else None
+        )
+        if fixed is None:
+            fixed = _singleton_resolution(capability)
+        if fixed is not None:
+            return _fixed_assessment(resolution, fixed)
+        return Assessment(
+            requested=requested,
+            support=Support.UNKNOWN,
+            reason="resolution-not-parseable",
+        )
+    if not _numeric_resolution_evidence(capability):
+        # Active and writable but opaque (kind "other", a non-numeric
+        # enum): emitting the request would trust the backend blindly.
+        return Assessment(
+            requested=requested,
+            support=Support.UNKNOWN,
+            reason="resolution-not-parseable",
         )
     snapped = snap_resolution(resolution, caps)
     if snapped is None or snapped == resolution:

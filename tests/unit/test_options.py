@@ -316,3 +316,30 @@ def test_format_mm_snaps_stepped_ranges() -> None:
     assert format_mm(210.3, capability, "-x") == "210.5"
     assert format_mm(210.25, capability, "-x") == "210"  # tie -> lower
     assert format_mm(500.0, capability, "-x") == "215.9"  # clamp stays exact
+
+
+def test_parse_marks_read_only_options_as_not_settable() -> None:
+    caps = parse_capabilities(
+        "    --resolution <int> [300] [read-only]\n"
+        "        Fixed scan resolution.\n"
+        "    --side[=(yes|no)] [no] [read-only]\n"
+    )
+    fixture = _fixture_caps("fujitsu-scansnap-ix500.txt")
+
+    assert caps["resolution"].settable is False
+    assert caps["resolution"].current == "300"
+    assert caps["side"].settable is False
+    assert fixture["side"].settable is False  # the real listing agrees
+    assert fixture["resolution"].settable is True
+
+
+def test_parse_dpi_is_strict() -> None:
+    from scanmole.options import parse_dpi
+
+    assert parse_dpi("300") == 300
+    assert parse_dpi("300dpi") == 300
+    assert parse_dpi(" 600 ") == 600
+    assert parse_dpi("<int>") is None
+    assert parse_dpi("0") is None
+    assert parse_dpi("300x600") is None
+    assert parse_dpi("about 300") is None
