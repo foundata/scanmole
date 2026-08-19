@@ -420,3 +420,47 @@ def test_device_is_resolved_once_for_naming_and_scanning(
     assert config.device == "scanner-a:0"  # acquisition uses the same device
     assert "scanner-a" in config.output.name
     assert "scanner-b" not in config.output.name
+
+
+def test_auto_size_preference_defaults_to_iso_and_accepts_both(
+    tmp_path: Path,
+) -> None:
+    default = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+    assert default.auto_size_preference == "iso"
+
+    for value in ("iso", "north-american"):
+        args = _parse(
+            ["--auto-size-preference", value, "-o", str(tmp_path / f"{value}.pdf")]
+        )
+        assert _build_config(args).auto_size_preference == value
+
+
+def test_auto_size_preference_rejects_unknown_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as info:
+        _parse(["--auto-size-preference", "metric"])
+
+    assert info.value.code == 2  # a normal argparse usage error
+    assert "--auto-size-preference" in capsys.readouterr().err
+
+
+def test_auto_size_preference_with_a_fixed_page_size_is_accepted(
+    tmp_path: Path,
+) -> None:
+    # Valid but without effect (and without a warning): the preference only
+    # matters when automatic sizing decides.
+    args = _parse(
+        [
+            "--page-size",
+            "a4",
+            "--auto-size-preference",
+            "north-american",
+            "-o",
+            str(tmp_path / "a.pdf"),
+        ]
+    )
+    config = _build_config(args)
+
+    assert config.page_size == "a4"
+    assert config.auto_size_preference == "north-american"

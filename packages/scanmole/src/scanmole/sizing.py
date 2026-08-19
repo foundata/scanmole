@@ -24,7 +24,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from scanmole.config import PAGE_SIZES
+from scanmole.config import PAGE_SIZES, AutoSizePreference
 
 SNAP_TOLERANCE_MM = 2.0
 """Robust content may exceed a candidate size by this much (skew, edge
@@ -35,9 +35,14 @@ _SNAP_AREA_SLACK = 1.2
 """Candidates within this area factor of the smallest fit count as ties.
 
 Content alone cannot distinguish some paper sizes: almost any A4 page's
-content also fits US letter, whose area is 3% smaller. Near-ties resolve in
-:data:`~scanmole.config.PAGE_SIZES` table order (ISO sizes first, portrait
-before landscape) instead of by area."""
+content also fits US letter, whose area is 3% smaller. Near-ties resolve by
+the explicit family preference (ISO by default), keeping
+:data:`~scanmole.config.PAGE_SIZES` table order within a family; a tie set
+without a preferred-family member keeps its first candidate."""
+
+_ISO_SIZES = frozenset({"a4", "a5", "a6"})
+"""Base names of the ISO A-series entries in the size table; everything
+else in the table is the North American family (letter, legal)."""
 
 _ADOPT_WIDTH_FRACTION = 0.7
 """A sheet adopts the majority size only when its content is at least this
@@ -96,7 +101,25 @@ class CropDecision:
     label: str
 
 
-def _candidates(frame_mm: tuple[float, float]) -> list[tuple[str, float, float]]:
+@dataclass(frozen=True)
+class _Candidate:
+    """One standard-size candidate: label, dimensions and paper family.
+
+    The family is explicit metadata so tie breaking never parses labels
+    (let alone translated GUI strings).
+    """
+
+    label: str
+    width: float
+    height: float
+    family: AutoSizePreference
+
+    @property
+    def area(self) -> float:
+        return self.width * self.height
+
+
+def _candidates(frame_mm: tuple[float, float]) -> list[_Candidate]:
     """Standard sizes fitting the frame, in table order.
 
     Includes landscape orientations (A4 landscape drops out of a 216 mm ADF
@@ -104,8 +127,9 @@ def _candidates(frame_mm: tuple[float, float]) -> list[tuple[str, float, float]]
     """
     tol = SNAP_TOLERANCE_MM
     seen: set[tuple[float, float]] = set()
-    sizes: list[tuple[str, float, float]] = []
+    sizes: list[_Candidate] = []
     for name, (width, height) in PAGE_SIZES.items():
+        family: AutoSizePreference = "iso" if name in _ISO_SIZES else "north-american"
         for label, dims in (
             (name, (width, height)),
             (f"{name} landscape", (height, width)),
@@ -114,14 +138,11 @@ def _candidates(frame_mm: tuple[float, float]) -> list[tuple[str, float, float]]
                 continue
             seen.add(dims)
             if dims[0] <= frame_mm[0] + tol and dims[1] <= frame_mm[1] + tol:
-                sizes.append((label, dims[0], dims[1]))
+                sizes.append(_Candidate(label, dims[0], dims[1], family))
     return sizes
 
 
-def _contains(
-    candidate: tuple[str, float, float],
-    demand_mm: tuple[float, float],
-) -> bool:
+def _contains(candidate: _Candidate, demand_mm: tuple[float, float]) -> bool:
     """Whether the candidate covers the content demand (width, height).
 
     For feeder sheets the height demand is the content's distance from the
@@ -130,21 +151,42 @@ def _contains(
     text span happens to be shorter than 297 mm.
     """
     tol = SNAP_TOLERANCE_MM
-    return candidate[1] + tol >= demand_mm[0] and candidate[2] + tol >= demand_mm[1]
+    return (
+        candidate.width + tol >= demand_mm[0]
+        and candidate.height + tol >= (demand_mm[1])
+    )
+
+
+def _preferred_tie(
+    candidates: list[_Candidate], preference: AutoSizePreference
+) -> _Candidate:
+    """The winner among fitting candidates: smallest area, preference on ties.
+
+    Builds the documented near-tie set (everything within
+    :data:`_SNAP_AREA_SLACK` of the smallest area) first, then picks the
+    first preferred-family member of the set, keeping table order within
+    the family. A set without one keeps its first candidate, so the
+    preference can never exclude the other family or override a single
+    unambiguous fit.
+    """
+    smallest = min(entry.area for entry in candidates)
+    ties = [entry for entry in candidates if entry.area <= smallest * _SNAP_AREA_SLACK]
+    for entry in ties:
+        if entry.family == preference:
+            return entry
+    return ties[0]
 
 
 def _snap(
-    candidates: list[tuple[str, float, float]], demand_mm: tuple[float, float]
-) -> tuple[str, float, float] | None:
-    """The smallest candidate covering the demand, table order on ties."""
+    candidates: list[_Candidate],
+    demand_mm: tuple[float, float],
+    preference: AutoSizePreference,
+) -> _Candidate | None:
+    """The smallest candidate covering the demand; preference breaks ties."""
     containing = [entry for entry in candidates if _contains(entry, demand_mm)]
     if not containing:
         return None
-    smallest = min(entry[1] * entry[2] for entry in containing)
-    for entry in containing:  # table order; near-ties prefer earlier entries
-        if entry[1] * entry[2] <= smallest * _SNAP_AREA_SLACK:
-            return entry
-    return None  # pragma: no cover -- the smallest entry always matches
+    return _preferred_tie(containing, preference)
 
 
 def _unit_extent(
@@ -165,11 +207,11 @@ def _unit_extent(
 
 
 def _extent_compatible(
-    candidate: tuple[str, float, float],
+    candidate: _Candidate,
     extent: tuple[float | None, float | None],
 ) -> bool:
     """Whether a standard size agrees with the observed paper extents."""
-    _label, width, height = candidate
+    width, height = candidate.width, candidate.height
     for observed, dimension in ((extent[0], width), (extent[1], height)):
         if observed is None:
             continue
@@ -304,7 +346,11 @@ def _covering(
 
 
 def choose_crops(
-    pages: list[PageContent], dpi: int, flatbed: bool, duplex: bool = False
+    pages: list[PageContent],
+    dpi: int,
+    flatbed: bool,
+    duplex: bool = False,
+    preference: AutoSizePreference = "iso",
 ) -> list[CropDecision]:
     """Decide every frame's crop from the batch's content measurements.
 
@@ -314,6 +360,10 @@ def choose_crops(
         flatbed: Whether the frames came from a flatbed (changes placement).
         duplex: Whether consecutive frames are front/back of the same sheet
             (they then share one size decision).
+        preference: Paper family that wins content-only near-ties (A4
+            versus Letter is indistinguishable from most content); never a
+            restriction, and overruled by content bounds and observed
+            hardware extents.
 
     Returns:
         One decision per input page, in order. ``box_px`` is ``None`` when the
@@ -335,7 +385,7 @@ def choose_crops(
 
     unit_boxes = [_union([page.bbox_px for page in unit]) for unit in units]
     unit_extents = [_unit_extent(unit, scale) for unit in units]
-    snapped: list[tuple[str, float, float] | None] = []
+    snapped: list[_Candidate | None] = []
     pinned: list[bool] = []
     for unit, bbox, extent in zip(units, unit_boxes, unit_extents, strict=True):
         frame = unit[0].frame_px
@@ -348,21 +398,16 @@ def choose_crops(
             for candidate in _candidates(frame_mm)
             if _extent_compatible(candidate, extent)
         ]
-        candidate: tuple[str, float, float] | None = None
+        candidate: _Candidate | None = None
         if bbox is not None:
             # The receipt shape rule guards against inventing paper from
             # content alone; an observed extent overrules it.
             if has_extent or not _receipt_shaped(bbox, scale):
-                candidate = _snap(options, _demand_mm(bbox, scale, flatbed))
+                candidate = _snap(options, _demand_mm(bbox, scale, flatbed), preference)
         elif has_extent and options:
             # A blank sheet with an observed extent: the smallest size the
-            # observation allows, table order on near-ties.
-            smallest = min(entry[1] * entry[2] for entry in options)
-            candidate = next(
-                entry
-                for entry in options
-                if entry[1] * entry[2] <= smallest * _SNAP_AREA_SLACK
-            )
+            # observation allows, family preference on near-ties.
+            candidate = _preferred_tie(options, preference)
         snapped.append(candidate)
         pinned.append(has_extent and candidate is not None)
 
@@ -370,9 +415,9 @@ def choose_crops(
     # not rewrite a genuinely mixed stack (50/50 stays 50/50).
     voters = sum(1 for bbox in unit_boxes if bbox is not None)
     votes = Counter(entry for entry in snapped if entry is not None)
-    majority: tuple[str, float, float] | None = None
+    majority: _Candidate | None = None
     if votes:
-        top = max(votes, key=lambda entry: (votes[entry], entry[1] * entry[2]))
+        top = max(votes, key=lambda entry: (votes[entry], entry.area))
         if votes[top] * 2 > voters:
             majority = top
 
@@ -395,13 +440,13 @@ def choose_crops(
                 # sit on majority-sized paper; narrower paper (receipts,
                 # smaller formats) keeps its own decision.
                 width_mm = (bbox[2] - bbox[0]) / scale
-                if width_mm >= _ADOPT_WIDTH_FRACTION * majority[1]:
+                if width_mm >= _ADOPT_WIDTH_FRACTION * majority.width:
                     chosen = majority
         has_extent = any(observed is not None for observed in extent)
         for page in unit:
             if chosen is not None:
-                box = _place((chosen[1], chosen[2]), page, dpi, flatbed)
-                label = chosen[0]
+                box = _place((chosen.width, chosen.height), page, dpi, flatbed)
+                label = chosen.label
             elif bbox is not None or has_extent:
                 # No standard size fits the evidence: content margins on the
                 # unresolved axes, observed extents preserved whole.

@@ -338,7 +338,8 @@ def _apply_content_sizes(
     # rewritten.
     duplex = "duplex" in (source or config.source or "").lower()
     sized: Counter[str] = Counter()
-    for decision in choose_crops(measured, dpi, flatbed, duplex):
+    crops = choose_crops(measured, dpi, flatbed, duplex, config.auto_size_preference)
+    for decision in crops:
         if decision.box_px is None or decision.page.path not in kept_paths:
             continue
         if crop_image(decision.page.path, decision.box_px):

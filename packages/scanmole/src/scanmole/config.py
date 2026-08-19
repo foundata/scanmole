@@ -10,6 +10,9 @@ LineartThreshold = float | Literal["auto"]
 """Software 1-bit cutoff: a brightness fraction, ``0`` (off) or ``"auto"``
 (guarded per-page Otsu threshold; see the software lineart fallback)."""
 
+AutoSizePreference = Literal["iso", "north-american"]
+"""Paper family that wins content-only near-ties in automatic page sizing."""
+
 PAGE_SIZES: dict[str, tuple[float, float]] = {
     # name -> (width_mm, height_mm)
     "a4": (210.0, 297.0),
@@ -50,3 +53,6 @@ class ScanConfig:
     output: Path
     # Defaulted so the record stays constructible from older call sites.
     lineart_threshold: LineartThreshold = 0.5
+    auto_size_preference: AutoSizePreference = "iso"
+    """Tie-break family for ambiguous automatic page sizes (never a
+    restriction: either family stays selectable by the evidence)."""

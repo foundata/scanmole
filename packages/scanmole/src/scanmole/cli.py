@@ -202,6 +202,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--auto-size-preference",
+        choices=("iso", "north-american"),
+        default="iso",
+        help=(
+            "paper family that resolves ambiguous standard sizes in "
+            "automatic mode (most content fits A4 and Letter alike); "
+            "no effect with a fixed --page-size (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--despeckle",
         type=_nonnegative_int,
         default=1,
@@ -443,6 +453,7 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         mode=args.mode,
         resolution=args.resolution,
         page_size=args.page_size,
+        auto_size_preference=args.auto_size_preference,
         despeckle=args.despeckle,
         deskew=args.deskew,
         crop=args.crop,

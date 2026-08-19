@@ -336,3 +336,90 @@ def test_duplex_sides_share_extent_evidence() -> None:
         if decision.box_px is not None
     }
     assert heights == {_mm(297)}
+
+
+# ---- explicit A4/Letter family preference ---------------------------------
+
+
+def test_ambiguous_portrait_content_follows_the_preference() -> None:
+    # 190 x 270 mm fits A4 and Letter alike: only the preference decides.
+    page = _page(1, (10, 0, 200, 270))
+
+    iso = choose_crops([page], _DPI, flatbed=False)
+    na = choose_crops([page], _DPI, flatbed=False, preference="north-american")
+
+    assert iso[0].label == "a4"
+    assert na[0].label == "letter"
+
+
+def test_ambiguous_landscape_content_follows_the_preference() -> None:
+    # Wide, short content on a landscape-capable window: both landscape
+    # candidates fit and the near-tie follows the family.
+    frame = (400.0, 300.0)
+    page = _page(1, (5, 0, 275, 200), frame_mm=frame)
+
+    iso = choose_crops([page], _DPI, flatbed=False)
+    na = choose_crops([page], _DPI, flatbed=False, preference="north-american")
+
+    assert iso[0].label == "a4 landscape"
+    assert na[0].label == "letter landscape"
+
+
+def test_content_height_excluding_letter_ignores_the_preference() -> None:
+    # 285 mm of leading-edge demand exceeds Letter's 279.4 mm: A4 for both.
+    page = _page(1, (10, 0, 200, 285))
+
+    iso = choose_crops([page], _DPI, flatbed=False)
+    na = choose_crops([page], _DPI, flatbed=False, preference="north-american")
+
+    assert iso[0].label == "a4"
+    assert na[0].label == "a4"
+
+
+def test_content_width_excluding_a4_ignores_the_preference() -> None:
+    # 213 mm of content cannot be A4 paper (210 mm wide): Letter for both.
+    page = _page(1, (1, 0, 214, 270))
+
+    iso = choose_crops([page], _DPI, flatbed=False)
+    na = choose_crops([page], _DPI, flatbed=False, preference="north-american")
+
+    assert iso[0].label == "letter"
+    assert na[0].label == "letter"
+
+
+def test_hardware_a4_extent_overrides_the_north_american_preference() -> None:
+    # The device measured ~A4 length; Letter (279.4 mm) is incompatible
+    # with the observed 298 mm extent no matter the preference.
+    page = _page(
+        1, (10, 0, 200, 270), frame_mm=(215.9, 298.0), unresolved=(True, False)
+    )
+
+    na = choose_crops([page], _DPI, flatbed=False, preference="north-american")
+
+    assert na[0].label == "a4"
+
+
+def test_hardware_letter_extent_overrides_the_iso_preference() -> None:
+    # An observed ~Letter length (281 mm) excludes A4 (297 mm) upward and
+    # fits Letter within the tolerance band; ISO preference cannot help.
+    page = _page(
+        1, (10, 0, 200, 270), frame_mm=(215.9, 281.0), unresolved=(True, False)
+    )
+
+    iso = choose_crops([page], _DPI, flatbed=False)
+
+    assert iso[0].label == "letter"
+
+
+def test_preferred_family_absent_keeps_the_only_fitting_candidate() -> None:
+    # Content taller than Letter but narrower than A4: A4 is the only fit,
+    # and the North American preference must not exclude it. The mirror
+    # case: legal-length content wins under ISO preference too.
+    tall_iso_only = _page(1, (10, 0, 200, 290))
+    legal_length = _page(1, (10, 0, 200, 340))
+
+    na = choose_crops([tall_iso_only], _DPI, flatbed=False, preference="north-american")
+    iso = choose_crops([legal_length], _DPI, flatbed=False)
+
+    assert na[0].label == "a4"
+    assert iso[0].label == "legal"
