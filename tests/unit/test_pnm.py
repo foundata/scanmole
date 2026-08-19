@@ -318,6 +318,46 @@ def test_autocrop_pnm_keeps_full_length_noisy_paper(tmp_path: Path) -> None:
     assert page.read_bytes() == original
 
 
+def test_trailing_raster_bytes_are_ignored_and_never_normalized(
+    tmp_path: Path,
+) -> None:
+    # The fujitsu backend occasionally delivers one complete raster row
+    # beyond the declared height. Every measurement must use exactly the
+    # declared geometry, and a page that no processing step rewrites
+    # must keep its bytes as delivered, trailing row included.
+    body = bytes([0, 255] * 8)  # 4x4 checker-ish gray page
+    exact = b"P5\n4 4\n255\n" + body
+    extra_row = bytes([7, 7, 7, 7])
+    padded = exact + extra_row
+    clean = _write(tmp_path / "clean.pgm", exact)
+    trailing = _write(tmp_path / "trailing.pgm", padded)
+
+    assert pnm_mean(trailing) == pnm_mean(clean)  # the extra row never counts
+    assert pnm_content_stats(trailing, min_ink_px=1) == pnm_content_stats(
+        clean, min_ink_px=1
+    )
+    assert autocrop_pnm(trailing, 2) is False  # nothing to crop on this frame
+    assert trailing.read_bytes() == padded  # untouched pages stay verbatim
+
+    p4 = _write(tmp_path / "trailing.pbm", b"P4\n8 2\n" + bytes([0x00, 0xFF, 0xAA]))
+    assert pnm_mean(p4) == pytest.approx(0.5)  # 8 white + 8 black, pad ignored
+
+
+def test_rewrites_of_trailing_byte_pages_keep_declared_geometry(
+    tmp_path: Path,
+) -> None:
+    # A page a processing step genuinely rewrites (binarization here) is
+    # rebuilt from the declared geometry; the rewrite is caused by the
+    # conversion, never by the harmless trailing bytes themselves.
+    page = _write(
+        tmp_path / "conv.pgm",
+        b"P5\n8 1\n255\n" + bytes([0, 50, 100, 127, 128, 200, 255, 255]) + bytes(8),
+    )
+
+    assert binarize_pnm(page, 0.5) is True
+    assert page.read_bytes() == b"P4\n8 1\n" + bytes([0b11110000])
+
+
 def test_autocrop_pnm_skips_p4_and_non_pnm(tmp_path: Path) -> None:
     p4 = _write(tmp_path / "b.pbm", b"P4\n8 1\n\x00")
     png = _write(tmp_path / "n.png", b"\x89PNG\r\n\x1a\n" + bytes(16))
