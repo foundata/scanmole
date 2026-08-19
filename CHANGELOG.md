@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Deskew is on by default and works on every device through a cascade: the device's own deskew where the backend offers it, otherwise straightening during OCR, otherwise a warning; the request is never a silent no-op anymore. `--no-deskew` turns it off, and the GUI got a matching toggle.
 - `--keep-images` archives each batch into its own subdirectory named after the output file (`scan/`, `scan_2/`, ...), so reused and concurrent archive directories no longer overwrite or mix batches.
+- `--from-images` now honors `-r/--resolution` as the one uniform input dpi for the whole batch (previously the pages were rebuilt at img2pdf's 96 dpi assumption and changed size). This deliberately overrides any resolution metadata embedded in PNG/JPEG inputs; the recovery command printed after a failed run names the correct `-r` value for rebuilding.
+- GUI/CLI compatibility is now directional: an older GUI still drives any newer same-major CLI, but a newer GUI refuses an older CLI (whose options and behavior it would exceed) with a clear version message instead of failing mid-scan.
 
 ### Fixed
 
@@ -38,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The GUI can no longer miss the end of a scan's event stream: the result summary and error details are always delivered before the exit is reported, a pipe kept open by a stray helper process cannot stall completion, and an invalid byte in the CLI's output no longer silently stops the log and progress updates.
 - Release artifacts are built litter-free: the 1.0.0 GUI wheel had shipped stale mypy cache files (harmless, but 262 KB of dead weight).
 - The OCR install hints now include the tesseract OSD data package (Fedora: `tesseract-osd`, Debian/Ubuntu: `tesseract-ocr-osd`).
+- White page margins that the scanner clips to full brightness are no longer stripped as end-of-paper padding, which could delete content sitting near the paper's lower edge and shrink A4 pages toward Letter; such heights are now resolved by content-based automatic sizing instead.
+- A page-processing error during a scan whose `scanimage` ignores termination is reported immediately instead of after the one-hour scan timeout (and no longer misreported as a timeout).
+- Quitting the GUI (e.g. Ctrl+C) with a stuck scan running now stops the scan's process group synchronously before the application exits; previously the kill escalation relied on timers that stop with the main loop, so such a scan could survive the GUI.
+- Switching scanners while another device's capability probe was still running can no longer show the new scanner with the old one's source availability; every device's own probe now runs first.
 
 
 
