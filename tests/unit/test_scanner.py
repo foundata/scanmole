@@ -250,6 +250,51 @@ def test_interrupt_during_the_drain_is_raised_after_it(
     assert _no_scanner_threads()
 
 
+def test_reader_startup_failure_still_reaps_and_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If the second reader cannot start, the drain must not retry joining
+    # a never-started thread forever: reap the child, join what started,
+    # close the pipes and raise the startup failure.
+    page = tmp_path / "page_0001.pnm"
+    real_start = threading.Thread.start
+
+    def failing_start(self: threading.Thread) -> None:
+        if self.name == "scanmole-stderr-reader":
+            raise RuntimeError("no more threads")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+
+    with pytest.raises(RuntimeError, match="no more threads"):
+        run_scanimage(["sh", "-c", f"echo '{page}'; exec sleep 30"], lambda p: None)
+
+    assert _no_scanner_threads()
+
+
+def test_persistent_close_failure_is_recorded_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cleanup step that always fails must be recorded once as the
+    # terminating cause, never spun on: the run ends with the failure
+    # instead of hanging.
+    page = tmp_path / "page_0001.pnm"
+
+    def failing_close(stream: object) -> None:
+        if hasattr(stream, "close"):
+            stream.close()  # really close: no fd may leak to the GC
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr("scanmole.scanner._close_stream", failing_close)
+    seen: list[Path] = []
+
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        run_scanimage(["sh", "-c", f"echo '{page}'"], seen.append)
+
+    assert seen == [page]  # the batch itself completed before cleanup failed
+    assert _no_scanner_threads()
+
+
 def test_build_scan_command_uses_batch_print(tmp_path: Path) -> None:
     command, effective = build_scan_command(
         _config(), "test:0", {}, str(tmp_path / "page_%04d.pnm")

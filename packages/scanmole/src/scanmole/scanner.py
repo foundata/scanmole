@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import IO
 
 from scanmole.config import ScanConfig
-from scanmole.errors import DeviceError, NoPagesError, ScanMoleError
+from scanmole.errors import DeviceError, NoPagesError, ScanMoleError, Terminated
 from scanmole.events import EventWriter
 from scanmole.external import SCAN_TIMEOUT_SECONDS
 from scanmole.negotiation import (
@@ -321,9 +321,11 @@ def run_scanimage(
     )
     cause: BaseException | None = None
     exit_code = -1
+    started: list[threading.Thread] = []
     try:
-        stdout_reader.start()
-        stderr_reader.start()
+        for reader in (stdout_reader, stderr_reader):
+            reader.start()
+            started.append(reader)
         try:
             exit_code = process.wait(timeout=SCAN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as exc:
@@ -349,14 +351,28 @@ def run_scanimage(
         # are recorded (the first becomes the terminating cause when none
         # exists yet) and the drain continues.
         def absorbing(step: Callable[[], object]) -> None:
+            """Run one drain step; interrupts retry it, failures never do.
+
+            KeyboardInterrupt (SIGINT) and Terminated (the CLI's SIGTERM
+            translation) are recorded and the step retried, so hammering
+            Ctrl-C cannot skip the drain. Anything else is a genuine
+            cleanup failure: recorded once as the terminating cause when
+            none exists yet and not retried (retrying a persistent failure,
+            e.g. joining a reader that never started, would loop forever);
+            the remaining drain steps still run.
+            """
             nonlocal cause
             while True:
                 try:
                     step()
                     return
+                except (KeyboardInterrupt, Terminated) as exc:
+                    if cause is None:
+                        cause = exc
                 except BaseException as exc:
                     if cause is None:
                         cause = exc
+                    return
 
         def reap() -> None:
             if process.poll() is not None:
@@ -368,10 +384,10 @@ def run_scanimage(
                 process.wait()
 
         absorbing(reap)
-        absorbing(stdout_reader.join)
-        absorbing(stderr_reader.join)
-        absorbing(stdout.close)
-        absorbing(stderr.close)
+        for reader in started:  # join only what actually started
+            absorbing(reader.join)
+        absorbing(lambda: _close_stream(stdout))
+        absorbing(lambda: _close_stream(stderr))
     if cause is not None:
         raise cause
     if page_failure is not None:
@@ -379,6 +395,11 @@ def run_scanimage(
             raise page_failure
         raise ScanMoleError(f"page processing failed: {page_failure}") from page_failure
     return exit_code, "\n".join(lines)
+
+
+def _close_stream(stream: IO[str]) -> None:
+    """Close one child pipe; a tiny seam so tests can inject failures."""
+    stream.close()
 
 
 def _staged_prober(device: str) -> Prober:
