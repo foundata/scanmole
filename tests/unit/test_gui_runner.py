@@ -210,13 +210,54 @@ def test_cancel_after_natural_exit_is_refused(
     assert harness.timers == []
 
 
+def test_a_held_open_pipe_neither_stalls_nor_reorders_the_exit(
+    tmp_path: Path,
+) -> None:
+    # Regression: a descendant that escapes the process group and inherits
+    # stdout keeps the pipe open past the child's exit. The old bounded
+    # join could report the exit while the pump was still alive; now the
+    # runner forces EOF after the drain timeout, so everything written is
+    # delivered before the exit report and completion never hangs.
+    harness = _Harness()
+    harness.runner = ScanRunner(
+        schedule=lambda callback: callback(),
+        timer=harness._timer,
+        on_stdout=harness._on_stdout,
+        on_stderr=harness._on_stderr,
+        on_exit=harness._on_exit,
+        drain_timeout=0.5,
+    )
+    code = (
+        "import subprocess, sys\n"
+        "grand = subprocess.Popen("
+        "[sys.executable, '-c', 'import time; time.sleep(300)'],"
+        " start_new_session=True)\n"
+        "print('payload', flush=True)\n"
+        "print(grand.pid, flush=True)\n"
+    )
+    grandchild: int | None = None
+    try:
+        harness.runner.start(_argv(code), tmp_path)
+
+        assert harness.exited.wait(_DEADLINE)
+
+        assert harness.exits == [0]
+        assert harness.stdout == ["payload", str(int(harness.stdout[1]))]
+        grandchild = int(harness.stdout[1])
+        assert harness.lines_at_exit == 2  # delivered before the exit report
+    finally:
+        if grandchild is not None:  # it escaped the group: clean it up here
+            try:
+                os.kill(grandchild, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def test_concurrent_runners_never_cross_their_streams(tmp_path: Path) -> None:
     harnesses = [_Harness() for _ in range(2)]
     try:
         for index, instance in enumerate(harnesses):
-            instance.runner.start(
-                _argv(f"print('marker-{index}')"), tmp_path
-            )
+            instance.runner.start(_argv(f"print('marker-{index}')"), tmp_path)
         for instance in harnesses:
             assert instance.exited.wait(_DEADLINE)
 
