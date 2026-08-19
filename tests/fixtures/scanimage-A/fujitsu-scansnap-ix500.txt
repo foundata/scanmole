@@ -1,5 +1,6 @@
+Output format is not set, using pnm as a default.
 
-All options specific to device `fujitsu:ScanSnap iX500:1548816':
+All options specific to device `fujitsu:ScanSnap iX500:XXXXXXX':
   Standard:
     --source ADF Front|ADF Back|ADF Duplex [ADF Front]
         Selects the scan source (such as a document-feeder).
