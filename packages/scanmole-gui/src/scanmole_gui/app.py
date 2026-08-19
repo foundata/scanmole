@@ -67,6 +67,7 @@ from scanmole_gui.session import (  # noqa: E402
     complete,
     mark_cancelled,
 )
+from scanmole_gui.settings import load_settings, store_settings  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -297,39 +298,6 @@ def abbreviate_home(path: str) -> str:
     return path
 
 
-def load_settings() -> dict[str, object]:
-    """Load persisted GUI settings, returning an empty dict on any error."""
-    try:
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}  # first start
-    except (OSError, ValueError):
-        LOGGER.debug("settings unreadable; starting fresh", exc_info=True)
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def store_settings(data: dict[str, object]) -> None:
-    """Persist GUI settings; failures only cost this snapshot.
-
-    Written to a sibling file and renamed atomically: an interrupted
-    in-place write would leave invalid JSON behind, silently resetting
-    every preference on the next launch.
-    """
-    staging = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
-    try:
-        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        staging.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(staging, CONFIG_FILE)
-    except OSError:
-        LOGGER.debug("could not persist settings", exc_info=True)
-    finally:
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
 def combo_value(row: Adw.ComboRow, items: tuple[tuple[str, str], ...]) -> str:
     """Return the CLI value for a combo row's selected ``(label, value)`` item."""
     index = int(row.get_selected())  # untyped GTK call
@@ -500,7 +468,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self.set_title("ScanMole")
 
         self._scanmole = find_scanmole()
-        self._settings = load_settings()
+        self._settings = load_settings(CONFIG_FILE)
 
         # Restore the remembered window geometry.
         self.set_default_size(
@@ -1242,7 +1210,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "filename_template": self._current_template(),
             "folder": self._folder,
         }
-        store_settings(self._settings)
+        store_settings(CONFIG_FILE, self._settings)
 
     # ----------------------------------------------------------- devices
 
@@ -1751,7 +1719,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _store_pref(self, key: str, value: str) -> None:
         """Persist one settings-dialog preference immediately."""
         self._settings[key] = value
-        store_settings(self._settings)
+        store_settings(CONFIG_FILE, self._settings)
 
     def _on_settings_action(self, *_args: object) -> None:
         """Open the settings dialog (color scheme, language, reset)."""
@@ -1914,7 +1882,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # Only the GUI settings file is cleared; scans, output folders and
         # the CLI are never touched.
         self._settings = {}
-        store_settings(self._settings)
+        store_settings(CONFIG_FILE, self._settings)
         self._folder = default_folder()
         self._apply_saved_settings()
         # Also resize back to the default geometry; without this the close
