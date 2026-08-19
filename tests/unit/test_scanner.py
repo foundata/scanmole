@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -247,6 +249,72 @@ def test_interrupt_during_the_drain_is_raised_after_it(
         run_scanimage(["sh", "-c", f"echo '{page}'"], callback)
 
     assert callback.finished.is_set()
+    assert _no_scanner_threads()
+
+
+def _term_ignoring_announcer(page: Path) -> list[str]:
+    """A fake scanimage that announces one page, ignores TERM and lingers."""
+    code = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"print({str(page)!r}, flush=True)\n"
+        "time.sleep(300)\n"
+    )
+    return [sys.executable, "-u", "-c", code]
+
+
+def test_callback_failure_aborts_a_term_ignoring_scan_promptly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The reader records the failure and TERMs the child, but a child that
+    # ignores TERM must not leave the controller inside the hour-long scan
+    # wait; the KILL escalation applies and the *callback* failure is what
+    # gets reported, not a bogus scan timeout.
+    monkeypatch.setattr("scanmole.scanner.SCAN_TIMEOUT_SECONDS", 20)
+    monkeypatch.setattr("scanmole.scanner.REAP_GRACE_SECONDS", 0.3, raising=False)
+    page = tmp_path / "page_0001.pnm"
+    error = RuntimeError("boom")
+
+    def failing_callback(path: Path) -> None:
+        raise error
+
+    started = time.monotonic()
+    with pytest.raises(ScanMoleError, match="page processing failed: boom") as info:
+        run_scanimage(_term_ignoring_announcer(page), failing_callback)
+
+    assert time.monotonic() - started < 5.0  # never the 20 s scan timeout
+    assert info.value.__cause__ is error
+    assert _no_scanner_threads()
+
+
+def test_scan_timeout_keeps_precedence_over_a_later_callback_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The callback blocks past the scan deadline and only fails afterwards
+    # (released by the timeout path's kill): the genuine acquisition
+    # timeout fired first and must stay the reported cause.
+    monkeypatch.setattr("scanmole.scanner.SCAN_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr("scanmole.scanner.REAP_GRACE_SECONDS", 0.3, raising=False)
+    page = tmp_path / "page_0001.pnm"
+    release = threading.Event()
+    real_kill = subprocess.Popen.kill
+
+    def releasing_kill(self: subprocess.Popen[str]) -> None:
+        release.set()
+        real_kill(self)
+
+    monkeypatch.setattr(subprocess.Popen, "kill", releasing_kill)
+    delivered = threading.Event()
+
+    def late_failing_callback(path: Path) -> None:
+        delivered.set()
+        assert release.wait(10)
+        raise RuntimeError("late boom")
+
+    with pytest.raises(DeviceError, match="timed out"):
+        run_scanimage(_term_ignoring_announcer(page), late_failing_callback)
+
+    assert delivered.is_set()  # the failure really happened, after the timeout
     assert _no_scanner_threads()
 
 

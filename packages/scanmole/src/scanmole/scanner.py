@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,13 @@ from scanmole.options import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+REAP_GRACE_SECONDS = 5.0
+"""The scanimage child's own cleanup window between TERM and KILL."""
+
+_FAILURE_POLL_SECONDS = 0.2
+"""Wait slice of the scan wait; bounds how late a callback failure or the
+absolute scan deadline is noticed while the child keeps running."""
 
 _PAGE_NAME = re.compile(r"page_\d+\.pnm")
 _SCANNED_PAGE = re.compile(r"^Scanned page \d+")
@@ -273,6 +281,8 @@ def run_scanimage(
     """
     LOGGER.debug("+ %s", shlex.join(command))
     lines: list[str] = []
+    failure_lock = threading.Lock()
+    failure_event = threading.Event()
     page_failure: Exception | None = None
 
     def pump_stderr(pipe: IO[str]) -> None:
@@ -297,7 +307,9 @@ def run_scanimage(
             try:
                 on_page(Path(name))
             except Exception as exc:
-                page_failure = exc
+                with failure_lock:
+                    page_failure = exc
+                failure_event.set()  # wakes the controller's deadline wait
                 LOGGER.debug("page callback failed for %s", name, exc_info=True)
                 process.terminate()
                 break
@@ -329,8 +341,31 @@ def run_scanimage(
         for reader in (stdout_reader, stderr_reader):
             reader.start()
             started.append(reader)
+
+        def wait_for_scan() -> int:
+            """Reap the child under one absolute deadline, watching failures.
+
+            The reader terminates the child when a page callback fails,
+            but a child ignoring TERM must not keep the controller inside
+            an hour-long wait that then misreports the processing error
+            as a scan timeout: the failure event ends the wait promptly
+            and the shutdown path below applies the KILL escalation. A
+            genuine timeout that fires first keeps precedence (the event
+            is only honored while the deadline has not passed).
+            """
+            deadline = time.monotonic() + SCAN_TIMEOUT_SECONDS
+            while not failure_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, SCAN_TIMEOUT_SECONDS)
+                try:
+                    return process.wait(timeout=min(_FAILURE_POLL_SECONDS, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+            return -1  # callback failure: reaped and reported below
+
         try:
-            exit_code = process.wait(timeout=SCAN_TIMEOUT_SECONDS)
+            exit_code = wait_for_scan()
         except subprocess.TimeoutExpired as exc:
             timeout_error = DeviceError(f"scan timed out after {SCAN_TIMEOUT_SECONDS}s")
             timeout_error.__cause__ = exc
@@ -381,7 +416,8 @@ def run_scanimage(
             if process.poll() is not None:
                 return
             try:
-                process.wait(timeout=5)  # the child's own cleanup window
+                # The child's own cleanup window after the TERM.
+                process.wait(timeout=REAP_GRACE_SECONDS)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
@@ -393,10 +429,12 @@ def run_scanimage(
         absorbing(lambda: _close_stream(stderr))
     if cause is not None:
         raise cause
-    if page_failure is not None:
-        if isinstance(page_failure, ScanMoleError):
-            raise page_failure
-        raise ScanMoleError(f"page processing failed: {page_failure}") from page_failure
+    with failure_lock:
+        failure = page_failure
+    if failure is not None:
+        if isinstance(failure, ScanMoleError):
+            raise failure
+        raise ScanMoleError(f"page processing failed: {failure}") from failure
     return exit_code, "\n".join(lines)
 
 
