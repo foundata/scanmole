@@ -197,8 +197,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         metavar="SIZE",
         help=(
-            "auto (detect the paper edges), a4|a5|a6|letter|legal, or WxH in "
-            "mm (default: %(default)s)"
+            "auto (detect the paper edges; frames the printed content "
+            "conservatively where none are found), a4|a5|a6|letter|legal, "
+            "or WxH in mm (default: %(default)s)"
         ),
     )
     parser.add_argument(
@@ -273,9 +274,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "black/white cutoff (fraction of full brightness) for converting "
             "pages in software when the device cannot scan 1-bit lineart "
-            "itself; 'auto' picks a guarded per-page threshold for faint "
-            "originals, 0 keeps the device's gray/color output; no effect on "
-            "devices that scan native 1-bit (default: %(default)s)"
+            "itself; 'auto' picks one guarded global threshold per page for "
+            "faint originals (mixed normal and much fainter print keeps a "
+            "single cut; scan gray for those), 0 keeps the device's "
+            "gray/color output; no effect on devices that scan native 1-bit "
+            "(default: %(default)s)"
         ),
     )
     parser.add_argument(
