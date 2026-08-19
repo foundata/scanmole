@@ -63,6 +63,58 @@ def test_stale_runner_stderr_is_ignored() -> None:
     assert window.lines == ["live line"]
 
 
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_sole_available_source_is_adopted_and_preference_kept() -> None:
+    # A scanner offering exactly one source (the ScanSnap iX100: ADF Front
+    # alone) must not leave Start disabled behind a blocked saved choice;
+    # the sole source is adopted, the stored preference survives, and a
+    # capable device gets it back. With a real choice left, nothing moves.
+    from scanmole_gui.app import MainWindow
+
+    class Row:
+        def __init__(self, value: str) -> None:
+            self._value = value
+            self.history: list[str] = []
+
+        def value(self) -> str:
+            return self._value
+
+        def select(self, value: str) -> None:
+            self._value = value
+            self.history.append(value)
+
+    class Window:
+        _reconcile_source_choice = MainWindow._reconcile_source_choice
+
+        def __init__(self, current: str, preferred: str) -> None:
+            self._source_row = Row(current)
+            self._preferred_source = preferred
+            self._reconciling_source = False
+            self.log: list[str] = []
+
+        def _append_log(self, text: str) -> None:
+            self.log.append(text)
+
+    ix100 = {"flatbed": "x", "adf-duplex": "x", "adf-back": "x"}
+
+    window = Window(current="adf-duplex", preferred="adf-duplex")
+    window._reconcile_source_choice(ix100)  # type: ignore[misc]
+    assert window._source_row.value() == "adf"  # the sole source, adopted
+    assert window._preferred_source == "adf-duplex"  # preference untouched
+    assert any("only source" in line for line in window.log)
+
+    # A duplex-capable device again: the stored preference comes back.
+    window._reconcile_source_choice({})  # type: ignore[misc]
+    assert window._source_row.value() == "adf-duplex"  # preference restored
+
+    choice_left = Window(current="adf-back", preferred="adf-back")
+    choice_left._reconcile_source_choice({"flatbed": "x", "adf-back": "x"})  # type: ignore[misc]
+    assert choice_left._source_row.value() == "adf-back"  # no silent change
+    assert choice_left._source_row.history == []
+
+
 @_NEEDS_DESKTOP
 def test_sigint_exits_with_130_and_saves_settings(tmp_path: Path) -> None:
     stderr_file = tmp_path / "gui-stderr.log"

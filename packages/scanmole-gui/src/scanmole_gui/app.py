@@ -523,6 +523,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._last_caps: object = None
         self._selection_block_reason: str | None = None
         self._devices: list[dict[str, str]] = []
+        self._preferred_source = "adf-duplex"
+        self._reconciling_source = False
         self._run_folder = Path(default_folder())
         self._last_output: Path | None = None
         self._folder = str(self._settings.get("folder") or default_folder())
@@ -1114,7 +1116,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _apply_saved_settings(self) -> None:
         """Restore form widgets from the persisted settings."""
         settings = self._settings
-        self._source_row.select(str(settings.get("source", "adf-duplex")))
+        self._preferred_source = str(settings.get("source", "adf-duplex"))
+        self._source_row.select(self._preferred_source)
         self._mode_row.select(str(settings.get("mode", "lineart")))
         try:
             resolution = int(str(settings.get("resolution", "300")))
@@ -1222,7 +1225,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._settings = {
             **self._settings,
             "device": self._selected_device() or "",
-            "source": self._source_row.value(),
+            # The user's own choice, not a temporary sole-source adoption:
+            # a duplex-capable scanner must get the preference back.
+            "source": self._preferred_source,
             "mode": self._mode_row.value(),
             "resolution": str(self._current_resolution()),
             "page_size": combo_value(self._size_dropdown, PAGE_SIZES),
@@ -1431,6 +1436,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _on_source_changed(self) -> None:
         """The source choice changed: refine mode-dependent options."""
+        if not self._reconciling_source:
+            # A manual change states a preference; a programmatic
+            # reconciliation (sole-source adoption, preference restore)
+            # must not overwrite what the user actually wants.
+            self._preferred_source = self._source_row.value()
         self._update_selection_block()
         device = self._selected_device()
         caps = self._base_snapshot
@@ -1501,6 +1511,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 if selection_blocked(assessment.support):
                     blocked[value] = assessment.consequence
             self._source_row.set_availability(blocked, self._on_choice_blocked)
+            self._reconcile_source_choice(blocked)
             selected = assess_source(caps, self._source_row.value())
             if caps is not None and selected.backend_value is not None:
                 self._launch_probe(
@@ -1513,6 +1524,33 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._apply_mode_availability(caps)
         self._on_document_changed()
         self._update_selection_block()
+
+    def _reconcile_source_choice(self, blocked: dict[str, str]) -> None:
+        """Re-apply the user's source preference to new availability.
+
+        The preferred source wins whenever the device offers it. When it
+        is blocked and exactly one source remains selectable (the ScanSnap
+        iX100 offers ADF Front alone), that sole source is adopted so
+        Start stays usable instead of demanding a pointless click; the
+        stored preference is untouched, so a capable scanner gets it back.
+        While a real choice remains, nothing is changed silently: Start
+        stays disabled with the reason, exactly as before.
+        """
+        available = [value for _label, value in SOURCES if value not in blocked]
+        target: str | None = None
+        if self._preferred_source in available:
+            target = self._preferred_source
+        elif self._source_row.value() in blocked and len(available) == 1:
+            target = available[0]
+            self._append_log(
+                f"[gui] '{target}' is the only source this scanner offers; selected it"
+            )
+        if target is not None and target != self._source_row.value():
+            self._reconciling_source = True
+            try:
+                self._source_row.select(target)
+            finally:
+                self._reconciling_source = False
 
     def _apply_mode_availability(self, caps: object) -> None:
         capabilities = caps if isinstance(caps, dict) else None
