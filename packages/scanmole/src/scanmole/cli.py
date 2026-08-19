@@ -362,12 +362,15 @@ def _as_pdf_path(name: str) -> Path:
     return path.resolve()
 
 
-def _resolve_output(args: argparse.Namespace) -> Path:
+def _resolve_output(args: argparse.Namespace, device: str | None) -> Path:
     """Expand the output template and reserve a final, non-overwriting path.
 
     ``-o``/``OUTBASE`` may contain the documented filename placeholders. A
     template with an ``NN``/``NNN`` counter claims the next free number; any
-    other name falls back to the ``_2``, ``_3``, ... suffix.
+    other name falls back to the ``_2``, ``_3``, ... suffix. ``device`` is
+    the run's already-resolved scanner (``None`` for ``--from-images``):
+    naming never discovers a device itself, so the file name and the
+    acquisition can never refer to two different scanners.
 
     Raises:
         InputError: If both ``-o`` and a positional base name are given, the
@@ -377,14 +380,11 @@ def _resolve_output(args: argparse.Namespace) -> Path:
     if args.output and args.outbase:
         raise InputError("give either -o/--output or a positional OUTBASE, not both")
     template = args.output or args.outbase or DEFAULT_OUTPUT_TEMPLATE
-    device: str | None = args.device or None
     if "{device}" in template and device is None:
-        if args.from_images is not None:
-            raise InputError(
-                "the {device} placeholder needs a scanner run; "
-                "--from-images has no device"
-            )
-        device = pick_default_device()
+        raise InputError(
+            "the {device} placeholder needs a scanner run; "
+            "--from-images has no device"
+        )
     when = datetime.now().astimezone()
 
     def expand(counter: int) -> Path:
@@ -431,8 +431,15 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         else None
     )
     keep_images = Path(args.keep_images) if args.keep_images else None
+    device: str | None = args.device or None
+    if from_images is None and device is None:
+        # Resolve the scanner exactly once, before the output template
+        # expands: the file name and the acquisition must refer to the same
+        # physical device even when the device list changes in between.
+        # Failing here (scanner unplugged) beats silently switching devices.
+        device = pick_default_device()
     return ScanConfig(
-        device=args.device,
+        device=device,
         source=args.source,
         mode=args.mode,
         resolution=args.resolution,
@@ -449,7 +456,7 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         keep_blanks=args.keep_blanks,
         from_images=from_images,
         keep_images=keep_images,
-        output=_resolve_output(args),
+        output=_resolve_output(args, device),
         lineart_threshold=args.lineart_threshold,
     )
 

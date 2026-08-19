@@ -1405,9 +1405,14 @@ def test_auto_threshold_adaptive_reach_protects_recovered_strokes(
     assert width < frame_w  # the width was still sized (fixed bbox decided)
 
 
-def test_cli_accepts_auto_and_rejects_garbage(tmp_path: Path) -> None:
+def test_cli_accepts_auto_and_rejects_garbage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from scanmole.cli import _build_config, build_parser
 
+    # Config building resolves the scanner once; this test is about
+    # argument validation, not discovery.
+    monkeypatch.setattr("scanmole.cli.pick_default_device", lambda: "stub:0")
     parser = build_parser()
     auto = parser.parse_args(
         ["--lineart-threshold", "auto", "-o", str(tmp_path / "a.pdf")]

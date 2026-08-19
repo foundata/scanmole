@@ -137,7 +137,7 @@ Default action: scan a batch and produce one PDF.
 Rules:
 
 - With `--json`, **stdout carries only JSON-lines**: one JSON object per line, nothing else. All human-readable chatter goes to stderr. Without `--json`, stdout is for humans and no format guarantees exist.
-- The output name is reserved the moment it is chosen: the file is created empty and exclusively (`O_EXCL`), so concurrent runs can never pick the same name. Templates with a counter reserve the next free number; other names fall back to the `_2`, `_3`, … suffix. The finished PDF replaces the reservation atomically (staged in the destination directory, then `os.replace`); on failure or interrupt the empty reservation is removed again. A run killed hard (SIGKILL) can leave a stale empty file behind, which later runs skip.
+- The scanner for a run (explicit `--device`, `$SCANMOLE_DEVICE`, or the automatically selected first real device) is resolved exactly once, before the output template expands: the `{device}` file name and the acquisition always refer to the same physical device, and a scanner that disappears afterwards fails the run instead of being silently swapped. The output name is reserved the moment it is chosen: the file is created empty and exclusively (`O_EXCL`), so concurrent runs can never pick the same name. Templates with a counter reserve the next free number; other names fall back to the `_2`, `_3`, … suffix. The finished PDF replaces the reservation atomically (staged in the destination directory, then `os.replace`); on failure or interrupt the empty reservation is removed again. A run killed hard (SIGKILL) can leave a stale empty file behind, which later runs skip.
 
 
 #### Filename templates<a id="contract-templates"></a>

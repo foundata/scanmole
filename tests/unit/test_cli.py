@@ -26,10 +26,16 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     return build_parser().parse_args(argv)
 
 
+@pytest.fixture(autouse=True)
+def _stub_device_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scanner-run configs resolve the device once; tests never probe SANE."""
+    monkeypatch.setattr("scanmole.cli.pick_default_device", lambda: "stub:0")
+
+
 def test_resolve_output_appends_pdf_suffix(tmp_path: Path) -> None:
     args = _parse([str(tmp_path / "invoice")])
 
-    assert _resolve_output(args).name == "invoice.pdf"
+    assert _resolve_output(args, None).name == "invoice.pdf"
 
 
 def test_resolve_output_avoids_overwriting_existing_file(tmp_path: Path) -> None:
@@ -37,7 +43,7 @@ def test_resolve_output_avoids_overwriting_existing_file(tmp_path: Path) -> None
     existing.touch()
     args = _parse([str(existing)])
 
-    assert _resolve_output(args).name == "scan_2.pdf"
+    assert _resolve_output(args, None).name == "scan_2.pdf"
 
 
 def test_resolve_output_reserves_the_name_against_concurrent_runs(
@@ -48,8 +54,8 @@ def test_resolve_output_reserves_the_name_against_concurrent_runs(
     # bare existence check would hand both runs "scan.pdf".
     args = _parse([str(tmp_path / "scan")])
 
-    first = _resolve_output(args)
-    second = _resolve_output(_parse([str(tmp_path / "scan")]))
+    first = _resolve_output(args, None)
+    second = _resolve_output(_parse([str(tmp_path / "scan")]), None)
 
     assert first.name == "scan.pdf"
     assert second.name == "scan_2.pdf"
@@ -61,8 +67,8 @@ def test_resolve_output_default_template_claims_the_next_free_number(
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    first = _resolve_output(_parse([]))
-    second = _resolve_output(_parse([]))
+    first = _resolve_output(_parse([]), None)
+    second = _resolve_output(_parse([]), None)
 
     assert first.name.endswith("_scan_001.pdf")
     assert second.name.endswith("_scan_002.pdf")
@@ -70,7 +76,7 @@ def test_resolve_output_default_template_claims_the_next_free_number(
 
 
 def test_resolve_output_expands_templates_in_outbase(tmp_path: Path) -> None:
-    resolved = _resolve_output(_parse([str(tmp_path / "{YYYY}-{MM}_scan_{NN}")]))
+    resolved = _resolve_output(_parse([str(tmp_path / "{YYYY}-{MM}_scan_{NN}")]), None)
 
     assert resolved.parent == tmp_path
     assert resolved.name.endswith("_scan_01.pdf")
@@ -90,14 +96,14 @@ def test_resolve_output_rejects_device_placeholder_with_from_images(
     args = _parse(["--from-images", "a.png", "-o", str(tmp_path / "{device}_{NN}")])
 
     with pytest.raises(InputError, match=r"\{device\}"):
-        _resolve_output(args)
+        _resolve_output(args, None)
 
 
 def test_resolve_output_rejects_an_unwritable_location(tmp_path: Path) -> None:
     args = _parse([str(tmp_path / "missing-dir" / "scan.pdf")])
 
     with pytest.raises(InputError, match="cannot create output file"):
-        _resolve_output(args)
+        _resolve_output(args, None)
 
 
 def test_main_removes_the_reservation_when_the_run_fails(
@@ -143,7 +149,7 @@ def test_resolve_output_rejects_output_and_positional_together(tmp_path: Path) -
     args = _parse(["-o", str(tmp_path / "a.pdf"), "base"])
 
     with pytest.raises(InputError, match="either -o/--output or a positional"):
-        _resolve_output(args)
+        _resolve_output(args, None)
 
 
 def test_resolve_output_default_name_has_scan_stamp(
@@ -152,7 +158,7 @@ def test_resolve_output_default_name_has_scan_stamp(
     monkeypatch.chdir(tmp_path)
     args = _parse([])
 
-    resolved = _resolve_output(args)
+    resolved = _resolve_output(args, None)
 
     assert resolved.name.endswith(".pdf")
     assert "_scan_" in resolved.name
@@ -382,3 +388,34 @@ def test_deskew_defaults_on_and_can_be_disabled(tmp_path: Path) -> None:
 
     assert default.deskew is True
     assert disabled.deskew is False
+
+def test_device_is_resolved_once_for_naming_and_scanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If discovery ran once for the {device} file name and again for the
+    # scan, a list change in between would let scanner B write a PDF named
+    # for scanner A. Resolution must happen exactly once.
+    picks = iter(["scanner-a:0", "scanner-b:0"])
+    calls: list[str] = []
+
+    def flaky_pick() -> str:
+        device = next(picks)
+        calls.append(device)
+        return device
+
+    captured: dict[str, ScanConfig] = {}
+
+    def fake_pipeline(config: ScanConfig, events: object) -> int:
+        captured["config"] = config
+        return 0
+
+    monkeypatch.setattr("scanmole.cli.pick_default_device", flaky_pick)
+    monkeypatch.setattr("scanmole.cli.run_pipeline", fake_pipeline)
+
+    assert main(["-o", str(tmp_path / "{device}_scan"), "--no-ocr"]) == 0
+
+    config = captured["config"]
+    assert calls == ["scanner-a:0"]  # discovery happened exactly once
+    assert config.device == "scanner-a:0"  # acquisition uses the same device
+    assert "scanner-a" in config.output.name
+    assert "scanner-b" not in config.output.name
