@@ -17,14 +17,12 @@ import logging
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import threading
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import IO
 
 import gi
 
@@ -52,11 +50,21 @@ from scanmole.negotiation import (  # noqa: E402
 )
 from scanmole_gui import __version__, incompatible_cli  # noqa: E402
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
-from scanmole_gui.modes import SCAN_MODES, mode_argv  # noqa: E402
+from scanmole_gui.modes import SCAN_MODES  # noqa: E402
 from scanmole_gui.probing import (  # noqa: E402
     ProbeCoordinator,
     ProbeRequest,
     selection_blocked,
+)
+from scanmole_gui.protocol import RawLine, decode_stdout  # noqa: E402
+from scanmole_gui.request import ScanRequest, request_argv  # noqa: E402
+from scanmole_gui.runner import SIGKILL_GRACE_SECONDS, ScanRunner  # noqa: E402
+from scanmole_gui.session import (  # noqa: E402
+    SessionState,
+    Update,
+    apply_event,
+    complete,
+    mark_cancelled,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -166,15 +174,6 @@ Counted from the end of the previous search, so slow probes never shrink
 the quiet gap. A probe costs a second or two of backend I/O plus discovery
 traffic (sane-airscan emits mDNS/WSD queries): cheap at this cadence, so no
 backoff; a suspended (minimized/hidden) window defers instead.
-"""
-
-SIGKILL_GRACE_SECONDS = 10
-"""Between SIGTERM and SIGKILL on cancel.
-
-Must outlast the engine's own worst-case cleanup: on SIGTERM the CLI gives
-scanimage up to 5 seconds before killing it, then sizes and preserves the
-scanned pages and removes the output reservation. Killing the group earlier
-would destroy exactly the recovery the escalation is meant to allow.
 """
 
 DEFAULT_WINDOW_SIZE = (645, 840)  # starts in the single-column layout
@@ -504,8 +503,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self.maximize()
 
         # Runtime state
-        self._proc: subprocess.Popen[str] | None = None
-        self._cancelled = False
+        self._runner: ScanRunner | None = None
+        self._session = SessionState(drop_blanks=True)
         self._closing = False
         self._close_patience = 0
         self._searching = False
@@ -516,10 +515,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._last_caps: object = None
         self._selection_block_reason: str | None = None
         self._devices: list[dict[str, str]] = []
-        self._pages = 0
-        self._blanks = 0
-        self._result: dict[str, object] = {}
-        self._error_message: str | None = None
         self._run_folder = Path(default_folder())
         self._last_output: Path | None = None
         self._folder = str(self._settings.get("folder") or default_folder())
@@ -1202,7 +1197,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _refresh_devices(self, *_args: object) -> None:
         """Start an asynchronous ``scanmole --list-devices`` in a worker thread."""
-        if self._proc is not None or self._searching:
+        if self._runner is not None or self._searching:
             return
         self._searching = True
         self._refresh_btn.set_sensitive(False)
@@ -1305,9 +1300,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     ) -> None:
         """Populate the device dropdown on the main loop."""
         self._searching = False
-        self._refresh_btn.set_sensitive(self._proc is None)
+        self._refresh_btn.set_sensitive(self._runner is None)
         self._scan_btn.set_sensitive(
-            self._proc is None
+            self._runner is None
             and not self._cli_blocked
             and self._selection_block_reason is None
         )
@@ -1365,7 +1360,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if self._devices or self._cli_blocked:
             return bool(GLib.SOURCE_REMOVE)
         suspended = self.is_suspended() if hasattr(self, "is_suspended") else False
-        if self._proc is not None or self._searching or suspended:
+        if self._runner is not None or self._searching or suspended:
             # Transient: defer a full interval; the next completed search
             # would reschedule anyway, this covers scans and hidden windows.
             self._device_poll_id = GLib.timeout_add_seconds(
@@ -1400,7 +1395,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._update_selection_block()
         device = self._selected_device()
         caps = self._base_snapshot
-        if device is None or self._proc is not None or not isinstance(caps, dict):
+        if device is None or self._runner is not None or not isinstance(caps, dict):
             return
         assessment = assess_source(caps, self._source_row.value())
         if assessment.backend_value is not None:
@@ -1418,7 +1413,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         device. Advisory only: the engine re-negotiates before every scan.
         """
         device = self._selected_device()
-        if device is None or self._proc is not None:
+        if device is None or self._runner is not None:
             return
         self._launch_probe(ProbeRequest(device))
 
@@ -1509,7 +1504,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         reason = self._source_row.blocked_reason() or self._mode_row.blocked_reason()
         self._selection_block_reason = reason
         self._scan_btn.set_sensitive(
-            self._proc is None and not self._cli_blocked and reason is None
+            self._runner is None and not self._cli_blocked and reason is None
         )
         if reason is not None:
             self._set_result_bar(
@@ -1910,36 +1905,26 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     # ----------------------------------------------------------- scanning
 
-    def _build_argv(self, folder: Path) -> list[str]:
-        """Build the ``scanmole --json`` command line from the current form."""
-        argv = [self._scanmole, "--json"]
-        device = self._selected_device()
-        if device:
-            argv += ["-d", device]
-        argv += ["--source", self._source_row.value()]
-        argv += mode_argv(self._mode_row.value())
-        argv += [
-            "-r",
-            str(self._current_resolution()),
-            "--page-size",
-            combo_value(self._size_row, PAGE_SIZES),
-        ]
-        if self._ocr_row.get_active():
-            argv.append("--ocr")
-            argv += ["-l", self._selected_language()]
-        else:
-            argv.append("--no-ocr")
-        argv.append("--deskew" if self._deskew_row.get_active() else "--no-deskew")
-        if not self._blank_row.get_active():
-            argv.append("--keep-blanks")
-        # The CLI expands the filename placeholders and picks the next free
-        # counter value; the GUI only forwards the template.
-        argv += ["-o", str(folder / self._current_template())]
-        return argv
+    def _current_request(self, folder: Path) -> ScanRequest:
+        """Snapshot the form into an immutable scan request."""
+        return ScanRequest(
+            device=self._selected_device(),
+            source=self._source_row.value(),
+            mode=self._mode_row.value(),
+            resolution=self._current_resolution(),
+            page_size=combo_value(self._size_row, PAGE_SIZES),
+            ocr=bool(self._ocr_row.get_active()),
+            lang=self._selected_language(),
+            deskew=bool(self._deskew_row.get_active()),
+            drop_blanks=bool(self._blank_row.get_active()),
+            # The CLI expands the filename placeholders and picks the next
+            # free counter value; the GUI only forwards the template.
+            output=str(folder / self._current_template()),
+        )
 
     def _on_scan_clicked(self, *_args: object) -> None:
         """Validate the output folder and launch the scan subprocess."""
-        if self._proc is not None:
+        if self._runner is not None:
             return
         folder = Path(self._folder).expanduser()
         try:
@@ -1949,25 +1934,23 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             return
         self._save_settings()
 
-        self._pages = self._blanks = 0
-        self._result = {}
-        self._error_message = None
-        self._cancelled = False
+        request = self._current_request(folder)
+        self._session = SessionState(drop_blanks=request.drop_blanks)
         self._run_folder = folder
         self._last_output = None
 
-        argv = self._build_argv(folder)
+        argv = request_argv(request, self._scanmole)
         self._append_log("$ " + shlex.join(argv))
+        runner = ScanRunner(
+            schedule=self._schedule,
+            timer=self._after_seconds,
+            on_stdout=self._on_stdout_line,
+            on_stderr=self._on_stderr_line,
+            on_exit=self._on_process_exit,
+            on_escalated=self._on_kill_escalated,
+        )
         try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=str(folder),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                start_new_session=True,  # own process group -> clean killpg
-            )
+            runner.start(argv, folder)
         except OSError as exc:
             self._append_log(f"[gui] failed to start scanmole: {exc}")
             self._alert(
@@ -1975,99 +1958,75 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 f"{exc}\n\n" + _("Install the scanmole CLI somewhere in PATH."),
             )
             return
-        self._proc = proc
-        self._set_result_bar("running", _("Starting scanmole…"))
+        self._runner = runner
+        self._set_result_bar("running", _("Starting scanmole\u2026"))
         self._set_running(True)
-        threading.Thread(target=self._supervise, args=(proc,), daemon=True).start()
 
-    def _supervise(self, proc: subprocess.Popen[str]) -> None:
-        """Worker thread: pump both pipes, wait, then report back."""
-        t_out = threading.Thread(
-            target=self._pump,
-            args=(proc.stdout, self._on_stdout_line, proc),
-            daemon=True,
-        )
-        t_err = threading.Thread(
-            target=self._pump,
-            args=(proc.stderr, self._on_stderr_line, proc),
-            daemon=True,
-        )
-        t_out.start()
-        t_err.start()
-        rc = proc.wait()
-        t_out.join(timeout=5)  # pipes hit EOF at process exit
-        t_err.join(timeout=5)
-        GLib.idle_add(self._on_process_exit, proc, rc)
+    # GLib marshalling for the GTK-free runner: line and exit callbacks land
+    # on the main loop as one-shot idle sources (a None return removes them),
+    # and the escalation delay becomes a one-shot timeout.
 
     @staticmethod
-    def _pump(
-        stream: IO[str] | None,
-        handler: Callable[[subprocess.Popen[str], str], object],
-        proc: subprocess.Popen[str],
-    ) -> None:
-        """Forward each line from ``stream`` to ``handler`` on the main loop."""
-        if stream is None:  # unreachable: the child is started with PIPE
-            return
-        try:
-            for line in stream:
-                GLib.idle_add(handler, proc, line)
-        except (OSError, ValueError):
-            pass  # the pipe went away with the process; exit reporting covers it
+    def _schedule(callback: Callable[[], None]) -> None:
+        GLib.idle_add(callback)
+
+    @staticmethod
+    def _after_seconds(seconds: float, callback: Callable[[], None]) -> None:
+        def fire() -> bool:
+            callback()
+            return bool(GLib.SOURCE_REMOVE)
+
+        GLib.timeout_add_seconds(round(seconds), fire)
 
     # -------------------------------------------------- JSON event stream
 
-    def _on_stdout_line(self, proc: object, line: str) -> None:
-        """Interpret one JSON event line from the CLI."""
-        if proc is not self._proc:
+    def _on_stdout_line(self, runner: ScanRunner, line: str) -> None:
+        """Fold one stdout line into the session and render the change."""
+        if runner is not self._runner:
             return  # stale run
-        line = line.strip()
-        if not line:
+        decoded = decode_stdout(line)
+        if decoded is None:
             return
-        try:
-            event = json.loads(line)
-        except ValueError:
-            self._append_log(line)  # non-JSON on stdout: just log it
+        if isinstance(decoded, RawLine):
+            self._append_log(decoded.text)  # non-event stdout: just log it
             return
-        if not isinstance(event, dict):
-            self._append_log(line)  # valid JSON, wrong shape: log, don't crash
-            return
-        kind = event.get("event")
-        if kind == "start":
-            self._set_result_bar("running", _("Scanning…"))
-        elif kind == "page":
-            self._pages = as_int(event.get("n"), self._pages + 1)
-            if event.get("blank") and self._blank_row.get_active():
-                self._blanks += 1
-            text = _("Page %d scanned") % self._pages
-            if self._blanks:
+        self._session, update = apply_event(self._session, decoded)
+        self._render_update(update)
+
+    def _render_update(self, update: Update) -> None:
+        """Render a session update into translated result-bar text."""
+        state = self._session
+        if update is Update.STARTED:
+            self._set_result_bar("running", _("Scanning\u2026"))
+        elif update is Update.PAGE:
+            text = _("Page %d scanned") % state.pages
+            if state.blanks:
                 text += (
                     ngettext(
-                        " (%d blank skipped)", " (%d blanks skipped)", self._blanks
+                        " (%d blank skipped)", " (%d blanks skipped)", state.blanks
                     )
-                    % self._blanks
+                    % state.blanks
                 )
-            self._set_result_bar("running", text + "…")
-        elif kind == "scan_done":
-            total = as_int(event.get("total"), self._pages)
-            kept = as_int(event.get("kept"), max(self._pages - self._blanks, 0))
+            self._set_result_bar("running", text + "\u2026")
+        elif update is Update.SCAN_DONE:
+            total = state.total or 0
+            kept = state.kept or 0
             self._set_result_bar(
                 "running",
                 ngettext(
-                    "Scan finished — keeping %(kept)d of %(total)d page…",
-                    "Scan finished — keeping %(kept)d of %(total)d pages…",
+                    "Scan finished \u2014 keeping %(kept)d of %(total)d page\u2026",
+                    "Scan finished \u2014 keeping %(kept)d of %(total)d pages\u2026",
                     total,
                 )
                 % {"kept": kept, "total": total},
             )
-        elif kind == "ocr_start":
-            self._set_result_bar("running", _("Running OCR…"))
-        elif kind == "done":
-            self._result = event
-        elif kind == "error":
-            self._error_message = str(event.get("message") or _("Unknown error"))
-            self._append_log(f"[error] {self._error_message}")
+        elif update is Update.OCR_STARTED:
+            self._set_result_bar("running", _("Running OCR\u2026"))
+        elif update is Update.ERROR:
+            message = state.error_message or _("Unknown error")
+            self._append_log(f"[error] {message}")
 
-    def _on_stderr_line(self, _proc: object, line: str) -> None:
+    def _on_stderr_line(self, _runner: ScanRunner, line: str) -> None:
         """Append a raw stderr line to the log view."""
         line = line.rstrip("\n")
         if line:
@@ -2075,45 +2034,46 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     # ------------------------------------------------------- process exit
 
-    def _on_process_exit(self, proc: object, rc: int) -> None:
+    def _on_process_exit(self, runner: ScanRunner, exit_code: int) -> None:
         """Finalize the UI when the scan subprocess exits."""
-        if proc is not self._proc:
+        if runner is not self._runner:
             return
-        self._proc = None
+        self._runner = None
         self._set_running(False)
-        self._append_log(f"[gui] scanmole exited with code {rc}")
+        self._append_log(f"[gui] scanmole exited with code {exit_code}")
 
-        if self._cancelled:
+        outcome = complete(self._session, exit_code, self._run_folder)
+        if outcome.kind == "cancelled":
             self._set_result_bar("idle", _("Scan cancelled."))
             return
-        if rc == 0:
-            output = self._result.get("output")
-            pages = as_int(self._result.get("pages"), self._pages)
-            if output:
-                path = Path(str(output))
-                if not path.is_absolute():
-                    path = self._run_folder / path
-                self._last_output = path
-                summary = ngettext("%d page saved", "%d pages saved", pages) % pages
-                if self._blanks:
-                    summary += " · " + (
-                        ngettext("%d blank skipped", "%d blanks skipped", self._blanks)
-                        % self._blanks
+        if outcome.kind == "success":
+            if outcome.output is not None:
+                self._last_output = outcome.output
+                summary = (
+                    ngettext("%d page saved", "%d pages saved", outcome.pages)
+                    % outcome.pages
+                )
+                if outcome.blanks:
+                    summary += " \u00b7 " + (
+                        ngettext(
+                            "%d blank skipped", "%d blanks skipped", outcome.blanks
+                        )
+                        % outcome.blanks
                     )
-                self._set_result_bar("success", summary, path.name)
+                self._set_result_bar("success", summary, outcome.output.name)
             else:
                 self._set_result_bar("idle", _("Finished."))
             return
         heading, body = EXIT_HINTS.get(
-            rc,
+            outcome.exit_code,
             (
                 _("Scan Failed"),
                 _("scanmole exited with status %(code)d. See the log for details.")
-                % {"code": rc},
+                % {"code": outcome.exit_code},
             ),
         )
-        if self._error_message:
-            body = body + "\n\n" + _("Details:") + " " + self._error_message
+        if outcome.error_message:
+            body = body + "\n\n" + _("Details:") + " " + outcome.error_message
         self._set_result_bar("error", heading)
         self._alert(heading, body)
 
@@ -2121,30 +2081,18 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _on_cancel_clicked(self, *_args: object) -> None:
         """Terminate the scan's process group, escalating to SIGKILL."""
-        proc = self._proc
-        if proc is None or proc.poll() is not None:
-            return
-        self._cancelled = True
+        runner = self._runner
+        if runner is None or not runner.cancel():
+            return  # no run, already finished, or already cancelling
+        self._session = mark_cancelled(self._session)
         self._cancel_btn.set_sensitive(False)
-        self._set_result_bar("running", _("Cancelling…"))
-        self._append_log("[gui] cancelling — SIGTERM to process group")
-        self._signal_group(proc, signal.SIGTERM)
-        GLib.timeout_add_seconds(SIGKILL_GRACE_SECONDS, self._sigkill_if_alive, proc)
+        self._set_result_bar("running", _("Cancelling\u2026"))
+        self._append_log("[gui] cancelling \u2014 SIGTERM to process group")
 
-    def _sigkill_if_alive(self, proc: subprocess.Popen[str]) -> bool:
-        """SIGKILL the process group if it survived the SIGTERM grace period."""
-        if proc.poll() is None:
-            self._append_log("[gui] still running — SIGKILL to process group")
-            self._signal_group(proc, signal.SIGKILL)
-        return bool(GLib.SOURCE_REMOVE)
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen[str], sig: int) -> None:
-        """Send ``sig`` to the subprocess's process group (pid == pgid)."""
-        try:
-            os.killpg(proc.pid, sig)
-        except (ProcessLookupError, PermissionError):
-            pass
+    def _on_kill_escalated(self, runner: ScanRunner) -> None:
+        """The grace period ran out: the runner is about to SIGKILL."""
+        if runner is self._runner:
+            self._append_log("[gui] still running \u2014 SIGKILL to process group")
 
     def _on_close_request(self, *_args: object) -> bool:
         """Persist the form and window geometry, stop any running scan.
@@ -2158,8 +2106,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._settings["window_width"] = int(self.get_width())
             self._settings["window_height"] = int(self.get_height())
         self._save_settings()
-        proc = self._proc
-        if proc is not None and proc.poll() is None:
+        runner = self._runner
+        if runner is not None and runner.is_running():
             # Closing must not orphan the engine mid-batch: run the normal
             # cancel escalation and keep the (hidden) window alive until the
             # child exited, so its cleanup finishes and nothing keeps
@@ -2169,16 +2117,16 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 self._close_patience = SIGKILL_GRACE_SECONDS + 5
                 self._on_cancel_clicked()
                 self.set_visible(False)
-                GLib.timeout_add_seconds(1, self._destroy_when_exited, proc)
+                GLib.timeout_add_seconds(1, self._destroy_when_exited, runner)
             return True  # inhibit; the poll below closes for real
         return False  # allow the window to close
 
-    def _destroy_when_exited(self, proc: subprocess.Popen[str]) -> bool:
+    def _destroy_when_exited(self, runner: ScanRunner) -> bool:
         """Destroy the hidden window once the cancelled child is gone."""
         self._close_patience -= 1
-        if proc.poll() is None and self._close_patience > 0:
+        if runner.is_running() and self._close_patience > 0:
             return bool(GLib.SOURCE_CONTINUE)
-        if proc.poll() is None:  # pragma: no cover -- SIGKILL failed somehow
+        if runner.is_running():  # pragma: no cover -- SIGKILL failed somehow
             LOGGER.debug("closing despite a surviving child process group")
         self.destroy()
         return bool(GLib.SOURCE_REMOVE)
