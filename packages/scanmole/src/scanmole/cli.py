@@ -297,7 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-images",
         nargs="+",
         metavar="FILE",
-        help="skip scanning; build the PDF from these images (in given order)",
+        help=(
+            "skip scanning; build the PDF from these images (in given "
+            "order). -r applies as the one input dpi for the whole batch, "
+            "overriding any embedded resolution metadata"
+        ),
     )
     parser.add_argument(
         "--keep-images",

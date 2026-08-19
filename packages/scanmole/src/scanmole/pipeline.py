@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import shlex
 import shutil
 import tempfile
 import time
@@ -376,6 +377,28 @@ def _size_preserved_pages(
         LOGGER.debug("could not size the preserved pages", exc_info=True)
 
 
+def _recovery_command(
+    work_dir: Path,
+    negotiated: list[EffectiveSettings],
+    config: ScanConfig,
+) -> str:
+    """The documented rebuild command for pages preserved in ``work_dir``.
+
+    One shared helper so the exception and logging paths cannot drift.
+    ``--from-images`` applies one uniform dpi, so the established scan
+    resolution (after snapping) must travel along or the rebuilt pages
+    change size. The path is quoted for pasting into a shell, with the
+    glob outside the quotes so it still expands.
+    """
+    dpi = negotiated[0].resolution if negotiated else None
+    if dpi is None:  # no settings seen yet: the requested value is all there is
+        dpi = config.resolution
+    return (
+        f"scanmole --from-images {shlex.quote(str(work_dir))}/page_*.pnm "
+        f"-r {dpi} -o out.pdf"
+    )
+
+
 def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
     """Run the full pipeline for ``config`` and return the process exit code.
 
@@ -527,6 +550,12 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
 
         dpi: int | None = None
         if config.from_images is not None:
+            # One uniform input dpi for the whole batch: scanned PNMs carry
+            # no resolution metadata at all, and a single invocation cannot
+            # apply a coherent mixed policy, so the requested value applies
+            # to every input and deliberately overrides any embedded
+            # PNG/JPEG resolution metadata.
+            dpi = config.resolution
             LOGGER.info("Building PDF from %d image(s) ...", len(config.from_images))
             for image in config.from_images:  # keep the order given
                 handle_page(image)
@@ -600,8 +629,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             _size_preserved_pages(measured, kept, negotiated, config)
             exc.message += (
                 f" -- the {total} scanned page(s) are kept in {work_dir} "
-                f"(recover with: scanmole --from-images '{work_dir}'/page_*.pnm "
-                "-o out.pdf)"
+                f"(recover with: {_recovery_command(work_dir, negotiated, config)})"
             )
             exc.args = (exc.message,)
         raise
@@ -613,11 +641,10 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             preserve = True
             _size_preserved_pages(measured, kept, negotiated, config)
             LOGGER.info(
-                "The %d scanned page(s) are kept in %s (recover with: "
-                "scanmole --from-images '%s'/page_*.pnm -o out.pdf)",
+                "The %d scanned page(s) are kept in %s (recover with: %s)",
                 total,
                 work_dir,
-                work_dir,
+                _recovery_command(work_dir, negotiated, config),
             )
         raise
     finally:

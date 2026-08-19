@@ -11,6 +11,7 @@ import io
 import json
 import random
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,12 +39,13 @@ _NEEDS_IMG2PDF = pytest.mark.skipif(
 
 
 def _gray_page(path: Path) -> Path:
-    path.write_bytes(b"P5\n4 4\n255\n" + bytes([120] * 16))
+    # 40x40: large enough to stay above img2pdf's 3-point minimum at 300 dpi.
+    path.write_bytes(b"P5\n40 40\n255\n" + bytes([120] * 1600))
     return path
 
 
 def _white_page(path: Path) -> Path:
-    path.write_bytes(b"P5\n4 4\n255\n" + bytes([255] * 16))
+    path.write_bytes(b"P5\n40 40\n255\n" + bytes([255] * 1600))
     return path
 
 
@@ -204,6 +206,121 @@ def test_from_images_failure_does_not_claim_preserved_pages(
         run_pipeline(_config((page,), tmp_path / "out.pdf"), EventWriter(enabled=False))
 
     assert "kept in" not in info.value.message
+
+
+def test_from_images_passes_the_requested_dpi_to_build_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Rebuilt inputs (scanned PNMs) carry no resolution metadata, so the
+    # requested -r stamps the whole batch; without it img2pdf assumes
+    # 96 dpi and every page changes size.
+    page = _gray_page(tmp_path / "input.pgm")
+    stamped: list[object] = []
+
+    def fake_build_pdf(pages: object, output: Path, dpi: object) -> None:
+        stamped.append(dpi)
+        output.write_bytes(b"%PDF-fake")
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", fake_build_pdf)
+
+    result = run_pipeline(
+        _config((page,), tmp_path / "out.pdf"), EventWriter(enabled=False)
+    )
+
+    assert result == 0
+    assert stamped == [300]  # the _config resolution, applied uniformly
+
+
+@_NEEDS_IMG2PDF
+def test_from_images_pdf_geometry_honors_the_requested_dpi(tmp_path: Path) -> None:
+    # A 300x300 px page rebuilt at -r 300 is exactly one inch square:
+    # 72x72 PDF points, not the ~225 points of a 96 dpi assumption.
+    page = tmp_path / "square.pgm"
+    page.write_bytes(b"P5\n300 300\n255\n" + bytes([120] * 90000))
+    output = tmp_path / "out.pdf"
+
+    assert run_pipeline(_config((page,), output), EventWriter(enabled=False)) == 0
+
+    box = re.search(rb"/MediaBox\s*\[([^\]]+)\]", output.read_bytes())
+    assert box is not None
+    dims = [float(value) for value in box.group(1).split()]
+    assert dims[2] == pytest.approx(72, abs=0.5)
+    assert dims[3] == pytest.approx(72, abs=0.5)
+
+
+def _failing_scan_at(resolution: int):  # type: ignore[no-untyped-def]
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(EffectiveSettings(source=None, mode=None, resolution=resolution))
+        page = _gray_page(work_dir / "page_0001.pnm")
+        assert callable(on_page)
+        on_page(page)
+        raise ScanMoleError("feeder jam")
+
+    return fake_scan
+
+
+def test_recovery_command_names_the_snapped_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The rebuild must use the dpi the pages were actually scanned at
+    # (after snapping), not the requested value: 300 snapped to 150 here.
+    work_dir = tmp_path / "preserved-work"
+
+    def owned_mkdtemp(prefix: str = "") -> str:
+        work_dir.mkdir()
+        return str(work_dir)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _failing_scan_at(150))
+    monkeypatch.setattr("scanmole.pipeline.tempfile.mkdtemp", owned_mkdtemp)
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert (
+        f"--from-images {work_dir}/page_*.pnm -r 150 -o out.pdf" in info.value.message
+    )
+
+
+def test_recovery_command_quotes_shell_sensitive_work_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The message is meant to be pasted into a shell: a work dir with
+    # spaces and quotes must come out quoted, with the glob outside the
+    # quotes so it still expands.
+    work_dir = tmp_path / "scan mole's work"
+
+    def owned_mkdtemp(prefix: str = "") -> str:
+        work_dir.mkdir()
+        return str(work_dir)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _failing_scan_at(300))
+    monkeypatch.setattr("scanmole.pipeline.tempfile.mkdtemp", owned_mkdtemp)
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    quoted = shlex.quote(str(work_dir))
+    assert quoted.startswith("'")  # the path genuinely needed quoting
+    assert f"--from-images {quoted}/page_*.pnm -r 300 -o out.pdf" in info.value.message
 
 
 def test_snapped_resolution_reaches_pdf_assembly(

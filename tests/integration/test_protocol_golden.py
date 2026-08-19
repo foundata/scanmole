@@ -49,10 +49,12 @@ def _normalize(event: dict[str, object]) -> dict[str, object]:
 def test_json_stream_matches_the_golden_transcript(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # 40x40 px: one uniform batch dpi applies (-r 300), and img2pdf refuses
+    # pages below 3 PDF points. The event stream itself is size-independent.
     gray = tmp_path / "page1.pgm"
-    gray.write_bytes(b"P5\n4 4\n255\n" + bytes([120] * 16))
+    gray.write_bytes(b"P5\n40 40\n255\n" + bytes([120] * 1600))
     white = tmp_path / "page2.pgm"
-    white.write_bytes(b"P5\n4 4\n255\n" + bytes([255] * 16))
+    white.write_bytes(b"P5\n40 40\n255\n" + bytes([255] * 1600))
 
     exit_code = main(
         [
