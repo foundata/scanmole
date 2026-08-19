@@ -206,6 +206,182 @@ def test_receipt_shaped_content_skips_standard_sizes() -> None:
     assert x1 - x0 == _mm(60) + 2 * _mm(10)  # content plus side margins
 
 
+def test_height_only_extent_keeps_the_receipt_rule() -> None:
+    # The ScanSnap iX500 ALD case: hardware resolved only the ~297 mm
+    # length of a 75 mm-wide full-length strip. The height observation
+    # says nothing about the paper's width, so it must not disable the
+    # receipt rule and invent a 210 mm A4 width; the observed height is
+    # preserved whole, the width comes from content plus margins.
+    page = _page(
+        1, (70, 10, 145, 287), frame_mm=(221.1, 297.9), unresolved=(True, False)
+    )
+
+    decisions = choose_crops([page], _DPI, flatbed=False)
+
+    assert decisions[0].label == "content"
+    box = decisions[0].box_px
+    assert box is not None
+    assert box[2] - box[0] == _mm(75) + 2 * _mm(10)  # content plus margins
+    assert box[1] == 0 and box[3] == page.frame_px[1]  # observed height whole
+
+
+def test_observed_width_still_overrides_the_receipt_rule() -> None:
+    # Hardware measured the paper 210 mm wide: the paper is genuinely A4
+    # even though only a tall narrow column is printed on it.
+    page = _page(
+        1, (70, 10, 145, 287), frame_mm=(210.0, 393.7), unresolved=(False, True)
+    )
+
+    decisions = choose_crops([page], _DPI, flatbed=False)
+
+    assert decisions[0].label == "a4"
+
+
+def test_blank_sheet_with_observed_height_still_snaps() -> None:
+    # bbox=None blank sheet whose height ALD resolved: the unchanged
+    # extent path picks the standard size the observation allows.
+    page = _page(1, None, frame_mm=(221.1, 297.9), unresolved=(True, False))
+
+    decisions = choose_crops([page], _DPI, flatbed=False)
+
+    assert decisions[0].label == "a4"
+
+
+def test_short_receipt_with_observed_length_stays_content_framed() -> None:
+    # An ordinary 160 mm receipt whose length ALD resolved: no standard
+    # size is compatible with the observation, the strip stays content
+    # plus margins wide and keeps its observed length whole.
+    page = _page(
+        1, (70, 5, 145, 160), frame_mm=(221.1, 170.0), unresolved=(True, False)
+    )
+
+    decisions = choose_crops([page], _DPI, flatbed=False)
+
+    assert decisions[0].label == "content"
+    box = decisions[0].box_px
+    assert box is not None
+    assert box[2] - box[0] == _mm(75) + 2 * _mm(10)
+    assert box[3] == page.frame_px[1]
+
+
+def test_receipt_front_pairs_with_its_blank_back() -> None:
+    # Duplex: the strip's blank back is the same physical sheet, so it
+    # shares the front's conservative dimensions (with --keep-blanks the
+    # PDF would otherwise pair a 95 mm front with a 221 mm back). The
+    # blank side is centered deterministically in its frame.
+    front = _page(
+        1, (70, 10, 145, 287), frame_mm=(221.1, 297.9), unresolved=(True, False)
+    )
+    back = _page(2, None, frame_mm=(221.1, 297.9), unresolved=(True, False))
+
+    decisions = choose_crops([front, back], _DPI, flatbed=False, duplex=True)
+
+    assert decisions[0].label == "content"
+    assert decisions[1].label == "content"
+    front_box = decisions[0].box_px
+    back_box = decisions[1].box_px
+    assert front_box is not None and back_box is not None
+    width = _mm(75) + 2 * _mm(10)
+    assert front_box[2] - front_box[0] == width
+    assert back_box[2] - back_box[0] == width  # same physical strip width
+    assert back_box[0] == (front.frame_px[0] - width) // 2  # centered
+    assert back_box[1] == 0 and back_box[3] == back.frame_px[1]
+
+
+def test_custom_sheet_sides_share_conservative_dimensions() -> None:
+    # A nonstandard 190 x 380 mm sheet (no standard size fits): both
+    # duplex sides get the same conservative dimensions.
+    front = _page(1, (10, 0, 200, 380), frame_mm=(215.9, 393.7))
+    back = _page(2, None, frame_mm=(215.9, 393.7))
+
+    decisions = choose_crops([front, back], _DPI, flatbed=False, duplex=True)
+
+    boxes = [decision.box_px for decision in decisions]
+    assert boxes[0] is not None and boxes[1] is not None
+    assert boxes[0][2] - boxes[0][0] == boxes[1][2] - boxes[1][0]
+    assert boxes[0][3] - boxes[0][1] == boxes[1][3] - boxes[1][1]
+
+
+def test_extent_on_one_side_constrains_the_other() -> None:
+    # Only the front's frame carries the observed height; the back's
+    # frame is taller. The observation is about the physical sheet and
+    # caps the back's height too.
+    front = _page(
+        1, (70, 10, 145, 287), frame_mm=(221.1, 297.9), unresolved=(True, False)
+    )
+    back = _page(2, None, frame_mm=(221.1, 320.0), unresolved=(True, True))
+
+    decisions = choose_crops([front, back], _DPI, flatbed=False, duplex=True)
+
+    back_box = decisions[1].box_px
+    assert back_box is not None
+    assert back_box[3] - back_box[1] == _mm(297.9)  # front's observation
+
+
+def test_both_content_sides_keep_their_own_content() -> None:
+    # Content sits at different x positions on the two sides; the shared
+    # width places around each side's own content, cutting neither.
+    front = _page(1, (20, 0, 95, 280), frame_mm=(221.1, 297.9))
+    back = _page(2, (120, 0, 195, 280), frame_mm=(221.1, 297.9))
+
+    decisions = choose_crops([front, back], _DPI, flatbed=False, duplex=True)
+
+    front_box, back_box = decisions[0].box_px, decisions[1].box_px
+    assert front_box is not None and back_box is not None
+    assert front_box[0] <= _mm(20) and front_box[2] >= _mm(95)
+    assert back_box[0] <= _mm(120) and back_box[2] >= _mm(195)
+
+
+def test_covering_may_expand_one_side_for_its_own_reach() -> None:
+    # The back carries a faint mark outside the shared conservative box;
+    # only that side grows, and only far enough to contain it.
+    front = _page(
+        1, (70, 10, 145, 287), frame_mm=(221.1, 297.9), unresolved=(True, False)
+    )
+    back = PageContent(
+        number=2,
+        path=Path("page_0002.pnm"),
+        frame_px=(_mm(221.1), _mm(297.9)),
+        bbox_px=None,
+        reach_px=(_mm(10), _mm(50), _mm(20), _mm(60)),  # far left mark
+        unresolved=(True, False),
+    )
+
+    decisions = choose_crops([front, back], _DPI, flatbed=False, duplex=True)
+
+    front_box, back_box = decisions[0].box_px, decisions[1].box_px
+    assert front_box is not None and back_box is not None
+    assert back_box[0] <= _mm(10)  # expanded to contain the mark
+    assert front_box[2] - front_box[0] < back_box[2] - back_box[0]
+
+
+def test_receipt_keeps_its_size_against_an_a4_majority() -> None:
+    # Three A4 sheets and one height-only receipt strip: the majority
+    # must not widen the strip (its content is far below the adoption
+    # width fraction).
+    pages = [
+        _page(1, (5, 0, 208, 270)),
+        _page(2, (5, 0, 208, 270)),
+        _page(3, (5, 0, 208, 270)),
+        _page(4, (70, 10, 145, 287), frame_mm=(221.1, 297.9), unresolved=(True, False)),
+    ]
+
+    decisions = choose_crops(pages, _DPI, flatbed=False)
+
+    assert [decision.label for decision in decisions[:3]] == ["a4", "a4", "a4"]
+    assert decisions[3].label == "content"
+
+
+def test_tall_narrow_column_on_a4_is_content_framed() -> None:
+    # Named residual ambiguity: a real A4 sheet whose only printing is a
+    # tall narrow column is observationally indistinguishable from a
+    # narrow strip when no axis was observed; it comes out content-framed
+    # (larger would require evidence that does not exist).
+    decisions = choose_crops([_page(1, (70, 10, 145, 287))], _DPI, flatbed=False)
+
+    assert decisions[0].label == "content"
+
+
 def test_overlong_content_gets_a_free_size_with_margins() -> None:
     # 365 mm of content: no standard size fits; content plus margins.
     decisions = choose_crops([_page(1, (60, 0, 140, 365))], _DPI, flatbed=False)

@@ -290,40 +290,73 @@ def _place(
     return (x0, y0, x0 + box_w, y0 + box_h)
 
 
-def _free_box(page: PageContent, dpi: int, flatbed: bool) -> tuple[int, int, int, int]:
-    """Content plus margins for frames no standard size applies to."""
+def _conservative_size(
+    content: tuple[int, int, int, int] | None,
+    extent: tuple[float | None, float | None],
+    frames: list[tuple[int, int]],
+    dpi: int,
+    flatbed: bool,
+) -> tuple[int, int]:
+    """One physical target size (px) for a sheet no standard size fits.
+
+    Derived once per duplex unit so both sides of the physical sheet get
+    the same dimensions: an observed extent constrains its axis for the
+    whole sheet, an unobserved axis takes the unit's content (robust
+    boxes and reach envelopes united) plus the free margins, and an axis
+    with neither falls back to the largest member frame.
+    """
+    side = round(FREE_SIDE_MARGIN_MM * dpi / 25.4)
+    tail = round(FREE_TAIL_MARGIN_MM * dpi / 25.4)
     scale = dpi / 25.4
-    frame_w, frame_h = page.frame_px
-    x0, y0, x1, y1 = page.bbox_px or (0, 0, frame_w, frame_h)
-    side = round(FREE_SIDE_MARGIN_MM * scale)
-    tail = round(FREE_TAIL_MARGIN_MM * scale)
-    if flatbed:
-        return (
-            max(0, x0 - side),
-            max(0, y0 - side),
-            min(frame_w, x1 + side),
-            min(frame_h, y1 + side),
-        )
-    return (max(0, x0 - side), 0, min(frame_w, x1 + side), min(frame_h, y1 + tail))
+    if extent[0] is not None:
+        width = round(extent[0] * scale)
+    elif content is not None:
+        width = (content[2] - content[0]) + 2 * side
+    else:
+        width = max(frame[0] for frame in frames)
+    if extent[1] is not None:
+        height = round(extent[1] * scale)
+    elif content is not None:
+        # Feeder sheets are top-anchored: the height runs from the leading
+        # edge to the last content row plus the tail margin.
+        height = (content[3] - content[1]) + 2 * side if flatbed else content[3] + tail
+    else:
+        height = max(frame[1] for frame in frames)
+    return width, height
 
 
-def _conservative_box(
-    page: PageContent, dpi: int, flatbed: bool
+def _place_conservative(
+    size_px: tuple[int, int], page: PageContent, flatbed: bool
 ) -> tuple[int, int, int, int]:
-    """Crop only the page's unresolved axes; keep observed extents whole.
+    """Place the sheet's conservative size inside one side's frame.
 
-    Used when extent evidence rules out every standard size (custom paper,
-    hardware-cropped receipts): the shortened axis is the device's own
-    measurement and must survive, the window axis gets the content-based
-    conservative treatment.
+    Sides share dimensions, not raster coordinates: a content-bearing
+    side centers on (and never excludes) its own content, a blank side is
+    centered deterministically in its frame. Feeder frames stay
+    top-anchored.
     """
     frame_w, frame_h = page.frame_px
-    x0, y0, x1, y1 = _free_box(page, dpi, flatbed)
-    if not page.unresolved[0]:
-        x0, x1 = 0, frame_w
-    if not page.unresolved[1]:
-        y0, y1 = 0, frame_h
-    return (x0, y0, x1, y1)
+    box_w = min(frame_w, size_px[0])
+    box_h = min(frame_h, size_px[1])
+    bbox = page.bbox_px
+    if bbox is not None:
+        x0 = round((bbox[0] + bbox[2]) / 2 - box_w / 2)
+        x0 = min(x0, bbox[0])
+        x0 = max(x0, bbox[2] - box_w)
+    else:
+        x0 = (frame_w - box_w) // 2
+    x0 = max(0, min(x0, frame_w - box_w))
+    if flatbed:
+        if bbox is not None:
+            y0 = round((bbox[1] + bbox[3]) / 2 - box_h / 2)
+            y0 = min(y0, bbox[1])
+            y0 = max(y0, bbox[3] - box_h)
+        else:
+            y0 = (frame_h - box_h) // 2
+        y0 = max(0, min(y0, frame_h - box_h))
+    else:
+        y0 = 0
+    return (x0, y0, x0 + box_w, y0 + box_h)
 
 
 def _covering(
@@ -401,8 +434,11 @@ def choose_crops(
         candidate: _Candidate | None = None
         if bbox is not None:
             # The receipt shape rule guards against inventing paper from
-            # content alone; an observed extent overrules it.
-            if has_extent or not _receipt_shaped(bbox, scale):
+            # content alone; only an observed *width* overrules it, since a
+            # height observation (hardware lower-edge detection) says
+            # nothing about how wide the paper is. Evidence constrains
+            # axes independently.
+            if extent[0] is not None or not _receipt_shaped(bbox, scale):
                 candidate = _snap(options, _demand_mm(bbox, scale, flatbed), preference)
         elif has_extent and options:
             # A blank sheet with an observed extent: the smallest size the
@@ -443,14 +479,23 @@ def choose_crops(
                 if width_mm >= _ADOPT_WIDTH_FRACTION * majority.width:
                     chosen = majority
         has_extent = any(observed is not None for observed in extent)
+        conservative: tuple[int, int] | None = None
+        if chosen is None and (bbox is not None or has_extent):
+            # No standard size fits the evidence: one conservative target
+            # size for the whole physical sheet, from the unit's content
+            # union (robust and reach), observed extents and free margins,
+            # so a strip's blank back cannot stay at full window width
+            # while its front is content-framed.
+            content = _union([bbox] + [page.reach_px for page in unit])
+            conservative = _conservative_size(
+                content, extent, [page.frame_px for page in unit], dpi, flatbed
+            )
         for page in unit:
             if chosen is not None:
                 box = _place((chosen.width, chosen.height), page, dpi, flatbed)
                 label = chosen.label
-            elif bbox is not None or has_extent:
-                # No standard size fits the evidence: content margins on the
-                # unresolved axes, observed extents preserved whole.
-                box = _conservative_box(page, dpi, flatbed)
+            elif conservative is not None:
+                box = _place_conservative(conservative, page, flatbed)
                 label = "content"
             else:
                 decisions.append(CropDecision(page=page, box_px=None, label="frame"))

@@ -1231,7 +1231,9 @@ def test_snapped_dpi_trim_keeps_near_edge_content(
     rows = []
     for y in range(frame_h):
         if y < paper_end:
-            row = bytearray([80] * backing + [230] * (frame_w - 2 * backing) + [80] * backing)
+            row = bytearray(
+                [80] * backing + [230] * (frame_w - 2 * backing) + [80] * backing
+            )
             if 200 <= y < 800:
                 row[backing + 3 : backing + 6] = bytes(3)  # near-edge strip
             if 100 <= y < 1600:
@@ -1279,8 +1281,8 @@ def test_snapped_dpi_trim_keeps_near_edge_content(
     assert run_pipeline(config, EventWriter(enabled=False)) == 0
 
     kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
-    magic, dims, raster = kept.split(b"\n", 2)
-    width, height = map(int, dims.split())
+    _magic, dims, raster = kept.split(b"\n", 2)
+    width, _height = map(int, dims.split())
     assert width == frame_w - 2 * backing - 4  # 2 px trim per side, not 8
     row_bytes = (width + 7) // 8
     # The strip sat 3 px inside the paper edge; after the 2 px trim it is
