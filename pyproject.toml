@@ -51,6 +51,7 @@ addopts = [
   "--import-mode=importlib",
 ]
 filterwarnings = ["error"]
+pythonpath = ["tests"]  # shared helpers in tests/support/
 strict = true
 testpaths = ["tests"]
 markers = [
