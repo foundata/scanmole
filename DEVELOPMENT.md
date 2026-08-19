@@ -88,7 +88,8 @@ scanmole/                      # repository root (uv workspace)
 │           ├── locale/        # compiled .mo catalogs (committed, ship in wheel)
 │           └── icons/         # hicolor tree with the logo (header bar, About, README)
 ├── scripts/
-│   └── release-check.sh       # full local release gate (matrix, build, smoke test)
+│   ├── release-check.sh       # full local release gate (matrix, build, smoke test)
+│   └── scanner-evidence/      # raw-evidence capture kit (see its README.md)
 └── tests/
     ├── unit/                  # no hardware, no external tools
     ├── integration/           # external tools and the SANE test backend, with skips
@@ -110,9 +111,9 @@ scanmole/                      # repository root (uv workspace)
 ### Code formatting and linting<a id="code-linting"></a>
 
 ```sh
-uv run ruff format packages tests   # format
-uv run ruff check packages tests    # lint (add --fix for autofixes)
-uv run mypy packages/scanmole/src packages/scanmole-gui/src tests  # strict type check
+uv run ruff format packages tests scripts/scanner-evidence   # format
+uv run ruff check packages tests scripts/scanner-evidence    # lint (add --fix for autofixes)
+uv run mypy packages/scanmole/src packages/scanmole-gui/src tests scripts/scanner-evidence  # strict type check
 ```
 
 Always run all three before committing. The rule sets live in `pyproject.toml`.
@@ -191,6 +192,8 @@ Manual, per release, per device class:
 - Cancel from the GUI mid-batch → child gone, no leftover temp directory.
 - Fresh login / fresh udev state → device visible without root.
 
+When a device class is touched for the first time (or misbehaves), capture a raw evidence corpus with the [scanner evidence kit](scripts/scanner-evidence/README.md); the corpus stays outside Git and feeds fixture-pinned regressions.
+
 
 ## Translations<a id="translations"></a>
 
@@ -231,9 +234,9 @@ No code changes are needed. Compiled `.mo` catalogs are committed because the bu
 ### Before committing<a id="before-committing"></a>
 
 ```sh
-uv run ruff format packages tests        # 1. format
-uv run ruff check --fix packages tests   # 2. lint
-uv run mypy packages/scanmole/src packages/scanmole-gui/src tests  # 3. type check
+uv run ruff format packages tests scripts/scanner-evidence        # 1. format
+uv run ruff check --fix packages tests scripts/scanner-evidence   # 2. lint
+uv run mypy packages/scanmole/src packages/scanmole-gui/src tests scripts/scanner-evidence  # 3. type check
 uv run pytest                            # 4. tests
 ```
 

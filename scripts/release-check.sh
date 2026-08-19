@@ -80,9 +80,12 @@ run_static_checks() {
     # Formatter, linter and type checker are version-independent here
     # (mypy targets the project minimum via pyproject), so run them once.
     log "Static checks (format, lint, type check)"
-    uv run ruff format --check packages tests
-    uv run ruff check packages tests
-    uv run mypy packages/scanmole/src packages/scanmole-gui/src tests
+    uv run ruff format --check packages tests scripts/scanner-evidence
+    uv run ruff check packages tests scripts/scanner-evidence
+    uv run mypy packages/scanmole/src packages/scanmole-gui/src tests \
+        scripts/scanner-evidence
+    bash -n scripts/scanner-evidence/capture.sh
+    uv run python scripts/scanner-evidence/print_pack.py --check
 }
 
 run_tests_matrix() {

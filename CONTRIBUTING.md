@@ -22,7 +22,9 @@ If the device does not even appear in `scanimage -L`, or you are unsure which pa
 
 1. `scanmole --version`, your operating system (Linux distribution), the scanner model and how it is connected (USB, network).
 2. The output of `scanimage -L`.
-3. The full option listing of every device: `scanimage -d '<device>' -A`. A captured listing becomes a test fixture in `tests/fixtures/scanimage-A/`, so the fix stays regression-tested without your hardware.
+3. The full option listing of every device: `scanimage -d '<device>' -A`. A captured listing becomes a test fixture in `tests/fixtures/scanimage-A/`, so the fix stays regression-tested without your hardware. Review it for serial numbers, hostnames and IP addresses before attaching; maintainers sanitize again before anything is committed.
+
+Contributors with hardware access who want to go further can capture a full raw evidence corpus with the [scanner evidence kit](scripts/scanner-evidence/README.md); its runbook covers the printable test sheets, comparable run names and the privacy rules (raw frames never enter the repository).
 
 The following snippet collects all of it into one attachable file, looping over every device `scanimage -L` finds; simply attach the resulting `scanmole-report.txt`:
 

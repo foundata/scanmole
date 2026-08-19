@@ -1,5 +1,7 @@
 # `scanimage -A` fixtures
 
+Capturing listings from real hardware, the sanitization rules and the printable test sheets are documented in the [scanner evidence kit](../../../scripts/scanner-evidence/README.md).
+
 One file per backend family, feeding the parser and fuzzy-mapper tests in `tests/unit/test_options.py`. Most fixtures are modeled on the option formats the backends document (fujitsu, brscan4, the SANE `test` backend); they are not yet verbatim captures. When touching a fleet device, capture the real listing with `scanimage -d <dev> -A > tests/fixtures/scanimage-A/<name>.txt` and replace the modeled file, keeping the test expectations honest.
 
 `sane-airscan-escl.txt` and `sane-airscan-escl-adf-duplex.txt` are verbatim captures from the fleet Brother ADS-4550W over USB/ipp-usb (bare, and with `--source "ADF Duplex"` applied). The earlier modeled files matched the hardware exactly; the only textual change is scanimage's "Output format is not set" preamble line, kept on purpose as real-world parser-noise evidence. eSCL-over-USB listings carry no serial numbers or network identifiers; review any future network-transport capture for hostnames before committing. The pair pins the per-source geometry fact the scan-window clamping relies on: the bare listing advertises `-y 0..3098.8mm`, the duplex-applied one `-y 0..355.6mm`, and `--adf-justification-x` is a real read-only marker.
