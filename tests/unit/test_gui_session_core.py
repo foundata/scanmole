@@ -174,6 +174,37 @@ def test_wrong_shaped_fields_fall_back_locally() -> None:
     assert updates[-2:] == [Update.NONE, Update.NONE]
 
 
+def test_malformed_streams_cannot_produce_impossible_state() -> None:
+    # Regression: string "blanks", duplicate page events, backward page
+    # numbers and inflated summary counts must not yield negative pages,
+    # double-counted blanks or kept > total.
+    state, updates = _fold(
+        [
+            {"event": "page", "n": 2, "blank": "false"},  # a string is not blank
+            {"event": "page", "n": 2, "blank": True},  # duplicate: ignored
+            {"event": "page", "n": -4, "blank": True},  # backward: ignored
+            {"event": "scan_done", "kept": 99, "total": -9},
+        ]
+    )
+
+    assert state.pages == 2 and state.blanks == 0  # monotonic, nothing doubled
+    assert state.total == 2  # -9 rejected: falls back to the pages seen
+    assert state.kept == 2  # 99 clamped to the total
+    assert updates[1:3] == [Update.NONE, Update.NONE]
+
+
+def test_forward_page_jumps_are_accepted() -> None:
+    # The engine's numbering is authoritative when it moves forward.
+    state, _ = _fold(
+        [
+            {"event": "page", "n": 1, "blank": True},
+            {"event": "page", "n": 4, "blank": True},
+        ]
+    )
+
+    assert state.pages == 4 and state.blanks == 2
+
+
 def test_out_of_order_scan_done_stays_consistent() -> None:
     state, _ = _fold([{"event": "scan_done"}])
 

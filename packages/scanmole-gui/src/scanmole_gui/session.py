@@ -17,9 +17,15 @@ from typing import Literal
 from scanmole_gui.protocol import Event, event_kind
 
 
-def _as_int(value: object, fallback: int) -> int:
-    """A defensive integer: the protocol is frozen, but inputs are external."""
-    return value if isinstance(value, int) and not isinstance(value, bool) else fallback
+def _count(value: object, fallback: int) -> int:
+    """A defensive count: the protocol is frozen, but inputs are external.
+
+    Only a real nonnegative integer is accepted (a bool is not a count);
+    anything else falls back to the locally derived value.
+    """
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return fallback
 
 
 @dataclass(frozen=True)
@@ -58,29 +64,36 @@ def apply_event(state: SessionState, event: Event) -> tuple[SessionState, Update
     """Fold one protocol event into the session state.
 
     Unknown event kinds are ignored (the protocol may gain kinds; old GUIs
-    must keep working), as are fields of unexpected type: counts then fall
-    back to their local derivation instead of crashing or going backwards.
+    must keep working) and fields of unexpected type or range fall back to
+    their local derivation. The counters are monotonic and consistent no
+    matter how malformed the stream: pages never go backwards (a duplicate
+    or backward page number is ignored entirely, so its blank flag cannot
+    count twice), a blank is only a real ``True``, and a reported keep
+    count is clamped to the reported total.
     """
     kind = event_kind(event)
     if kind == "start":
         return state, Update.STARTED
     if kind == "page":
-        blank = bool(event.get("blank")) and state.drop_blanks
+        number = event.get("n")
+        if isinstance(number, bool) or not isinstance(number, int):
+            number = state.pages + 1  # missing or mistyped: derive locally
+        if number <= state.pages:
+            return state, Update.NONE  # duplicate or backward: already counted
+        blank = event.get("blank") is True and state.drop_blanks
         return (
             replace(
                 state,
-                pages=_as_int(event.get("n"), state.pages + 1),
+                pages=number,
                 blanks=state.blanks + (1 if blank else 0),
             ),
             Update.PAGE,
         )
     if kind == "scan_done":
+        total = _count(event.get("total"), state.pages)
+        kept = _count(event.get("kept"), max(state.pages - state.blanks, 0))
         return (
-            replace(
-                state,
-                total=_as_int(event.get("total"), state.pages),
-                kept=_as_int(event.get("kept"), max(state.pages - state.blanks, 0)),
-            ),
+            replace(state, total=total, kept=min(kept, total)),
             Update.SCAN_DONE,
         )
     if kind == "ocr_start":
@@ -91,7 +104,7 @@ def apply_event(state: SessionState, event: Event) -> tuple[SessionState, Update
             replace(
                 state,
                 output=str(output) if output else None,
-                result_pages=_as_int(event.get("pages"), state.pages),
+                result_pages=_count(event.get("pages"), state.pages),
             ),
             Update.NONE,
         )
