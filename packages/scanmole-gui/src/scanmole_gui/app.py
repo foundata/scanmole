@@ -38,6 +38,7 @@ from gi.repository import (  # noqa: E402  # after require_version
 
 # The GUI holds no pipeline logic; the pure naming helper is imported only so
 # the live filename preview matches what the CLI will produce.
+from scanmole.external import run_command  # noqa: E402  # supervised capture
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
 from scanmole.negotiation import (  # noqa: E402
     ADVISORY_PROBE_TIMEOUT_SECONDS,
@@ -1214,12 +1215,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         devices: list[dict[str, str]] = []
         err = ""
         try:
-            result = subprocess.run(
+            # The supervised engine helper: the query runs in its own
+            # process group, so a wedged backend probe cannot leave
+            # descendants behind on timeout.
+            result = run_command(
                 [self._scanmole, "--list-devices", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
+                timeout_seconds=120,
             )
             hello_version: str | None = None
             for raw in result.stdout.splitlines():
@@ -1282,13 +1283,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _probe_cli_version(self) -> str | None:
         """Return the supervised CLI's version string, or ``None``."""
         try:
-            result = subprocess.run(
-                [self._scanmole, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
+            result = run_command([self._scanmole, "--version"], timeout_seconds=30)
         except (OSError, subprocess.TimeoutExpired):
             return None
         lines = result.stdout.strip().splitlines()
