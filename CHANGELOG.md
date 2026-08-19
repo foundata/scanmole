@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A page-processing error during a scan whose `scanimage` ignores termination is reported immediately instead of after the one-hour scan timeout (and no longer misreported as a timeout).
 - Quitting the GUI (e.g. Ctrl+C) with a stuck scan running now stops the scan's process group synchronously before the application exits; previously the kill escalation relied on timers that stop with the main loop, so such a scan could survive the GUI.
 - Switching scanners while another device's capability probe was still running can no longer show the new scanner with the old one's source availability; every device's own probe now runs first.
+- Simplex scans on devices with huge advertised windows (the Brother ADS-4550W reports a 3-metre one) no longer come out as Legal-sized pages with black side bars: on recognized feeder sources the paper edges are now found from the leading edge when the padded window drowns the ordinary detection.
+- Automatic page sizing no longer shaves a fraction of a millimetre off paper edges it never detected, so content touching an undetected frame edge keeps its outermost rows; the shave is also computed from the resolution the scanner actually used, so a snapped resolution can no longer widen it several-fold.
+- A narrow receipt strip whose length the scanner measured (hardware lower-edge detection) is no longer widened to a standard paper width; the measured length is kept, the width follows the printed content, and with `--keep-blanks` the strip's blank back now gets the same size as its front instead of a full-window page.
 
 
 
