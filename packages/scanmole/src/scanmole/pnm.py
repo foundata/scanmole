@@ -217,18 +217,31 @@ _MIN_PAPER_PX = 16
 """Reject a detected paper box smaller than this per axis as noise."""
 
 
-def autocrop_pnm(path: Path, trim_px: int) -> bool:
+def autocrop_pnm(path: Path, trim_px: int, feeder_band_px: int | None = None) -> bool:
     """Crop a raw gray/color PNM to the detected paper edges, in place.
 
     Scanning the device's full window (page size ``auto``) surrounds the
     paper with the darker ADF backing and end-of-paper padding. This walks
     the column and row mean-brightness profiles inward from each edge until
     they cross :data:`PAPER_BRIGHTNESS_CUTOFF`, then rewrites the file
-    cropped to that box, shaved inward by ``trim_px`` on every side so the
-    half-gray transition pixels cannot survive as a dark rim (which would
-    both look bad after 1-bit conversion and rescue blank pages from the
-    blank drop). Printed content never sits at the physical paper edge, so
-    the shave is safe.
+    cropped to that box, shaved inward by ``trim_px`` on each side the walk
+    actually moved, so the half-gray transition pixels of a detected edge
+    cannot survive as a dark rim (which would both look bad after 1-bit
+    conversion and rescue blank pages from the blank drop). Printed content
+    never sits at a physically detected paper edge, so the shave is safe
+    there; an edge the walk left at the frame boundary was never detected,
+    may carry content up to its first row, and keeps every row.
+
+    ``feeder_band_px`` enables the feeder-only fallback for top-anchored
+    frames (the caller states that context explicitly; it is never guessed
+    from pixels): when a huge scan window fills most of every column with
+    synthetic padding (the Brother ADS-4550W simplex window pads with
+    mid-gray), the full-height column means all sink below the paper
+    cutoff and no plausible paper is found. The fallback re-derives the
+    column profile from the leading-edge band alone, where feeder paper
+    must start, and then runs the ordinary row walk within those columns.
+    The band must stay shorter than the shortest plausible document (a
+    short receipt); the pipeline passes about 50 mm.
 
     Already-1-bit (``P4``) and non-PNM files are left alone: 1-bit padding is
     indistinguishable from the page's own white margin, so native-lineart
@@ -275,22 +288,36 @@ def autocrop_pnm(path: Path, trim_px: int) -> bool:
     # Column profile over a row subsample (C-speed slices); row profile over a
     # column subsample restricted to the detected paper columns, so the side
     # backing cannot drag content rows below the cutoff.
-    row_step = max(1, height // 512)
-    sampled = b"".join(
-        gray[row * width : (row + 1) * width] for row in range(0, height, row_step)
-    )
-    sampled_rows = len(sampled) // width
+    def column_walk(last_row: int) -> tuple[int, int]:
+        row_step = max(1, last_row // 512)
+        sampled = b"".join(
+            gray[row * width : (row + 1) * width]
+            for row in range(0, last_row, row_step)
+        )
+        sampled_rows = len(sampled) // width
 
-    def column_is_paper(column: int) -> bool:
-        return sum(sampled[column::width]) / sampled_rows >= cutoff
+        def column_is_paper(column: int) -> bool:
+            return sum(sampled[column::width]) / sampled_rows >= cutoff
 
-    left, right = 0, width - 1
-    while left < right and not column_is_paper(left):
-        left += 1
-    while right > left and not column_is_paper(right):
-        right -= 1
+        found_left, found_right = 0, width - 1
+        while found_left < found_right and not column_is_paper(found_left):
+            found_left += 1
+        while found_right > found_left and not column_is_paper(found_right):
+            found_right -= 1
+        return found_left, found_right
+
+    left, right = column_walk(height)
     if right - left < _MIN_PAPER_PX:
-        return False  # no plausible paper found; keep the full frame
+        # No plausible paper over the full height. On a feeder frame the
+        # paper is top-anchored, so a huge window's synthetic tail can
+        # dilute every column mean below the cutoff; re-derive the
+        # columns from the leading-edge band, where feeder paper must
+        # start. Anything else keeps the full frame.
+        if feeder_band_px is None:
+            return False
+        left, right = column_walk(min(feeder_band_px, height))
+        if right - left < _MIN_PAPER_PX:
+            return False  # genuinely no paper (all-dark, jam, full bleed)
 
     column_step = max(1, (right - left + 1) // 512)
 
@@ -315,10 +342,17 @@ def autocrop_pnm(path: Path, trim_px: int) -> bool:
 
     if (left, top, right, bottom) == (0, 0, width - 1, height - 1):
         return False  # no backing visible anywhere; nothing to crop
-    left += trim_px
-    right -= trim_px
-    top += trim_px
-    bottom -= trim_px
+    # Shave transition pixels only off edges the walk actually detected
+    # (moved off the frame boundary): an unresolved edge was never
+    # measured and may carry content in its outermost rows.
+    if left > 0:
+        left += trim_px
+    if right < width - 1:
+        right -= trim_px
+    if top > 0:
+        top += trim_px
+    if bottom < height - 1:
+        bottom -= trim_px
     if right - left < _MIN_PAPER_PX or bottom - top < _MIN_PAPER_PX:
         return False
 
@@ -334,7 +368,7 @@ def autocrop_pnm(path: Path, trim_px: int) -> bool:
     return True
 
 
-def autocrop_image(path: Path, trim_px: int) -> bool:
+def autocrop_image(path: Path, trim_px: int, feeder_band_px: int | None = None) -> bool:
     """Best-effort in-place crop to the paper edges; never fails the page.
 
     Returns:
@@ -342,7 +376,7 @@ def autocrop_image(path: Path, trim_px: int) -> bool:
         a warning, so the page still reaches the rest of the pipeline.
     """
     try:
-        return autocrop_pnm(path, trim_px)
+        return autocrop_pnm(path, trim_px, feeder_band_px)
     except (ValueError, OSError) as exc:
         LOGGER.warning("cannot crop %s: %s", path, exc)
         return False

@@ -296,16 +296,106 @@ def test_autocrop_pnm_side_backing_never_resolves_a_white_bottom(
 ) -> None:
     # Dark side backing resolves the width; the bottom rows are pure
     # uniform white (clipped margin or synthetic padding, unknowable).
-    # Only the sides may be cropped: the height axis stays at the frame
-    # for the per-axis content sizing to decide.
-    paper = bytes([80] * 8) + bytes([230] * 44) + bytes([80] * 8)
+    # Only the sides may be cropped, and trim applies only to the edges
+    # the walk actually moved: the unresolved top and bottom edges keep
+    # every row, proven by content sitting in the top two rows, which a
+    # blanket trim would have deleted.
+    paper = bytearray(bytes([80] * 8) + bytes([230] * 44) + bytes([80] * 8))
+    edge_content = bytearray(paper)
+    edge_content[12:20] = bytes(8)  # ink at the very top edge, row mean stays paper
     white = bytes([255] * 60)
-    page = _write(tmp_path / "sides.pgm", b"P5\n60 60\n255\n" + paper * 40 + white * 20)
+    page = _write(
+        tmp_path / "sides.pgm",
+        b"P5\n60 60\n255\n" + bytes(edge_content) * 2 + bytes(paper) * 38 + white * 20,
+    )
 
     assert autocrop_pnm(page, 2) is True
 
     data = page.read_bytes()
-    assert data.startswith(b"P5\n40 56\n255\n")  # sides cropped, height kept
+    assert data.startswith(b"P5\n40 60\n255\n")  # sides cropped and trimmed only
+    raster = data.split(b"\n", 3)[3]
+    assert raster[2:10] == bytes(8)  # the top-edge ink survived untrimmed
+
+
+def _feeder_tail_frame(
+    paper_rows: int = 100,
+    left: int = 8,
+    right: int = 51,
+    height: int = 400,
+    tail: int = 128,
+) -> bytes:
+    """A feeder frame: paper at the leading edge, dark sides, long tail."""
+    row = bytearray([80] * 60)
+    for column in range(left, right + 1):
+        row[column] = 230
+    tail_row = bytes([tail] * 60)
+    return (
+        b"P5\n60 %d\n255\n" % height
+        + bytes(row) * paper_rows
+        + tail_row * (height - paper_rows)
+    )
+
+
+def test_feeder_band_resolves_a_mid_gray_tail_dilution(tmp_path: Path) -> None:
+    # The ADS-4550W simplex case: a huge window whose synthetic mid-gray
+    # tail dominates every full-height column mean, so no column looks
+    # like paper. The feeder-only leading-edge band re-derives the
+    # columns from the paper region; the ordinary row walk then resolves
+    # the tail normally.
+    page = _write(tmp_path / "tail.pgm", _feeder_tail_frame())
+
+    assert autocrop_pnm(page, 2, feeder_band_px=60) is True
+
+    data = page.read_bytes()
+    # Sides trimmed (moved), bottom resolved at the paper end and
+    # trimmed (moved), top kept whole (unmoved).
+    assert data.startswith(b"P5\n40 98\n255\n")
+
+
+def test_mid_gray_tail_without_feeder_context_stays_unresolved(
+    tmp_path: Path,
+) -> None:
+    # Without the explicit feeder context (flatbeds, unknown sources) the
+    # fallback must not run: the frame stays whole exactly as before.
+    original = _feeder_tail_frame()
+    page = _write(tmp_path / "tail.pgm", original)
+
+    assert autocrop_pnm(page, 2) is False
+    assert page.read_bytes() == original
+
+
+def test_feeder_band_handles_a_short_receipt(tmp_path: Path) -> None:
+    # An ~80 mm receipt is shorter than the tail but longer than the
+    # leading-edge band, so the band sees paper and the row walk stops
+    # at the receipt's end.
+    page = _write(
+        tmp_path / "receipt.pgm",
+        _feeder_tail_frame(paper_rows=95, left=15, right=46),
+    )
+
+    assert autocrop_pnm(page, 2, feeder_band_px=60) is True
+
+    assert page.read_bytes().startswith(b"P5\n28 93\n255\n")
+
+
+def test_feeder_band_fails_safely_on_an_all_dark_frame(tmp_path: Path) -> None:
+    # Jammed feeder or full-bleed photo: the band finds no plausible
+    # paper either, and the frame is kept whole.
+    original = b"P5\n60 400\n255\n" + bytes([80] * 60) * 400
+    page = _write(tmp_path / "dark.pgm", original)
+
+    assert autocrop_pnm(page, 2, feeder_band_px=60) is False
+    assert page.read_bytes() == original
+
+
+def test_feeder_band_leaves_white_backing_frames_alone(tmp_path: Path) -> None:
+    # White backing: the ordinary walk finds paper everywhere and exits
+    # through the no-backing branch; the fallback never engages.
+    original = b"P5\n60 400\n255\n" + bytes([250] * 60) * 400
+    page = _write(tmp_path / "white.pgm", original)
+
+    assert autocrop_pnm(page, 2, feeder_band_px=60) is False
+    assert page.read_bytes() == original
 
 
 def test_autocrop_pnm_keeps_full_length_noisy_paper(tmp_path: Path) -> None:

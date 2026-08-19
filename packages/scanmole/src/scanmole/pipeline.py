@@ -22,7 +22,7 @@ from scanmole.devices import pick_default_device
 from scanmole.errors import InputError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
 from scanmole.external import require_tools
-from scanmole.options import is_flatbed_source, parse_page_size
+from scanmole.options import is_feeder_source, is_flatbed_source, parse_page_size
 from scanmole.pdf import build_pdf, run_ocr
 from scanmole.pnm import (
     CoherentInk,
@@ -40,6 +40,14 @@ from scanmole.sizing import PageContent, choose_crops
 LOGGER = logging.getLogger(__name__)
 
 KeptPage = tuple[int, Path]
+
+_FEEDER_BAND_MM = 50.0
+"""Leading-edge band of the feeder-only autocrop fallback.
+
+Comfortably shorter than an ~80 mm short receipt, so the band always
+lies within the paper of any plausible feeder document, while leading-
+edge overscan and printed headers cannot dominate its column means.
+"""
 
 _WINDOW_MATCH_MM = 5.0
 """A frame within this of the requested window proves nothing was cropped.
@@ -416,9 +424,6 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
     # Validate early, before touching hardware. None means "auto": scan the
     # full device window and crop each page to the detected paper edges.
     auto_page_size = parse_page_size(config.page_size) is None
-    # Shave the detected paper box inward by about a third of a millimetre so
-    # half-gray edge pixels cannot survive as a dark rim.
-    crop_trim_px = max(1, round(config.resolution / 75))
 
     device: str | None = None
     if from_images:
@@ -453,12 +458,27 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # page event while the rest of the batch is still scanning.
             nonlocal total, blanks, binarized
             total += 1
+            window = negotiated[0].window_mm if negotiated else None
+            dpi_now = negotiated[0].resolution if negotiated else None
             # With page size auto the scan covers the device's full window;
             # crop to the paper first so backing strips and end-of-paper
             # padding reach neither the 1-bit conversion nor blank detection,
-            # and the PDF page gets the paper's real size.
+            # and the PDF page gets the paper's real size. The ~1/3 mm edge
+            # trim and the fallback band are physical sizes, so both derive
+            # from the dpi the frame actually has (the requested value only
+            # covers the unreachable no-settings path: a device may snap
+            # 600 to 150, and an 8 px trim there would shave 1.35 mm). The
+            # leading-edge fallback needs top-anchored frames, so it runs
+            # only when the backend source positively maps to a feeder;
+            # an UNKNOWN source proves nothing, whatever was requested.
             if not from_images and auto_page_size:
-                autocrop_image(page, crop_trim_px)
+                effective_dpi = dpi_now or config.resolution
+                trim_px = max(1, round(effective_dpi / 75))
+                source_now = negotiated[0].source if negotiated else None
+                band_px: int | None = None
+                if source_now is not None and is_feeder_source(source_now):
+                    band_px = max(1, round(_FEEDER_BAND_MM * effective_dpi / 25.4))
+                autocrop_image(page, trim_px, band_px)
             # Backends without a 1-bit mode (eSCL offers only Gray/Color)
             # degrade a lineart request to gray; restore the asked-for 1-bit
             # output in software, before blank detection so the 0.995 default
@@ -502,8 +522,6 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # measured for the batch-level size decision; frames resolved on
             # both axes are the device's own result and stay untouched.
             mean_hint: float | None = None
-            window = negotiated[0].window_mm if negotiated else None
-            dpi_now = negotiated[0].resolution if negotiated else None
             if not from_images and auto_page_size and window and dpi_now:
                 scale = dpi_now / 25.4
                 stats = image_content_stats(page, min_ink_px=max(4, round(scale)))

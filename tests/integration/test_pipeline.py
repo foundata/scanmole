@@ -1101,6 +1101,270 @@ def test_one_axis_brightness_crop_does_not_suppress_the_other(
     assert height < round(393.5 * scale)  # window height content-cropped
 
 
+def _autocrop_probe(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    requested_dpi: int,
+    effective_dpi: int | None,
+    effective_source: str | None,
+    config_source: str = "adf",
+):
+    """Run one fake scan and record the (trim, band) autocrop received."""
+    calls: list[tuple[int, int | None]] = []
+
+    def recorder(page: Path, trim_px: int, feeder_band_px: int | None = None) -> bool:
+        calls.append((trim_px, feeder_band_px))
+        return False
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source=effective_source, mode="Gray", resolution=effective_dpi
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = _gray_page(work_dir / "page_0001.pnm")
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr("scanmole.pipeline.autocrop_image", recorder)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        source=config_source,
+        resolution=requested_dpi,
+    )
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+    assert len(calls) == 1
+    return calls[0]
+
+
+def test_trim_and_band_derive_from_the_effective_dpi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 600 dpi requested, snapped to 150: the ~1/3 mm trim is 2 px at the
+    # dpi the frame actually has, not the 8 px the request implies.
+    trim, band = _autocrop_probe(
+        tmp_path,
+        monkeypatch,
+        requested_dpi=600,
+        effective_dpi=150,
+        effective_source="ADF Front",
+    )
+
+    assert trim == 2
+    assert band == round(50 * 150 / 25.4)
+
+
+def test_trim_matches_when_the_resolution_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trim, band = _autocrop_probe(
+        tmp_path,
+        monkeypatch,
+        requested_dpi=300,
+        effective_dpi=300,
+        effective_source="ADF Duplex",
+    )
+
+    assert trim == 4
+    assert band == round(50 * 300 / 25.4)
+
+
+@pytest.mark.parametrize(
+    ("effective_source", "config_source", "expect_band"),
+    [
+        ("ADF Front", "adf", True),  # positively mapped feeder
+        ("ADF Duplex", "adf-duplex", True),
+        ("Flatbed", "adf", False),  # request degraded to a mapped flatbed
+        ("Document Table", "flatbed", False),
+        (None, "adf", False),  # UNKNOWN source: requesting adf proves nothing
+        (None, "flatbed", False),
+    ],
+)
+def test_feeder_band_requires_a_positively_mapped_feeder_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    effective_source: str | None,
+    config_source: str,
+    expect_band: bool,
+) -> None:
+    _trim, band = _autocrop_probe(
+        tmp_path,
+        monkeypatch,
+        requested_dpi=300,
+        effective_dpi=300,
+        effective_source=effective_source,
+        config_source=config_source,
+    )
+
+    assert (band is not None) is expect_band
+
+
+def test_snapped_dpi_trim_keeps_near_edge_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Behavioral proof for the trim fix: content 3 px inside the detected
+    # paper edge of a 150 dpi frame survives (2 px trim); the request-derived
+    # 8 px trim would have deleted it.
+    dpi = 150
+    scale = dpi / 25.4
+    window = (215.9, 355.6)
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+    backing = 24  # ~4 mm per side: the cropped width resolves conclusively
+    paper_end = round(297 * scale)
+    rows = []
+    for y in range(frame_h):
+        if y < paper_end:
+            row = bytearray([80] * backing + [230] * (frame_w - 2 * backing) + [80] * backing)
+            if 200 <= y < 800:
+                row[backing + 3 : backing + 6] = bytes(3)  # near-edge strip
+            if 100 <= y < 1600:
+                row[300:900] = bytes(600)  # dense block: keeps the page
+            rows.append(bytes(row))
+        else:
+            rows.append(bytes([80] * frame_w))
+    frame = b"P5\n%d %d\n255\n" % (frame_w, frame_h) + b"".join(rows)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Front", mode="Gray", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        source="adf",
+        resolution=600,  # requested; the device snapped to 150
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
+    magic, dims, raster = kept.split(b"\n", 2)
+    width, height = map(int, dims.split())
+    assert width == frame_w - 2 * backing - 4  # 2 px trim per side, not 8
+    row_bytes = (width + 7) // 8
+    # The strip sat 3 px inside the paper edge; after the 2 px trim it is
+    # bit 1 of each row's first byte on its rows.
+    assert any(raster[row * row_bytes] != 0 for row in range(200, 780))
+
+
+def test_huge_feeder_window_with_mid_gray_tail_yields_a4_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The ADS-4550W simplex case: the device delivers the full multi-metre
+    # window, padding everything below the paper with uniform mid-gray.
+    # That tail dilutes every full-height column mean below the paper
+    # cutoff, so the ordinary crop found nothing, the dark side backing
+    # binarized into full-height black bars, and sizing shipped Legal.
+    # The feeder leading-edge fallback must recover A4 without bars.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 1016.0)
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+    backing_px = 12
+    paper_rows = round(297 * scale)
+    paper_row = bytearray([80] * frame_w)
+    for column in range(backing_px, frame_w - backing_px):
+        paper_row[column] = 230
+    rows = []
+    for y in range(frame_h):
+        if y < paper_rows:
+            row = bytearray(paper_row)
+            if 80 <= y < 1063:  # dense content block
+                row[80:760] = bytes([0] * 680)
+            rows.append(bytes(row))
+        else:
+            rows.append(bytes([128] * frame_w))  # synthetic mid-gray tail
+    frame = b"P5\n%d %d\n255\n" % (frame_w, frame_h) + b"".join(rows)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Front", mode="Gray", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        source="adf",
+        resolution=dpi,
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
+    header = kept.split(b"\n", 3)
+    width, height = map(int, header[1].split())
+    assert width == frame_w - 2 * backing_px - 2  # side backing gone, no bars
+    assert abs(height - paper_rows) <= 2  # resolved at the paper end
+    raster = kept.split(b"\n", 2)[2]
+    row_bytes = (width + 7) // 8
+    left_band = bytes(raster[row * row_bytes] for row in range(0, height, 50))
+    assert set(left_band) == {0}  # the left margin is white, not a black bar
+
+
 def test_white_clipped_height_is_content_sized_not_stripped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

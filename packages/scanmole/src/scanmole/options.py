@@ -265,6 +265,17 @@ def is_flatbed_source(choice: str) -> bool:
     return any(predicate(lowered) for predicate in _SOURCE_PREDICATES["flatbed"])
 
 
+def is_feeder_source(choice: str) -> bool:
+    """Whether a backend source string positively denotes a document feeder.
+
+    Deliberately positive evidence only: an unknown or missing source
+    string is neither a feeder nor a flatbed, and callers that need feeder
+    semantics (top-anchored frames) must not fall back to the requested
+    source, which the negotiation classifies as UNKNOWN in that case.
+    """
+    return _is_feeder(choice.lower())
+
+
 def map_source(want: str, caps: dict[str, Capability]) -> str | None:
     """Map ``adf-duplex``/``adf``/``adf-back``/``flatbed`` onto ``--source``.
 
