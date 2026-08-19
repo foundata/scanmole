@@ -984,6 +984,79 @@ def test_one_axis_brightness_crop_does_not_suppress_the_other(
     assert height < round(393.5 * scale)  # window height content-cropped
 
 
+def test_white_clipped_height_is_content_sized_not_stripped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An A4 sheet whose lower margin the device white-clipped to 255: the
+    # bright rows are indistinguishable from end-of-paper padding, so the
+    # brightness crop resolves only the width (dark side backing). The
+    # height must stay at the scan window and be content-sized to the
+    # standard 297 mm, not stripped to a Letter-like 279 mm by a padding
+    # heuristic.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+    backing_px = 12  # ~3 mm of dark backing on each side
+    paper_row = (
+        bytes([80] * backing_px)
+        + bytes([230] * (frame_w - 2 * backing_px))
+        + bytes([80] * backing_px)
+    )
+    white_row = bytes([255] * frame_w)
+    rows = []
+    for y in range(frame_h):
+        if y < 1100:  # paper, white-clipped from ~279 mm downward
+            row = bytearray(paper_row)
+            if 80 <= y < 1063:  # dense content down to ~270 mm
+                row[80:760] = bytes([0] * 680)
+            rows.append(bytes(row))
+        else:
+            rows.append(white_row)
+    frame = b"P5\n%d %d\n255\n" % (frame_w, frame_h) + b"".join(rows)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        resolution=dpi,
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    header = (keep_dir / "out" / "page_0001.pnm").read_bytes().split(b"\n", 2)
+    width, height = map(int, header[1].split())
+    assert width == frame_w - 2 * backing_px - 2  # side crop plus trim only
+    assert height == round(297 * scale)  # unresolved height snapped to A4
+
+
 def _gray_scan_pages(specs: list[bytes], faint_native: bool = False):  # type: ignore[no-untyped-def]
     def fake_scan(
         config: ScanConfig,

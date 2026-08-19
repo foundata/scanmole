@@ -269,24 +269,47 @@ def test_autocrop_pnm_crops_color_pages(tmp_path: Path) -> None:
     assert raster[:3] == bytes([240, 250, 245])
 
 
-def test_autocrop_pnm_strips_uniform_white_end_padding(tmp_path: Path) -> None:
-    # Some devices pad past the paper end with pure white, indistinguishable
-    # from paper by brightness. The padding is bit-perfectly uniform though;
-    # real paper carries sensor noise (alternating 250/252 here).
-    paper_row = bytes([250, 252] * 20)
-    padding_row = bytes([255] * 40)
-    page = _write(
-        tmp_path / "padded.pgm",
-        b"P5\n40 60\n255\n" + paper_row * 40 + padding_row * 20,
-    )
+def test_autocrop_pnm_keeps_white_clipped_margins_and_near_edge_content(
+    tmp_path: Path,
+) -> None:
+    # Some scanners white-clip a genuine lower paper margin to full
+    # brightness, bit-identical to synthetic end-of-paper padding. No
+    # image-only rule may strip it: here a black footer sits right above
+    # the clipped margin and stripping "padding" would delete it.
+    rows = []
+    for y in range(100):
+        if y in (58, 59):
+            rows.append(bytes([0] * 100))  # the footer line
+        elif y < 60:
+            rows.append(bytes([230] * 100))
+        else:
+            rows.append(bytes([255] * 100))  # white-clipped margin
+    original = b"P5\n100 100\n255\n" + b"".join(rows)
+    page = _write(tmp_path / "clipped.pgm", original)
 
-    assert autocrop_pnm(page, 0) is True
+    assert autocrop_pnm(page, 4) is False  # no backing anywhere: keep whole
+    assert page.read_bytes() == original
 
-    assert page.read_bytes() == b"P5\n40 40\n255\n" + paper_row * 40
+
+def test_autocrop_pnm_side_backing_never_resolves_a_white_bottom(
+    tmp_path: Path,
+) -> None:
+    # Dark side backing resolves the width; the bottom rows are pure
+    # uniform white (clipped margin or synthetic padding, unknowable).
+    # Only the sides may be cropped: the height axis stays at the frame
+    # for the per-axis content sizing to decide.
+    paper = bytes([80] * 8) + bytes([230] * 44) + bytes([80] * 8)
+    white = bytes([255] * 60)
+    page = _write(tmp_path / "sides.pgm", b"P5\n60 60\n255\n" + paper * 40 + white * 20)
+
+    assert autocrop_pnm(page, 2) is True
+
+    data = page.read_bytes()
+    assert data.startswith(b"P5\n40 56\n255\n")  # sides cropped, height kept
 
 
 def test_autocrop_pnm_keeps_full_length_noisy_paper(tmp_path: Path) -> None:
-    # No uniform bottom row: nothing must be stripped from a full-length page.
+    # No backing visible on any edge: nothing must be stripped.
     paper_row = bytes([250, 252] * 20)
     original = b"P5\n40 60\n255\n" + paper_row * 60
     page = _write(tmp_path / "full.pgm", original)
