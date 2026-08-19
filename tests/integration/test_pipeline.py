@@ -527,8 +527,9 @@ def test_auto_page_size_sizes_white_backed_frames_by_content(
 ) -> None:
     # White backing: full-window frames with no detectable paper edge. The
     # batch must come out at the majority standard size (A4 here), and the
-    # sparse second page must survive blank detection via its content box
-    # even though its whole-frame mean reads blank.
+    # sparse second page must survive blank detection. (For the boundary
+    # case where only the content-box mean keeps a sparse page, see
+    # test_sparse_full_window_page_survives_via_the_content_box_mean.)
     dpi = 100
     scale = dpi / 25.4
     window = (215.9, 393.7)
@@ -1883,3 +1884,257 @@ def test_cli_accepts_auto_and_rejects_garbage(
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--lineart-threshold", "abc", "-o", str(tmp_path / "a.pdf")])
+
+
+# ------------------------------------- accepted detection-limit policies
+
+
+def _uniform_gray(value: int) -> bytes:
+    return b"P5\n100 100\n255\n" + bytes([value] * 10000)
+
+
+def test_blank_threshold_boundary_and_raising_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The accepted limitation: sparse content near the cutoff can land on
+    # either side. Gray pages with exactly known means pin both sides of
+    # the default boundary, and raising the threshold is the documented
+    # remedy that keeps the near-blank page.
+    near_blank = _uniform_gray(254)  # mean 254/255, just above 0.995
+    sparse_kept = _uniform_gray(253)  # mean 253/255, just below 0.995
+    config = _auto_config(tmp_path, mode="gray", lineart_threshold=0.5)
+
+    events = _run_capture(config, monkeypatch, [near_blank, sparse_kept])
+
+    first, second = (e for e in events if e["event"] == "page")
+    assert first["blank"] is True and second["blank"] is False
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 1
+
+    (tmp_path / "raised").mkdir()
+    raised = _auto_config(
+        tmp_path / "raised", mode="gray", lineart_threshold=0.5, blank_threshold=0.998
+    )
+    events = _run_capture(raised, monkeypatch, [near_blank, sparse_kept])
+
+    assert all(e["blank"] is False for e in events if e["event"] == "page")
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 2 and scan_done["blanks"] == 0
+
+
+def test_keep_blanks_and_zero_threshold_differ_in_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Both remedies keep the page, but they mean different things:
+    # --keep-blanks retains a page still reported blank, while
+    # --blank-threshold 0 removes the classification itself.
+    near_blank = _uniform_gray(254)
+
+    kept_dir = tmp_path / "kept"
+    kept_dir.mkdir()
+    keeping = _auto_config(kept_dir, mode="gray", lineart_threshold=0.5)
+    keeping = dataclasses.replace(keeping, keep_blanks=True)
+    events = _run_capture(keeping, monkeypatch, [near_blank])
+    page = next(e for e in events if e["event"] == "page")
+    assert page["blank"] is True  # still classified, just not dropped
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 1
+
+    disabled = _auto_config(
+        tmp_path, mode="gray", lineart_threshold=0.5, blank_threshold=0
+    )
+    events = _run_capture(disabled, monkeypatch, [near_blank])
+    page = next(e for e in events if e["event"] == "page")
+    assert page["blank"] is False  # never classified at all
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 0
+
+
+def test_ordinary_lineart_never_reaches_the_faint_rescue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The coherence rescue exists only behind --lineart-threshold auto: the
+    # same wholly faint page the auto mode rescues stays a dropped blank
+    # under a numeric threshold.
+    config = _auto_config(tmp_path, lineart_threshold=0.5)
+
+    events = _run_capture(config, monkeypatch, [_dark_page(), _faint_text_page()])
+
+    second = [e for e in events if e["event"] == "page"][1]
+    assert second["blank"] is True
+    scan_done = next(e for e in events if e["event"] == "scan_done")
+    assert scan_done["kept"] == 1 and scan_done["blanks"] == 1
+
+
+def _mixed_dark_faint_page(width: int = 600, height: int = 400) -> bytes:
+    """Ordinary dark print plus a separate, much fainter region."""
+    raster = bytearray([235]) * (width * height)
+    for y in range(40, 80):
+        for x in range(210, 390):
+            raster[y * width + x] = 30
+    for y in range(150, 350):
+        for x in range(60, 540):
+            raster[y * width + x] = 200
+    return b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+
+
+def test_faint_mode_adapts_one_global_cut_per_mixed_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The accepted limitation of the guarded global threshold: on a page
+    # mixing normal print with a much fainter region, the single cut keeps
+    # the dark print and loses the faint region (here the guards reject
+    # the split and the fixed result stands).
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, keep_images=keep_dir)
+
+    events = _run_capture(config, monkeypatch, [_mixed_dark_faint_page()])
+
+    page = next(e for e in events if e["event"] == "page")
+    assert page["blank"] is False  # the dark print keeps the page
+    kept = keep_dir / "out" / "page_0001.pnm"
+    assert kept.read_bytes().startswith(b"P4")
+    from scanmole.pnm import pnm_mean
+
+    mean = pnm_mean(kept)
+    assert mean is not None
+    assert mean < 0.99  # the dark print survived as ink
+    assert mean > 0.9  # the 40% faint region did not: it binarized white
+
+
+def test_gray_mode_retains_both_intensity_populations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The documented escape hatch for mixed-intensity originals: Gray does
+    # not binarize, so both the dark print and the faint region survive.
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(
+        tmp_path, mode="gray", lineart_threshold=0.5, keep_images=keep_dir
+    )
+
+    _run_capture(config, monkeypatch, [_mixed_dark_faint_page()])
+
+    kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
+    assert kept.startswith(b"P5")
+    raster = kept.split(b"\n", 3)[3]
+    assert bytes([30]) in raster  # the dark print
+    assert bytes([200]) in raster  # and the faint region, both intact
+
+
+def test_sparse_full_window_page_survives_via_the_content_box_mean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # White backing, full window, one small printed block: the whole-frame
+    # mean reads blank, so only the content-box measurement keeps the page.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+    row_bytes = (frame_w + 7) // 8
+    raster = bytearray(row_bytes * frame_h)
+    for y in range(157, 177):  # a 60 x 5 mm block: 0.36% of the frame
+        for x in range(118, 354):
+            raster[y * row_bytes + x // 8] |= 0x80 >> (x % 8)
+    frame = b"P4\n%d %d\n" % (frame_w, frame_h) + bytes(raster)
+
+    from scanmole.pnm import pnm_mean
+
+    probe = tmp_path / "probe.pnm"
+    probe.write_bytes(frame)
+    whole = pnm_mean(probe)
+    assert whole is not None and whole > 0.995  # blank by the frame mean
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files", _gray_window_scan(frame, dpi, window)
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    config = _auto_config(tmp_path, lineart_threshold=0.5, page_size="auto")
+    stream = io.StringIO()
+
+    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    page = next(e for e in events if e["event"] == "page")
+    assert page["blank"] is False
+    mean_value = page["mean"]
+    assert isinstance(mean_value, float) and mean_value < 0.995  # the box mean
+
+
+def test_faint_gray_content_without_a_content_box_is_not_blank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A light stamp in gray mode sits above the ink cutoff: no content box
+    # exists, and the verdict must fall back to the whole-raster mean (the
+    # box path would misread the page as an empty 1.0).
+    dpi = 75
+    scale = dpi / 25.4
+    window = (210.0, 297.0)
+    width, height = round(window[0] * scale), round(window[1] * scale)
+    raster = bytearray([235]) * (width * height)
+    for y in range(200, 500):
+        for x in range(100, 500):
+            raster[y * width + x] = 200  # faint, above the 0.5 ink cutoff
+    frame = b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+
+    from scanmole.pnm import pnm_content_stats
+
+    probe = tmp_path / "probe.pnm"
+    probe.write_bytes(frame)
+    stats = pnm_content_stats(probe, min_ink_px=max(4, round(scale)))
+    assert stats is not None and stats.bbox is None  # invisible to ink
+    assert stats.mean == 1.0  # the box path would call it blank
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files", _gray_window_scan(frame, dpi, window)
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    config = _auto_config(
+        tmp_path, mode="gray", lineart_threshold=0.5, page_size="auto"
+    )
+    stream = io.StringIO()
+
+    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
+
+    page = next(
+        json.loads(line)
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["event"] == "page"
+    )
+    assert page["blank"] is False  # judged by the whole raster, kept
+
+
+def test_fixed_page_size_bypasses_autocrop_and_content_sizing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The escape hatch from automatic sizing: a fixed --page-size delivers
+    # the frame exactly as scanned, backing borders and all.
+    width, height = 120, 90
+    rows = []
+    for y in range(height):
+        if 10 <= y <= 79:
+            rows.append(bytes([110] * 30 + [250] * 60 + [110] * 30))
+        else:
+            rows.append(bytes([110] * width))
+    frame = b"P5\n%d %d\n255\n" % (width, height) + b"".join(rows)
+
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(
+        tmp_path, mode="gray", lineart_threshold=0.5, keep_images=keep_dir
+    )
+    assert config.page_size == "a4"  # fixed, not auto
+
+    _run_capture(config, monkeypatch, [frame])
+
+    kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
+    kept_w, kept_h = (int(v) for v in kept.split(b"\n")[1].split(b" "))
+    assert (kept_w, kept_h) == (width, height)  # untouched by detection

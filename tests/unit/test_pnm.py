@@ -606,6 +606,50 @@ def test_content_stats_reach_excludes_hairline_streaks(tmp_path: Path) -> None:
     assert stats.reach == (64, 100, 320, 500)
 
 
+def test_content_stats_thin_trailing_line_alone_is_no_sizing_evidence(
+    tmp_path: Path,
+) -> None:
+    # A thin full-width line at the trailing frame edge is too flat to be a
+    # plausible content block: alone it forms no robust box (it can never
+    # pick a paper size), but it lands in the permissive reach, so no crop
+    # may cut it. The accepted cost is an occasionally longer page.
+    for rows in (2, 6):
+        page = _write(
+            tmp_path / f"trailing_{rows}.pbm",
+            _p4_frame(800, 1000, [(0, 1000 - rows, 800, 1000)]),
+        )
+
+        stats = pnm_content_stats(page, min_ink_px=8)
+
+        assert stats is not None
+        assert stats.bbox is None  # never sizing evidence
+        assert stats.reach is not None
+        assert stats.reach[3] == 1000  # but never cut by a crop
+
+
+def test_content_stats_mid_gray_trailing_shadow_is_invisible(
+    tmp_path: Path,
+) -> None:
+    # The shadow band observed on real hardware sits around half brightness,
+    # above the ink cutoff: it is invisible to both envelopes and cannot
+    # even grow the crop.
+    rows = []
+    for y in range(600):
+        row = bytearray([250] * 400)
+        if 20 <= y < 50:
+            row[24:56] = bytes([30] * 32)
+        if y >= 596:
+            row[:] = bytes([130] * 400)
+        rows.append(bytes(row))
+    page = _write(tmp_path / "shadow.pgm", b"P5\n400 600\n255\n" + b"".join(rows))
+
+    stats = pnm_content_stats(page, min_ink_px=8)
+
+    assert stats is not None
+    assert stats.bbox == (24, 20, 56, 50)
+    assert stats.reach == (24, 20, 56, 50)
+
+
 def test_content_stats_mean_ignores_ink_outside_the_box(tmp_path: Path) -> None:
     # The blank verdict must come from the box alone: heavy ink elsewhere in
     # the same rows (an eroded streak) may not darken a sparse page's mean.
