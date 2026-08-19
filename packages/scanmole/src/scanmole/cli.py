@@ -382,8 +382,7 @@ def _resolve_output(args: argparse.Namespace, device: str | None) -> Path:
     template = args.output or args.outbase or DEFAULT_OUTPUT_TEMPLATE
     if "{device}" in template and device is None:
         raise InputError(
-            "the {device} placeholder needs a scanner run; "
-            "--from-images has no device"
+            "the {device} placeholder needs a scanner run; --from-images has no device"
         )
     when = datetime.now().astimezone()
 

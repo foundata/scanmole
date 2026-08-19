@@ -389,6 +389,7 @@ def test_deskew_defaults_on_and_can_be_disabled(tmp_path: Path) -> None:
     assert default.deskew is True
     assert disabled.deskew is False
 
+
 def test_device_is_resolved_once_for_naming_and_scanning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

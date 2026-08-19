@@ -2021,8 +2021,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             message = state.error_message or _("Unknown error")
             self._append_log(f"[error] {message}")
 
-    def _on_stderr_line(self, _runner: ScanRunner, line: str) -> None:
+    def _on_stderr_line(self, runner: ScanRunner, line: str) -> None:
         """Append a raw stderr line to the log view."""
+        if runner is not self._runner:
+            return  # stale run: same identity guard as stdout and exit
         line = line.rstrip("\n")
         if line:
             self._append_log(line)

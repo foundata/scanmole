@@ -30,6 +30,39 @@ _NEEDS_DESKTOP = pytest.mark.skipif(
 )
 
 
+_NEEDS_GI = pytest.mark.skipif(
+    importlib.util.find_spec("gi") is None, reason="needs PyGObject"
+)
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_stale_runner_stderr_is_ignored() -> None:
+    # The stderr handler must drop lines from an old runner exactly like
+    # the stdout and exit handlers do; only the active runner may log.
+    # Importing the module needs PyGObject but no display, and the handler
+    # is exercised unbound on a duck-typed stand-in.
+    from scanmole_gui.app import MainWindow
+
+    class Window:
+        def __init__(self) -> None:
+            self._runner = object()
+            self.lines: list[str] = []
+
+        def _append_log(self, text: str) -> None:
+            self.lines.append(text)
+
+    window = Window()
+    stale = object()
+
+    MainWindow._on_stderr_line(window, stale, "stale noise\n")  # type: ignore[arg-type]
+    assert window.lines == []
+
+    MainWindow._on_stderr_line(window, window._runner, "live line\n")  # type: ignore[arg-type]
+    assert window.lines == ["live line"]
+
+
 @_NEEDS_DESKTOP
 def test_sigint_exits_with_130_and_saves_settings(tmp_path: Path) -> None:
     stderr_file = tmp_path / "gui-stderr.log"
