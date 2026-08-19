@@ -250,6 +250,15 @@ def run_scanimage(
     reader thread, so callers can analyze pages and stream progress while the
     rest of the batch is still scanning. stderr is logged as progress.
 
+    Lifecycle invariant: no reader thread and no delivered page callback is
+    still active when this function returns or raises. Every ending (normal
+    exit, timeout, callback failure, SIGINT/SIGTERM or any other exception)
+    goes through one shutdown-and-drain path: the child is reaped, page
+    announcements already in the pipe are delivered in order, both readers
+    finish, then the pipes close. An interrupt during that drain is recorded
+    and raised afterwards; it never skips the drain and never replaces an
+    earlier terminating cause.
+
     Returns:
         The exit code and the collected stderr text.
 
@@ -297,39 +306,74 @@ def run_scanimage(
         text=True,
         errors="replace",
     )
-    with process:  # closes the pipes after the readers are done
-        stdout, stderr = process.stdout, process.stderr
-        if stdout is None or stderr is None:  # unreachable: PIPE yields streams
-            raise DeviceError("scanimage produced no output streams")
-        readers = [
-            threading.Thread(target=pump_stderr, args=(stderr,), daemon=True),
-            threading.Thread(target=pump_stdout, args=(stdout,), daemon=True),
-        ]
-        for reader in readers:
-            reader.start()
+    stdout, stderr = process.stdout, process.stderr
+    if stdout is None or stderr is None:  # unreachable: PIPE yields streams
+        process.kill()
+        process.wait()
+        raise DeviceError("scanimage produced no output streams")
+    # Non-daemon on purpose: their lifetime is owned here and every path
+    # below joins them before returning or raising.
+    stdout_reader = threading.Thread(
+        target=pump_stdout, args=(stdout,), name="scanmole-stdout-reader"
+    )
+    stderr_reader = threading.Thread(
+        target=pump_stderr, args=(stderr,), name="scanmole-stderr-reader"
+    )
+    cause: BaseException | None = None
+    exit_code = -1
+    try:
+        stdout_reader.start()
+        stderr_reader.start()
         try:
             exit_code = process.wait(timeout=SCAN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as exc:
+            timeout_error = DeviceError(f"scan timed out after {SCAN_TIMEOUT_SECONDS}s")
+            timeout_error.__cause__ = exc
+            cause = timeout_error
             process.kill()
-            process.wait()
-            raise DeviceError(f"scan timed out after {SCAN_TIMEOUT_SECONDS}s") from exc
-        except BaseException:  # SIGINT/SIGTERM: never leave scanimage running
+        except BaseException as exc:  # SIGINT/SIGTERM: stop acquiring, drain
+            cause = exc
             process.terminate()
+    except BaseException as exc:  # an interrupt outside the wait itself
+        cause = exc
+        process.terminate()
+    finally:
+        # The one unconditional shutdown-and-drain path. Whatever stopped
+        # the batch (normal exit, timeout, callback failure, interrupt):
+        # reap the child, let the stdout reader consume every announcement
+        # already in the pipe and finish its callbacks in order, drain the
+        # stderr reader, and only then close the pipes. Returning or
+        # raising earlier would race the caller's recovery logic against a
+        # page that is still being analyzed; a bounded join is exactly
+        # that bug with extra steps. Interrupts arriving during the drain
+        # are recorded (the first becomes the terminating cause when none
+        # exists yet) and the drain continues.
+        def absorbing(step: Callable[[], object]) -> None:
+            nonlocal cause
+            while True:
+                try:
+                    step()
+                    return
+                except BaseException as exc:
+                    if cause is None:
+                        cause = exc
+
+        def reap() -> None:
+            if process.poll() is not None:
+                return
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=5)  # the child's own cleanup window
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-            raise
-        # Drain both readers completely before the pipes close. The process
-        # has exited, so the pumps terminate once the buffered output is
-        # consumed; the remaining work is the page callbacks themselves, and
-        # returning while one still runs would race the caller's "batch is
-        # done" logic against a page that is still being analyzed (a slow
-        # final callback could silently miss the PDF). A bounded join is
-        # exactly that bug with extra steps.
-        for reader in readers:
-            reader.join()
+
+        absorbing(reap)
+        absorbing(stdout_reader.join)
+        absorbing(stderr_reader.join)
+        absorbing(stdout.close)
+        absorbing(stderr.close)
+    if cause is not None:
+        raise cause
     if page_failure is not None:
         if isinstance(page_failure, ScanMoleError):
             raise page_failure

@@ -12,11 +12,13 @@ import json
 import random
 import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
 
+import scanmole.pipeline as pipeline_module
 from scanmole.config import ScanConfig
 from scanmole.errors import (
     DeviceError,
@@ -538,6 +540,92 @@ def test_mid_batch_failure_preserves_sized_pages(
         assert height == round(297 * scale)  # sized to A4, not the window
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_recovery_sizing_waits_for_the_active_page_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An interrupt mid-batch must not start recovery sizing (or escape to
+    # the caller) while a page is still being analyzed: the scanner drains
+    # its callbacks first, so the page event always precedes both.
+    import threading
+
+    from scanmole.pnm import pnm_mean
+    from scanmole.scanner import EffectiveSettings
+
+    order: list[str] = []
+    entered = threading.Event()
+    work_dirs: list[Path] = []
+
+    def fake_build(
+        config: ScanConfig,
+        device: str,
+        caps: object,
+        pattern: str,
+        plan: object = None,
+    ) -> tuple[list[str], EffectiveSettings]:
+        page = pattern.replace("%04d", "0001")
+        work_dirs.append(Path(page).parent)
+        script = (
+            f"printf 'P5\\n4 4\\n255\\n0123456789abcdef' > '{page}'; "
+            f"echo '{page}'; exec sleep 30"
+        )
+        return ["sh", "-c", script], EffectiveSettings(
+            source=None, mode=None, resolution=None
+        )
+
+    def blocking_mean(page: Path) -> float | None:
+        if not entered.is_set():
+            entered.set()
+            release = threading.Event()
+            threading.Timer(0.25, release.set).start()
+            release.wait(10)
+            order.append("callback-finished")
+        return pnm_mean(page)
+
+    real_size = pipeline_module._size_preserved_pages
+
+    def recording_size(*args: object, **kwargs: object) -> None:
+        order.append("recovery-sizing")
+        real_size(*args, **kwargs)  # type: ignore[arg-type]
+
+    real_wait = subprocess.Popen.wait
+    armed = {"value": True}
+
+    def interrupting_wait(
+        self: subprocess.Popen[str], timeout: float | None = None
+    ) -> int:
+        if armed["value"]:
+            armed["value"] = False
+            assert entered.wait(10)
+            raise KeyboardInterrupt
+        return real_wait(self, timeout)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): {}
+    )
+    monkeypatch.setattr("scanmole.scanner.build_scan_command", fake_build)
+    monkeypatch.setattr("scanmole.pipeline.image_mean", blocking_mean)
+    monkeypatch.setattr("scanmole.pipeline._size_preserved_pages", recording_size)
+    monkeypatch.setattr(subprocess.Popen, "wait", interrupting_wait)
+
+    stream = io.StringIO()
+    config = _config(images=None, output=tmp_path / "out.pdf")
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_pipeline(config, EventWriter(enabled=True, stream=stream))
+        order.append("raised")
+
+        # The callback finished first, then recovery sizing, then the
+        # terminal raise; the page event is on the stream by then.
+        assert order == ["callback-finished", "recovery-sizing", "raised"]
+        kinds = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
+        assert "page" in kinds  # emitted during the drain, before the raise
+    finally:
+        for work_dir in work_dirs:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def test_keyboard_interrupt_preserves_scanned_pages(

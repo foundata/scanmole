@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -137,6 +139,115 @@ def test_run_scanimage_stops_delivering_after_a_callback_failure(
         )
 
     assert seen == [first]
+
+
+class _BlockingCallback:
+    """A page callback that blocks until released, recording its lifecycle."""
+
+    def __init__(self, hold_seconds: float = 0.25) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+        self.seen: list[str] = []
+        self._hold_seconds = hold_seconds
+
+    def __call__(self, page: Path) -> None:
+        self.seen.append(page.name)
+        if not self.entered.is_set():
+            self.entered.set()
+            # Release shortly after: long enough that a premature raise is
+            # provably premature, short enough to keep the test fast.
+            threading.Timer(self._hold_seconds, self.release.set).start()
+            self.release.wait(10)
+            self.finished.set()
+
+
+def _interrupting_wait(
+    monkeypatch: pytest.MonkeyPatch, trigger: threading.Event
+) -> None:
+    """Deliver KeyboardInterrupt inside the first ``process.wait()`` call.
+
+    Deterministic stand-in for a SIGINT arriving while the batch runs: the
+    scan-timeout wait blocks until the callback has provably entered, then
+    raises. Later ``wait()`` calls (the reap) behave normally.
+    """
+    real_wait = subprocess.Popen.wait
+    state = {"armed": True}
+
+    def wait(self: subprocess.Popen[str], timeout: float | None = None) -> int:
+        if state["armed"]:
+            state["armed"] = False
+            assert trigger.wait(10)
+            raise KeyboardInterrupt
+        return real_wait(self, timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", wait)
+
+
+def _no_scanner_threads() -> bool:
+    return not [
+        thread for thread in threading.enumerate() if "scanmole-" in thread.name
+    ]
+
+
+def test_interrupt_waits_for_the_active_callback_and_buffered_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The regression this change is about: a SIGINT (KeyboardInterrupt)
+    # during the batch must not escape run_scanimage while an entered
+    # callback still runs, and announcements already in the pipe must be
+    # delivered, in order, before the interrupt propagates.
+    pages = [tmp_path / f"page_{n:04d}.pnm" for n in (1, 2, 3)]
+    callback = _BlockingCallback()
+    _interrupting_wait(monkeypatch, callback.entered)
+    announce = "; ".join(f"echo '{page}'" for page in pages)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_scanimage(["sh", "-c", f"{announce}; sleep 30"], callback)
+
+    assert callback.finished.is_set()  # the entered callback ran to its end
+    assert callback.seen == [page.name for page in pages]  # buffered, in order
+    assert _no_scanner_threads()  # both readers finished before the raise
+
+
+def test_timeout_waits_for_the_active_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scanmole.scanner.SCAN_TIMEOUT_SECONDS", 0.2)
+    page = tmp_path / "page_0001.pnm"
+    callback = _BlockingCallback()
+
+    with pytest.raises(DeviceError, match="timed out"):
+        run_scanimage(["sh", "-c", f"echo '{page}'; sleep 30"], callback)
+
+    assert callback.finished.is_set()
+    assert _no_scanner_threads()
+
+
+def test_interrupt_during_the_drain_is_raised_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Normal completion, but the interrupt lands in the reader join: it
+    # must be recorded, the drain must continue, and it must be raised
+    # only after every callback and reader finished.
+    page = tmp_path / "page_0001.pnm"
+    callback = _BlockingCallback()
+    real_join = threading.Thread.join
+    armed = {"value": True}
+
+    def interrupting_join(self: threading.Thread, timeout: float | None = None) -> None:
+        if armed["value"]:
+            armed["value"] = False
+            raise KeyboardInterrupt
+        real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", interrupting_join)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_scanimage(["sh", "-c", f"echo '{page}'"], callback)
+
+    assert callback.finished.is_set()
+    assert _no_scanner_threads()
 
 
 def test_build_scan_command_uses_batch_print(tmp_path: Path) -> None:
