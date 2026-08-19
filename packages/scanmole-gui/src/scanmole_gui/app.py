@@ -12,7 +12,6 @@ mixes in output of the English-only CLI.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shlex
@@ -49,7 +48,12 @@ from scanmole.negotiation import (  # noqa: E402
     assess_source,
     probe_snapshot,
 )
-from scanmole_gui import __version__, desktop, incompatible_cli  # noqa: E402
+from scanmole_gui import __version__, desktop  # noqa: E402
+from scanmole_gui.discovery import (  # noqa: E402
+    display_name,
+    evaluate_listing,
+    parse_version,
+)
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES  # noqa: E402
 from scanmole_gui.probing import (  # noqa: E402
@@ -1193,62 +1197,41 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         ).start()
 
     def _devices_worker(self, prefer: str) -> None:
-        """Worker thread: query devices and hand results back to the main loop."""
+        """Worker thread: query devices and hand results back to the main loop.
+
+        The parsing and the compatibility decision live in the GTK-free
+        :mod:`scanmole_gui.discovery`; this thread only runs the command
+        (through the supervised engine helper, so a wedged backend probe
+        cannot leave descendants behind on timeout) and translates the
+        typed outcome for the user.
+        """
         if self._cli_version is None:
             self._cli_version = self._probe_cli_version()
         devices: list[dict[str, str]] = []
         err = ""
         try:
-            # The supervised engine helper: the query runs in its own
-            # process group, so a wedged backend probe cannot leave
-            # descendants behind on timeout.
             result = run_command(
                 [self._scanmole, "--list-devices", "--json"],
                 timeout_seconds=120,
             )
-            hello_version: str | None = None
-            for raw in result.stdout.splitlines():
-                try:
-                    event = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(event, dict):
-                    continue  # valid JSON, wrong shape: not ours to crash on
-                if event.get("event") == "hello":
-                    hello_version = str(event.get("version") or "") or None
-                if event.get("event") == "devices":
-                    # Hide virtual devices (webcams, SANE test backend); skip
-                    # entries that are not objects instead of crashing.
-                    devices = [
-                        device
-                        for device in event.get("devices") or []
-                        if isinstance(device, dict)
-                        and not str(device.get("device", "")).startswith(
-                            ("v4l:", "test:")
-                        )
-                    ]
             if result.stderr.strip():
                 GLib.idle_add(self._append_log, result.stderr.strip())
-            if hello_version is not None:
-                self._cli_version = hello_version
-            # Refuse a CLI whose major does not match instead of guessing: a
-            # mismatched protocol rendering silently wrong state is worse
-            # than a hard stop. A run without hello predates the handshake.
-            needed = (
-                incompatible_cli(__version__, hello_version)
-                if hello_version is not None or result.returncode == 0
-                else None
-            )
-            self._cli_blocked = needed is not None
-            if needed is not None:
-                devices = []
+            listing = evaluate_listing(result.stdout, result.returncode)
+            if listing.cli_version is not None:
+                self._cli_version = listing.cli_version
+            self._cli_blocked = listing.needed is not None
+            devices = listing.devices
+            if listing.needed is not None:
                 err = _(
                     "Incompatible scanmole CLI: found version %(found)s, "
                     "but this GUI needs %(needed)s."
-                ) % {"found": hello_version or _("unknown"), "needed": needed}
-            elif result.returncode != 0 and not devices:
+                ) % {
+                    "found": listing.cli_version or _("unknown"),
+                    "needed": listing.needed,
+                }
+            elif listing.failed_exit is not None:
                 err = _("Device search failed (exit %(code)d).") % {
-                    "code": result.returncode
+                    "code": listing.failed_exit
                 }
         except FileNotFoundError:
             err = _("scanmole CLI not found — install it or add it to PATH.")
@@ -1270,9 +1253,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             result = run_command([self._scanmole, "--version"], timeout_seconds=30)
         except (OSError, subprocess.TimeoutExpired):
             return None
-        lines = result.stdout.strip().splitlines()
-        parts = lines[0].split() if lines else []
-        return parts[-1] if len(parts) >= 2 else None
+        return parse_version(result.stdout)
 
     def _apply_devices(
         self, devices: list[dict[str, str]], err: str, prefer: str
@@ -1289,14 +1270,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._version_alert_shown = True
             self._alert(_("Incompatible scanmole CLI"), err)
         self._devices = devices
-        names = []
-        for device in devices:
-            vendor = (device.get("vendor") or "").strip()
-            model = (device.get("model") or "").strip()
-            names.append(
-                " ".join(p for p in (vendor, model) if p)
-                or device.get("device", _("Unknown device"))
-            )
+        names = [display_name(device, _("Unknown device")) for device in devices]
         self._device_row.set_model(Gtk.StringList.new(names))
         # The row itself must stay sensitive either way: disabling it would
         # also disable its refresh-button suffix, leaving no way to rescan.
