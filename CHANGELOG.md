@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simplex scans on devices with huge advertised windows (the Brother ADS-4550W reports a 3-metre one) no longer come out as Legal-sized pages with black side bars: on recognized feeder sources the paper edges are now found from the leading edge when the padded window drowns the ordinary detection.
 - Automatic page sizing no longer shaves a fraction of a millimetre off paper edges it never detected, so content touching an undetected frame edge keeps its outermost rows; the shave is also computed from the resolution the scanner actually used, so a snapped resolution can no longer widen it several-fold.
 - A narrow receipt strip whose length the scanner measured (hardware lower-edge detection) is no longer widened to a standard paper width; the measured length is kept, the width follows the printed content, and with `--keep-blanks` the strip's blank back now gets the same size as its front instead of a full-window page.
+- The desktop entry the GUI installs now escapes the pinned executable path exactly as the freedesktop.org specification requires (string layer and quoting layer, literal percent signs doubled), so paths containing backslashes or percent signs no longer produce an invalid or misinterpreted `Exec` line.
 
 
 

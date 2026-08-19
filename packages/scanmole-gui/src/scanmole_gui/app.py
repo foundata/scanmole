@@ -49,7 +49,7 @@ from scanmole.negotiation import (  # noqa: E402
     assess_source,
     probe_snapshot,
 )
-from scanmole_gui import __version__, incompatible_cli  # noqa: E402
+from scanmole_gui import __version__, desktop, incompatible_cli  # noqa: E402
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES  # noqa: E402
 from scanmole_gui.probing import (  # noqa: E402
@@ -205,30 +205,25 @@ def find_scanmole() -> str:
     return shutil.which("scanmole") or "scanmole"
 
 
-def ensure_app_icon() -> None:
-    """Copy or refresh the mascot icon in the user icon theme.
+# Thin XDG adapters: GLib knows the platform directories, the GTK-free
+# desktop module owns the entry text and the file lifecycle.
 
-    The non-intrusive half of the desktop integration: the icon alone
-    changes nothing until a desktop entry exists, but keeps an installed
-    entry's icon current across package updates.
-    """
-    try:
-        if not LOGO_FILE.is_file():
-            return
-        target = (
-            Path(GLib.get_user_data_dir())
-            / "icons"
-            / "hicolor"
-            / "scalable"
-            / "apps"
-            / f"{APP_ID}.svg"
-        )
-        icon_data = LOGO_FILE.read_bytes()
-        if not target.is_file() or target.read_bytes() != icon_data:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(icon_data)
-    except OSError:
-        LOGGER.debug("icon installation skipped", exc_info=True)  # a convenience
+
+def app_icon_target() -> Path:
+    """The user icon-theme location of the application icon."""
+    return (
+        Path(GLib.get_user_data_dir())
+        / "icons"
+        / "hicolor"
+        / "scalable"
+        / "apps"
+        / f"{APP_ID}.svg"
+    )
+
+
+def ensure_app_icon() -> None:
+    """Copy or refresh the mascot icon in the user icon theme."""
+    desktop.ensure_icon(LOGO_FILE, app_icon_target())
 
 
 def desktop_entry_path() -> Path:
@@ -243,45 +238,16 @@ def install_desktop_entry() -> bool:
     switchers on GNOME, KDE Plasma and the other XDG desktops show an
     application's name and logo only when a desktop file matches the
     application id (environments without the concept ignore the file).
-    Installing it is a deliberate action in the settings dialog, not a
-    startup side effect: with uv-managed environments the executable path
-    is not stable, so pinning it (and refreshing it after the environment
-    moved) should be the user's call. The future RPM ships system-wide
-    files instead.
     """
-    try:
-        ensure_app_icon()
-        executable = shutil.which("scanmole-gui") or str(Path(sys.argv[0]).resolve())
-        desktop_entry = (
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=ScanMole\n"
-            "Comment=Scan documents from a SANE scanner straight to a "
-            "searchable PDF\n"
-            "Comment[de]=Scannt Dokumente von einem SANE-Scanner direkt in "
-            "ein durchsuchbares PDF\n"
-            f'Exec="{executable}"\n'
-            f"Icon={APP_ID}\n"
-            "Terminal=false\n"
-            "StartupNotify=true\n"
-            "Categories=Office;Scanning;\n"
-        )
-        target = desktop_entry_path()
-        if not target.is_file() or target.read_text(encoding="utf-8") != desktop_entry:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(desktop_entry, encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    executable = shutil.which("scanmole-gui") or str(Path(sys.argv[0]).resolve())
+    return desktop.install_desktop_entry(
+        desktop_entry_path(), executable, APP_ID, LOGO_FILE, app_icon_target()
+    )
 
 
 def remove_desktop_entry() -> bool:
     """Delete the user-level desktop entry (the icon may stay; it is inert)."""
-    try:
-        desktop_entry_path().unlink(missing_ok=True)
-        return True
-    except OSError:
-        return False
+    return desktop.remove_desktop_entry(desktop_entry_path())
 
 
 def default_folder() -> str:
