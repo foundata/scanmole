@@ -346,3 +346,55 @@ def test_concurrent_runners_never_cross_their_streams(tmp_path: Path) -> None:
                 instance.runner.cancel()
                 instance.fire_timers()
                 instance.exited.wait(_DEADLINE)
+
+
+def test_shutdown_barrier_kills_a_term_ignoring_group(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    # Application shutdown cannot rely on scheduled timers (the main loop
+    # is ending): the synchronous barrier must TERM, KILL after the grace
+    # and reap on the calling thread, bounded even against a child that
+    # ignores TERM in its own session.
+    code = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('up', flush=True)\n"
+        "time.sleep(300)\n"
+    )
+    harness.runner.start(_argv(code), tmp_path)
+    assert harness.first_line.wait(_DEADLINE)
+    started = time.monotonic()
+
+    harness.runner.shutdown(grace=0.3, drain=5.0)
+
+    assert time.monotonic() - started < 5.0  # one bounded deadline
+    assert harness.runner.poll() is not None  # reaped, no zombie
+    assert harness.exited.wait(_DEADLINE)  # supervision settled, not orphaned
+
+    harness.runner.shutdown(grace=0.3, drain=5.0)  # repeat-safe no-op
+    assert len(harness.exits) == 1
+
+
+def test_shutdown_barrier_lets_an_obedient_child_exit_on_term(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    code = "import time\nprint('up', flush=True)\ntime.sleep(300)\n"
+    harness.runner.start(_argv(code), tmp_path)
+    assert harness.first_line.wait(_DEADLINE)
+
+    harness.runner.shutdown(grace=5.0, drain=5.0)
+
+    assert harness.runner.poll() == -signal.SIGTERM  # no KILL was needed
+
+
+def test_shutdown_after_a_finished_run_is_a_noop(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    harness.runner.start(_argv("print('done')"), tmp_path)
+    assert harness.exited.wait(_DEADLINE)
+    started = time.monotonic()
+
+    harness.runner.shutdown(grace=5.0, drain=5.0)
+
+    assert time.monotonic() - started < 2.0  # nothing left to wait for
+    assert harness.exits == [0]

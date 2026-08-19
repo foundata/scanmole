@@ -2185,8 +2185,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if runner is self._runner:
             self._append_log("[gui] still running \u2014 SIGKILL to process group")
 
-    def _on_close_request(self, *_args: object) -> bool:
-        """Persist the form and window geometry, stop any running scan.
+    def _persist_ui_state(self) -> None:
+        """Snapshot the form and window geometry to the settings file.
 
         The form is snapshotted here as well as at scan start, so changed
         values (mode, resolution, page size, ...) survive a restart even
@@ -2197,6 +2197,23 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._settings["window_width"] = int(self.get_width())
             self._settings["window_height"] = int(self.get_height())
         self._save_settings()
+
+    def _shutdown_now(self) -> None:
+        """Application shutdown: persist state, stop any scan synchronously.
+
+        The main loop is ending, so GLib sources scheduled from here on
+        (the cancel path's KILL escalation and exit polling) may never
+        fire. The runner's synchronous barrier TERMs, KILLs and reaps the
+        scan's process group on this thread instead.
+        """
+        self._persist_ui_state()
+        runner = self._runner
+        if runner is not None:
+            runner.shutdown()
+
+    def _on_close_request(self, *_args: object) -> bool:
+        """Persist the form and window geometry, stop any running scan."""
+        self._persist_ui_state()
         runner = self._runner
         if runner is not None and runner.is_running():
             # Closing must not orphan the engine mid-batch: run the normal
@@ -2321,17 +2338,19 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
         self.connect("shutdown", self._on_shutdown)
 
     def _on_shutdown(self, *_args: object) -> None:
-        """Persist state when the application quits without a window close.
+        """Persist state and stop any scan when the application quits.
 
         Ctrl+C (PyGObject's SIGINT fallback calls ``quit()``) ends the main
-        loop directly, bypassing the window's ``close-request`` handler; run
-        the same persistence while the window is still alive. On the normal
-        close path the window is already gone here, or a second identical
-        save is harmless.
+        loop directly, bypassing the window's ``close-request`` handler, and
+        GLib sources scheduled from here on may never fire, so the window's
+        timer-based close escalation cannot be trusted anymore. Delegate to
+        the synchronous shutdown barrier while the window is still alive;
+        on the normal close path the window is already gone here.
         """
         window = self.props.active_window
-        if isinstance(window, MainWindow):
-            window._on_close_request()
+        shutdown_now = getattr(window, "_shutdown_now", None)
+        if shutdown_now is not None:
+            shutdown_now()
 
     def _on_activate(self, app: Adw.Application) -> None:
         """Present the main window, creating it on first activation."""

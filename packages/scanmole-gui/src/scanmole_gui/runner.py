@@ -83,6 +83,7 @@ class ScanRunner:
         self._on_exit = on_exit
         self._on_escalated = on_escalated
         self._proc: subprocess.Popen[bytes] | None = None
+        self._watcher: threading.Thread | None = None
         self._cancelling = False
 
     def start(self, argv: list[str], cwd: Path) -> None:
@@ -98,7 +99,8 @@ class ScanRunner:
             stderr=subprocess.PIPE,
             start_new_session=True,  # own process group -> clean killpg
         )
-        threading.Thread(target=self._supervise, daemon=True).start()
+        self._watcher = threading.Thread(target=self._supervise, daemon=True)
+        self._watcher.start()
 
     def poll(self) -> int | None:
         """The child's exit code, or ``None`` while it is alive."""
@@ -119,6 +121,42 @@ class ScanRunner:
         self._signal_group(signal.SIGTERM)
         self._timer(SIGKILL_GRACE_SECONDS, self._escalate)
         return True
+
+    def shutdown(
+        self,
+        grace: float = SIGKILL_GRACE_SECONDS,
+        drain: float | None = None,
+    ) -> None:
+        """Synchronously stop the child: TERM, grace, KILL, reap, drain.
+
+        The cancel path schedules its KILL escalation and exit reporting
+        through the injected timer/schedule (GLib in the application); once
+        the main loop stops, those sources never fire and a TERM-ignoring
+        scan in its own session would survive the GUI. This barrier runs
+        entirely on the calling thread under one absolute deadline: TERM
+        the group, wait out ``grace``, KILL, reap the child, then give the
+        supervision thread (and with it the pipe drain) a bounded window.
+        Repeat-safe; a no-op once everything is stopped.
+        """
+        proc = self._proc
+        if proc is None:
+            return
+        self._cancelling = True  # a later cancel() must not re-arm timers
+        limit = self._drain_timeout if drain is None else drain
+        deadline = time.monotonic() + grace + limit
+        if proc.poll() is None:
+            self._signal_group(signal.SIGTERM)
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                self._signal_group(signal.SIGKILL)
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:  # pragma: no cover -- KILL failed
+            LOGGER.debug("child survived the shutdown barrier")
+        watcher = self._watcher
+        if watcher is not None:
+            watcher.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def _escalate(self) -> None:
         if self.is_running():

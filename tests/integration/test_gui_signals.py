@@ -115,6 +115,74 @@ def test_sole_available_source_is_adopted_and_preference_kept() -> None:
     assert choice_left._source_row.history == []
 
 
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_application_shutdown_delegates_to_the_synchronous_barrier() -> None:
+    # Once application shutdown begins, GLib sources may never fire again;
+    # the handler must call the window's synchronous shutdown path, not the
+    # timer-based close-request escalation.
+    from scanmole_gui.app import ScanMoleApp
+
+    calls: list[str] = []
+
+    class Window:
+        def _shutdown_now(self) -> None:
+            calls.append("shutdown_now")
+
+    class Props:
+        active_window = Window()
+
+    class App:
+        props = Props()
+
+    ScanMoleApp._on_shutdown(App())  # type: ignore[arg-type]
+    assert calls == ["shutdown_now"]
+
+    class GoneProps:
+        active_window = None
+
+    class GoneApp:
+        props = GoneProps()
+
+    ScanMoleApp._on_shutdown(GoneApp())  # type: ignore[arg-type]
+    assert calls == ["shutdown_now"]  # no window left: nothing to do
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
+    from scanmole_gui.app import MainWindow
+
+    class Runner:
+        def __init__(self) -> None:
+            self.shutdowns = 0
+
+        def shutdown(self) -> None:
+            self.shutdowns += 1
+
+    class Window:
+        _shutdown_now = MainWindow._shutdown_now
+
+        def __init__(self) -> None:
+            self.persisted = 0
+            self._runner: Runner | None = Runner()
+
+        def _persist_ui_state(self) -> None:
+            self.persisted += 1
+
+    window = Window()
+    window._shutdown_now()  # type: ignore[misc]
+    assert window.persisted == 1
+    assert window._runner is not None and window._runner.shutdowns == 1
+
+    idle = Window()
+    idle._runner = None
+    idle._shutdown_now()  # type: ignore[misc]
+    assert idle.persisted == 1  # state persists even without a scan
+
+
 @_NEEDS_DESKTOP
 def test_sigint_exits_with_130_and_saves_settings(tmp_path: Path) -> None:
     stderr_file = tmp_path / "gui-stderr.log"
