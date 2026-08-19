@@ -120,6 +120,13 @@ PAGE_SIZES = (
     (_("Letter"), "letter"),
     (_("Legal"), "legal"),
 )
+# The tie-break family for ambiguous automatic sizes (A4 and Letter often
+# both fit the content). A preference, never a restriction; the CLI value
+# is carried alongside the label, so behavior never parses translations.
+AUTO_SIZE_PREFERENCES = (
+    (_("ISO (A sizes)"), "iso"),
+    (_("North America (Letter/Legal)"), "north-american"),
+)
 LANGUAGES = (
     (_("German (deu)"), "deu"),
     (_("English (eng)"), "eng"),
@@ -838,10 +845,35 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._on_document_changed,
             tooltips=MODE_TOOLTIPS,
         )
-        self._size_row = Adw.ComboRow(title=_("Page size"))
-        self._size_row.set_model(
-            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
+        # Page size plus the automatic-size family preference in one row:
+        # the second dropdown only matters (and is only sensitive) while
+        # the first says Automatic; it keeps its value while disabled.
+        self._size_row = Adw.ActionRow(title=_("Page size"))
+        size_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            halign=Gtk.Align.END,
+            valign=Gtk.Align.CENTER,
         )
+        self._size_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new([label for label, _value in PAGE_SIZES])
+        )
+        self._size_dropdown.set_factory(plain_string_factory())
+        self._size_dropdown.connect("notify::selected", self._on_page_size_changed)
+        size_box.append(self._size_dropdown)
+        self._size_pref_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new([label for label, _value in AUTO_SIZE_PREFERENCES])
+        )
+        self._size_pref_dropdown.set_factory(plain_string_factory())
+        self._size_pref_dropdown.set_tooltip_text(
+            _("Resolves ambiguous automatic page sizes (A4 and Letter often both fit).")
+        )
+        self._size_pref_dropdown.update_property(
+            [Gtk.AccessibleProperty.LABEL], [_("Automatic size preference")]
+        )
+        self._size_pref_dropdown.connect("notify::selected", self._on_document_changed)
+        size_box.append(self._size_pref_dropdown)
+        self._size_row.add_suffix(size_box)
         self._doc_grp.add(self._size_row)
 
         # Hybrid resolution control, composed as entry / unit / stepper so
@@ -1089,7 +1121,16 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         except ValueError:
             resolution = 300
         self._set_resolution(resolution)
-        combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
+        combo_select(
+            self._size_dropdown, PAGE_SIZES, str(settings.get("page_size", "auto"))
+        )
+        # A missing or unknown saved value keeps the default (index 0: ISO).
+        combo_select(
+            self._size_pref_dropdown,
+            AUTO_SIZE_PREFERENCES,
+            str(settings.get("auto_size_preference", "iso")),
+        )
+        self._on_page_size_changed()
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
         self._deskew_row.set_active(bool(settings.get("deskew", True)))
         self._select_language(str(settings.get("lang", "deu+eng")))
@@ -1184,7 +1225,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "source": self._source_row.value(),
             "mode": self._mode_row.value(),
             "resolution": str(self._current_resolution()),
-            "page_size": combo_value(self._size_row, PAGE_SIZES),
+            "page_size": combo_value(self._size_dropdown, PAGE_SIZES),
+            "auto_size_preference": combo_value(
+                self._size_pref_dropdown, AUTO_SIZE_PREFERENCES
+            ),
             "ocr": self._ocr_row.get_active(),
             "deskew": self._deskew_row.get_active(),
             "lang": self._selected_language(),
@@ -1585,6 +1629,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             # state is reached by typing a custom value, not by unselecting.
             self._sync_resolution_chips()
 
+    def _on_page_size_changed(self, *_args: object) -> None:
+        """Gate the family preference: it only applies in automatic mode."""
+        automatic = combo_value(self._size_dropdown, PAGE_SIZES) == "auto"
+        self._size_pref_dropdown.set_sensitive(automatic)
+        self._on_document_changed()
+
     def _on_document_changed(self, *_args: object) -> None:
         """Refresh the size estimate and the filename preview."""
         dpi = self._current_resolution()
@@ -1907,7 +1957,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             source=self._source_row.value(),
             mode=self._mode_row.value(),
             resolution=self._current_resolution(),
-            page_size=combo_value(self._size_row, PAGE_SIZES),
+            page_size=combo_value(self._size_dropdown, PAGE_SIZES),
+            auto_size_preference=(
+                "north-american"
+                if combo_value(self._size_pref_dropdown, AUTO_SIZE_PREFERENCES)
+                == "north-american"
+                else "iso"
+            ),
             ocr=bool(self._ocr_row.get_active()),
             lang=self._selected_language(),
             deskew=bool(self._deskew_row.get_active()),

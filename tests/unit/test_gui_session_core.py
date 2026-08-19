@@ -92,6 +92,31 @@ def test_argv_variants_cover_every_switch() -> None:
     assert "--keep-blanks" in argv
 
 
+def test_automatic_size_emits_the_family_preference() -> None:
+    chosen = request_argv(
+        _request(page_size="auto", auto_size_preference="north-american"), "scanmole"
+    )
+    default = request_argv(_request(page_size="auto"), "scanmole")
+
+    assert chosen[chosen.index("--auto-size-preference") + 1] == "north-american"
+    assert default[default.index("--auto-size-preference") + 1] == "iso"
+
+
+def test_fixed_size_omits_the_family_preference() -> None:
+    argv = request_argv(
+        _request(page_size="letter", auto_size_preference="north-american"),
+        "scanmole",
+    )
+
+    assert "--auto-size-preference" not in argv
+
+
+def test_request_snapshot_carries_the_preference() -> None:
+    assert _request().auto_size_preference == "iso"
+    chosen = _request(auto_size_preference="north-american")
+    assert chosen.auto_size_preference == "north-american"
+
+
 # ---- protocol decoding ----------------------------------------------------
 
 

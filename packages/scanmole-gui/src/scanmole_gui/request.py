@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from scanmole.config import AutoSizePreference
 from scanmole_gui.modes import mode_argv
 
 
@@ -33,6 +34,9 @@ class ScanRequest:
     deskew: bool
     drop_blanks: bool
     output: str
+    auto_size_preference: AutoSizePreference = "iso"
+    """Family that wins ambiguous automatic sizes; irrelevant (and not
+    emitted) for a fixed page size."""
 
 
 def request_argv(request: ScanRequest, scanmole: str) -> list[str]:
@@ -43,6 +47,8 @@ def request_argv(request: ScanRequest, scanmole: str) -> list[str]:
     argv += ["--source", request.source]
     argv += mode_argv(request.mode)
     argv += ["-r", str(request.resolution), "--page-size", request.page_size]
+    if request.page_size == "auto":
+        argv += ["--auto-size-preference", request.auto_size_preference]
     if request.ocr:
         argv.append("--ocr")
         argv += ["-l", request.lang]
