@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 
 from scanmole import __version__
-from scanmole.cli import _build_config, _resolve_output, _Terminated, build_parser, main
+from scanmole.cli import _build_config, _resolve_output, build_parser, main
 from scanmole.config import ScanConfig
-from scanmole.errors import InputError, NoPagesError, ProcessingError
+from scanmole.errors import InputError, NoPagesError, ProcessingError, Terminated
 
 
 def _raiser(exc: BaseException) -> object:
@@ -330,7 +330,7 @@ def test_main_returns_130_on_keyboard_interrupt(
 def test_main_returns_143_on_sigterm(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("scanmole.cli.run_pipeline", _raiser(_Terminated()))
+    monkeypatch.setattr("scanmole.cli.run_pipeline", _raiser(Terminated()))
 
     assert main(["--json"]) == 143
 
@@ -346,7 +346,7 @@ def test_main_installs_a_sigterm_handler(monkeypatch: pytest.MonkeyPatch) -> Non
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         assert handler is not previous
-        with pytest.raises(_Terminated):
+        with pytest.raises(Terminated):
             handler(signal.SIGTERM, None)
     finally:
         signal.signal(signal.SIGTERM, previous)

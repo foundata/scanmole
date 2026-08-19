@@ -26,7 +26,7 @@ from scanmole.devices import (
     list_devices,
     pick_default_device,
 )
-from scanmole.errors import InputError, ScanMoleError
+from scanmole.errors import InputError, ScanMoleError, Terminated
 from scanmole.events import EventWriter
 from scanmole.external import require_tools
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template, has_counter
@@ -38,20 +38,11 @@ _INTERRUPTED_EXIT_CODE = 130  # 128 + SIGINT
 _TERMINATED_EXIT_CODE = 143  # 128 + SIGTERM
 
 
-class _Terminated(Exception):
-    """Raised by the SIGTERM handler so cleanup handlers run before exit.
-
-    The GUI (and process supervisors) stop a run with SIGTERM. Python's
-    default disposition would kill the interpreter without unwinding, leaving
-    the scanimage child running and the work directory behind.
-    """
-
-
 def _install_sigterm_handler() -> None:
-    """Convert SIGTERM into :class:`_Terminated`."""
+    """Convert SIGTERM into :class:`Terminated`."""
 
     def raise_terminated(signum: int, frame: FrameType | None) -> None:
-        raise _Terminated
+        raise Terminated
 
     try:
         signal.signal(signal.SIGTERM, raise_terminated)
@@ -514,7 +505,7 @@ def main(argv: list[str] | None = None) -> int:
         events.error("interrupted", code=_INTERRUPTED_EXIT_CODE)
         LOGGER.error("interrupted")
         return _INTERRUPTED_EXIT_CODE
-    except _Terminated:
+    except Terminated:
         events.error("terminated", code=_TERMINATED_EXIT_CODE)
         LOGGER.error("terminated")
         return _TERMINATED_EXIT_CODE

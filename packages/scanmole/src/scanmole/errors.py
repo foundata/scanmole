@@ -56,3 +56,15 @@ class ProcessingError(ScanMoleError):
     """Report an img2pdf or ocrmypdf failure after pages were acquired."""
 
     exit_code = 5
+
+
+class Terminated(Exception):
+    """Raised by the CLI's SIGTERM handler so cleanup runs before exit.
+
+    The GUI (and process supervisors) stop a run with SIGTERM. Python's
+    default disposition would kill the interpreter without unwinding,
+    leaving the scanimage child running and the work directory behind.
+    Shared here because the scanner's shutdown drain must recognize it as
+    a termination interrupt (retry the drain step) rather than a cleanup
+    failure (never retried).
+    """
