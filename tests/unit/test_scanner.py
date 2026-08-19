@@ -506,7 +506,13 @@ def test_scan_to_files_reprobes_with_the_mapped_source(
         lambda p: None,
     )
 
-    assert probes == [(), (("--source", "ADF Duplex"),)]
+    # Bare, source-applied, then the final acquisition state (source plus
+    # the negotiated options; no mode option exists here).
+    assert probes == [
+        (),
+        (("--source", "ADF Duplex"),),
+        (("--source", "ADF Duplex"),),
+    ]
 
 
 def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
@@ -707,6 +713,122 @@ def test_source_dependent_snapshot_decides_the_resolution(
     assert result.settings.resolution == 150
 
 
+def _res(minimum: float, maximum: float) -> Capability:
+    return Capability(kind="range", minimum=minimum, maximum=maximum)
+
+
+def test_mode_dependent_resolution_is_renegotiated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 50..600 dpi in the bare and source listings, but only 50..150 once
+    # Lineart is applied: the emitted and reported dpi must come from the
+    # final acquisition state, not the earlier optimistic range.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    base = {
+        "source": Capability(kind="enum", choices=["ADF Duplex"]),
+        "mode": Capability(kind="enum", choices=["Lineart", "Gray"]),
+    }
+    commands: list[list[str]] = []
+
+    def fake_probe(
+        device: str, settings: tuple[tuple[str, str], ...] = (), **_kw: object
+    ) -> dict[str, Capability]:
+        applied_mode = any(option == "--mode" for option, _value in settings)
+        return {**base, "resolution": _res(50, 150 if applied_mode else 600)}
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(resolution=300),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    assert commands[0][commands[0].index("--resolution") + 1] == "150"
+    assert result.settings.resolution == 150
+
+
+def test_software_faint_resolution_follows_the_gray_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The adaptive faint path scans Gray: the dpi must come from the probe
+    # with Gray (and the pinned depth) applied.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P5\n1 1\n255\n\x80")
+    base = {
+        "source": Capability(kind="enum", choices=["ADF Duplex"]),
+        "mode": Capability(kind="enum", choices=["Lineart", "Gray"]),
+    }
+    commands: list[list[str]] = []
+
+    def fake_probe(
+        device: str, settings: tuple[tuple[str, str], ...] = (), **_kw: object
+    ) -> dict[str, Capability]:
+        gray = ("--mode", "Gray") in settings
+        return {**base, "resolution": _res(50, 150 if gray else 600)}
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(resolution=300, lineart_threshold="auto"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    assert commands[0][commands[0].index("--mode") + 1] == "Gray"
+    assert commands[0][commands[0].index("--resolution") + 1] == "150"
+    assert result.settings.resolution == 150
+
+
+def test_native_faint_resolution_follows_the_enhanced_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The native SDTC path applies Lineart plus its extras; the dpi must
+    # come from the probe with that complete state applied.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    commands: list[list[str]] = []
+
+    def fake_probe(
+        device: str, settings: tuple[tuple[str, str], ...] = (), **_kw: object
+    ) -> dict[str, Capability]:
+        caps = _fixture_caps("fujitsu-scansnap-ix500.txt")
+        if ("--mode", "Lineart") in settings:
+            caps["resolution"] = _res(50, 150)
+        return caps
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(resolution=300, lineart_threshold="auto"),
+        "fujitsu:iX500",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    assert commands[0][commands[0].index("--threshold") + 1] == "0"  # native path
+    assert commands[0][commands[0].index("--resolution") + 1] == "150"
+    assert result.settings.resolution == 150
+
+
 def test_faint_command_engages_fujitsu_sdtc_in_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -736,11 +858,13 @@ def test_faint_command_engages_fujitsu_sdtc_in_order(
     )
 
     source = ("--source", "ADF Duplex")
+    final = (source, ("--mode", "Lineart"), ("--threshold", "0"), ("--variance", "0"))
     assert probes == [
         (),
         (source,),
         (source, ("--mode", "Lineart")),
-        (source, ("--mode", "Lineart"), ("--threshold", "0"), ("--variance", "0")),
+        final,  # the SDTC verification reprobe
+        final,  # the final-state probe deciding resolution and geometry
     ]
     command = commands[0]
     mode_at = command.index("--mode")
@@ -863,7 +987,7 @@ def test_faint_candidate_probe_failure_falls_back_to_gray(
     def fake_probe(
         device: str, settings: tuple[tuple[str, str], ...] = (), **_kw: object
     ) -> dict[str, Capability]:
-        if any(option == "--mode" for option, _value in settings):
+        if ("--mode", "Lineart") in settings:  # only the candidate probes
             raise DeviceError("timed out probing options")
         return caps
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import shlex
@@ -20,6 +21,7 @@ from scanmole.negotiation import (
     Plan,
     Prober,
     Support,
+    assess_resolution,
     log_notices,
     negotiate,
     require_supported,
@@ -403,6 +405,23 @@ def _close_stream(stream: IO[str]) -> None:
     stream.close()
 
 
+def _acquisition_settings(plan: Plan) -> tuple[tuple[str, str], ...]:
+    """The plan's complete ordered acquisition state, as probe settings.
+
+    Exactly the options the scan command will apply before geometry:
+    source, final mode, native-enhancement extras and an explicit depth.
+    """
+    settings: list[tuple[str, str]] = []
+    if plan.source.backend_value is not None:
+        settings.append(("--source", plan.source.backend_value))
+    if plan.mode.backend_value is not None:
+        settings.append(("--mode", plan.mode.backend_value))
+    settings.extend(plan.extra_options)
+    if plan.depth.backend_value is not None:
+        settings.append(("--depth", plan.depth.backend_value))
+    return tuple(settings)
+
+
 def _staged_prober(device: str) -> Prober:
     """A prober for the faint mode's candidate probes: failure means None.
 
@@ -487,6 +506,18 @@ def scan_to_files(
         )
         plan = resolve_faint_plan(plan, caps, _staged_prober(device), base)
     require_supported(plan)
+    final_settings = _acquisition_settings(plan)
+    if final_settings:
+        # Constraints can also depend on the mode (and the other applied
+        # options): a backend may offer 50..600 dpi in Color but only a
+        # reduced range in Lineart. Reprobe with the complete acquisition
+        # state and reassess resolution and geometry from that snapshot.
+        # The already-negotiated source, mode, extras and depth stay
+        # locked; only the dependent values are read again.
+        caps = probe_capabilities(device, settings=final_settings)
+        plan = dataclasses.replace(
+            plan, resolution=assess_resolution(caps, config.resolution)
+        )
     if plan.resolution.support is Support.UNKNOWN:
         # Refuse before feeding paper: without an established physical
         # resolution every PDF page dimension would be a guess. This is a
