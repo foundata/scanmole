@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import signal
 from pathlib import Path
 
@@ -464,3 +465,59 @@ def test_auto_size_preference_with_a_fixed_page_size_is_accepted(
 
     assert config.page_size == "a4"
     assert config.auto_size_preference == "north-american"
+
+
+def _never_discover(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail() -> str:
+        raise AssertionError("device discovery must not run")
+
+    monkeypatch.setattr("scanmole.cli.pick_default_device", fail)
+
+
+def test_missing_scanimage_is_the_documented_dependency_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without scanimage a scan exits 4 with the install hint, before any
+    # discovery could turn the absence into an incidental failure.
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "scanmole.external.shutil.which",
+        lambda tool: None if tool == "scanimage" else real_which(tool),
+    )
+    _never_discover(monkeypatch)
+
+    assert main(["-o", str(tmp_path / "a.pdf")]) == 4
+
+
+def test_invalid_arguments_never_reach_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _never_discover(monkeypatch)
+
+    conflicting = main(["-o", str(tmp_path / "a.pdf"), "positional-base"])
+    threshold = main(["--lineart-threshold", "1.5", "-o", str(tmp_path / "b.pdf")])
+
+    assert conflicting == 2
+    assert threshold == 2
+
+
+def test_argument_errors_precede_the_dependency_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pinned precedence: pure validation (exit 2) before environment
+    # checks (exit 4), even when both would fail.
+    monkeypatch.setattr("scanmole.external.shutil.which", lambda tool: None)
+    _never_discover(monkeypatch)
+
+    assert main(["-o", str(tmp_path / "a.pdf"), "positional-base"]) == 2
+
+
+def test_from_images_never_discovers_a_scanner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _never_discover(monkeypatch)
+    monkeypatch.setattr("scanmole.cli.run_pipeline", lambda config, events: 0)
+    page = tmp_path / "page.pgm"
+    page.write_bytes(b"P5\n1 1\n255\n\x80")
+
+    assert main(["--from-images", str(page), "-o", str(tmp_path / "a.pdf")]) == 0

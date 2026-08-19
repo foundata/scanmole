@@ -425,14 +425,23 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         InputError: If ``--from-images`` is combined with an explicit device,
             or ``--lineart-threshold`` is out of range.
     """
+    # Pure argument validation first: conflicting flags and template
+    # problems must be reported before any tool or hardware is touched.
     if args.from_images is not None and args.device is not None:
         raise InputError(
             "--from-images does not scan; do not combine it with -d/--device"
         )
+    if args.output and args.outbase:
+        raise InputError("give either -o/--output or a positional OUTBASE, not both")
     if args.lineart_threshold != "auto" and not 0 <= args.lineart_threshold < 1:
         raise InputError(
             "--lineart-threshold must be 0 (off), a fraction below 1 or "
             f"'auto', got {args.lineart_threshold}"
+        )
+    template = args.output or args.outbase or DEFAULT_OUTPUT_TEMPLATE
+    if "{device}" in template and args.from_images is not None:
+        raise InputError(
+            "the {device} placeholder needs a scanner run; --from-images has no device"
         )
     from_images = (
         tuple(Path(image) for image in args.from_images)
@@ -441,12 +450,17 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
     )
     keep_images = Path(args.keep_images) if args.keep_images else None
     device: str | None = args.device or None
-    if from_images is None and device is None:
-        # Resolve the scanner exactly once, before the output template
-        # expands: the file name and the acquisition must refer to the same
-        # physical device even when the device list changes in between.
-        # Failing here (scanner unplugged) beats silently switching devices.
-        device = pick_default_device()
+    if from_images is None:
+        # Environmental checks after the pure ones: a missing scanimage is
+        # the documented missing-dependency error (exit 4, with the install
+        # hint), never an incidental failure inside device discovery.
+        require_tools(["scanimage"])
+        if device is None:
+            # Resolve the scanner exactly once, before the output template
+            # expands: the file name and the acquisition must refer to the
+            # same physical device even when the device list changes in
+            # between. Failing here beats silently switching devices.
+            device = pick_default_device()
     return ScanConfig(
         device=device,
         source=args.source,
