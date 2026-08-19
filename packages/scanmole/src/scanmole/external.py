@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import logging
 import os
+import select
 import shlex
 import shutil
 import signal
 import subprocess
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from scanmole.errors import MissingDependencyError
+from scanmole.errors import MissingDependencyError, Terminated
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,10 +27,21 @@ GROUP_KILL_GRACE_SECONDS = 3.0
 External tools spawn their own helpers (ocrmypdf drives tesseract and
 Ghostscript), so a timed-out or interrupted command is signalled as a
 whole process group, and the direct child's exit alone does not prove the
-group is gone. The grace sits deliberately far inside the GUI runner's
-ten-second outer grace: the GUI TERMs the CLI's process group, the CLI
-unwinds and stops any private child group within this window, and the
-GUI's later KILL remains the hard limit.
+group is gone. Together with :data:`CLEANUP_DRAIN_SECONDS` this forms one
+absolute cleanup deadline, sitting deliberately far inside the GUI
+runner's ten-second outer grace: the GUI TERMs the CLI's process group,
+the CLI unwinds and stops any private child group within this window,
+and the GUI's later KILL remains the hard limit.
+"""
+
+CLEANUP_DRAIN_SECONDS = 2.0
+"""Budget after the group KILL for the reap and the final pipe drain.
+
+A descendant that started its own session escapes the group KILL and can
+hold a duplicated pipe end open indefinitely; once this deadline passes,
+the local descriptors are closed and the captured output prefix is
+returned as-is. Diagnostics written after the deadline are truncated on
+purpose: an escaped process must never stall the caller.
 """
 
 PROBE_TIMEOUT_SECONDS = 60
@@ -79,24 +92,107 @@ def _signal_group(pid: int, sig: int) -> None:
         pass  # already gone, or never ours to signal
 
 
-def _shutdown_group(process: subprocess.Popen[str]) -> tuple[str, str]:
-    """TERM the command's whole group, KILL it after the grace, reap, drain.
+class _PipeCapture:
+    """Binary capture of a child's pipes with absolute-deadline pumping.
 
-    The group KILL is sent even when the direct child already exited: its
-    descendants live in the same group and may have ignored the TERM.
-
-    Returns:
-        Whatever stdout and stderr the command produced before it died.
+    Reads raw descriptors through ``select`` so every wait is bounded by
+    an absolute deadline: EOF may simply never come when a descendant of
+    the child keeps a duplicated pipe end open.
     """
-    _signal_group(process.pid, signal.SIGTERM)
+
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+        self._streams = [
+            stream for stream in (process.stdout, process.stderr) if stream is not None
+        ]
+        self._order = [stream.fileno() for stream in self._streams]
+        self._buffers = {fd: bytearray() for fd in self._order}
+        self._open = set(self._order)
+
+    @property
+    def drained(self) -> bool:
+        return not self._open
+
+    def pump(self, deadline: float) -> None:
+        """Read until every pipe hit EOF or the deadline passed."""
+        while self._open:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                ready, _, _ = select.select(list(self._open), [], [], remaining)
+            except OSError:  # pragma: no cover -- fd closed underneath
+                return
+            if not ready:
+                return  # the deadline passed
+            for fd in ready:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    self._buffers[fd] += chunk
+                else:
+                    self._open.discard(fd)
+
+    def close(self) -> None:
+        for stream in self._streams:
+            try:
+                stream.close()
+            except OSError:  # pragma: no cover -- close cannot really fail
+                pass
+
+    def decoded(self) -> tuple[str, str]:
+        texts = [
+            bytes(self._buffers[fd]).decode("utf-8", "replace") for fd in self._order
+        ]
+        return texts[0], texts[1]
+
+
+def _wait_until(process: subprocess.Popen[bytes], deadline: float) -> None:
+    """Reap the direct child if it exits before the deadline."""
+    if process.poll() is not None:
+        return
     try:
-        stdout, stderr = process.communicate(timeout=GROUP_KILL_GRACE_SECONDS)
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
-        _signal_group(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate()
-    else:
-        _signal_group(process.pid, signal.SIGKILL)
-    return stdout or "", stderr or ""
+        pass
+
+
+def _cleanup(
+    process: subprocess.Popen[bytes],
+    capture: _PipeCapture,
+    outcome: BaseException,
+) -> BaseException:
+    """Stop the whole group and drain, preserving the first cause.
+
+    One absolute deadline spans TERM, the grace wait, the group KILL (sent
+    even when the direct child already exited: descendants share the
+    group), the reap and the final drain. Interrupts during any step are
+    absorbed without restarting the deadline; unexpected step failures are
+    logged at debug level and the remaining steps still run. The caller
+    always sees the original cause.
+    """
+    kill_at = time.monotonic() + GROUP_KILL_GRACE_SECONDS
+    end_at = kill_at + CLEANUP_DRAIN_SECONDS
+
+    def absorbing(callback: Callable[[], object]) -> None:
+        while True:
+            try:
+                callback()
+                return
+            except (KeyboardInterrupt, Terminated):
+                continue  # deadline-bounded steps: a retry cannot extend cleanup
+            except BaseException:
+                LOGGER.debug("cleanup step failed; continuing", exc_info=True)
+                return
+
+    absorbing(lambda: _signal_group(process.pid, signal.SIGTERM))
+    absorbing(lambda: capture.pump(kill_at))
+    absorbing(lambda: _wait_until(process, kill_at))
+    absorbing(lambda: _signal_group(process.pid, signal.SIGKILL))
+    absorbing(lambda: _wait_until(process, end_at))
+    absorbing(lambda: capture.pump(end_at))
+    return outcome
 
 
 def run_command(
@@ -107,10 +203,13 @@ def run_command(
 ) -> subprocess.CompletedProcess[str]:
     """Run an external command in its own process group, capturing text.
 
-    Timeouts and interruptions stop the *whole* group (TERM, then KILL
-    after :data:`GROUP_KILL_GRACE_SECONDS`), so descendants of the tools
-    (tesseract and Ghostscript under ocrmypdf) cannot survive their
-    parent. The direct child is always reaped and its pipes drained.
+    Timeouts and interruptions stop the *whole* group (TERM, then KILL,
+    then a bounded reap and drain under one absolute deadline), so
+    descendants of the tools (tesseract and Ghostscript under ocrmypdf)
+    cannot survive their parent, and even a descendant that escaped into
+    its own session cannot stall the caller by holding a pipe open. The
+    first cause always wins: a timeout stays ``TimeoutExpired`` and an
+    interrupt stays itself, no matter what happens during cleanup.
 
     Args:
         command: Program and arguments as a sequence.
@@ -128,20 +227,32 @@ def run_command(
         list(command),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
         start_new_session=True,  # own group: cleanup reaches descendants
     )
+    capture = _PipeCapture(process)
+    outcome: BaseException | None = None
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        stdout, stderr = _shutdown_group(process)
+        deadline = time.monotonic() + timeout_seconds
+        capture.pump(deadline)
+        if capture.drained:
+            _wait_until(process, deadline)
+        if process.poll() is None or not capture.drained:
+            # Same contract as subprocess.run: a pipe still open past the
+            # deadline is a timeout even when the direct child exited (a
+            # descendant may hold a duplicated end).
+            outcome = subprocess.TimeoutExpired(list(command), timeout_seconds)
+    except BaseException as exc:
+        outcome = exc
+    if outcome is not None:
+        outcome = _cleanup(process, capture, outcome)
+    capture.close()
+    stdout, stderr = capture.decoded()
+    if isinstance(outcome, subprocess.TimeoutExpired):
         raise subprocess.TimeoutExpired(
-            exc.cmd, timeout_seconds, output=stdout, stderr=stderr
+            list(command), timeout_seconds, output=stdout, stderr=stderr
         ) from None
-    except BaseException:
-        _shutdown_group(process)
-        raise
+    if outcome is not None:
+        raise outcome
     result = subprocess.CompletedProcess(
         list(command), process.returncode, stdout, stderr
     )
