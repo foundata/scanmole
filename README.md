@@ -59,7 +59,7 @@ It consists of two components, shipped as two Python packages, so servers and sc
 Main features:
 
 - **Scan a stack of paper into one searchable PDF with a single command:** duplex batch, blank backsides dropped, OCR text layer, archival PDF/A output by default.
-- **Automatic page size detection crops every page to the paper's real edges**, so receipts come out receipt-sized and mixed stacks need no set-up.
+- **Automatic page size detection crops every page to the paper's real edges**, so receipts come out receipt-sized and mixed stacks need no set-up. When content fits A4 and US Letter alike, `--auto-size-preference iso|north-american` decides the ambiguity (ISO by default).
 - **Small files by default:** 1-bit black-and-white at 300 dpi lands at roughly 100 KB per A4 text page, and ocrmypdf shrinks that further where `jbig2enc` is installed.
 - **Works with anything [SANE](https://en.wikipedia.org/wiki/Scanner_Access_Now_Easy)** can drive, including driverless eSCL devices via `sane-airscan`. Device capabilities are probed and mapped instead of hardcoded, and devices without a native 1-bit mode get software binarization automatically.
 - **Automation-grade CLI** with defined exit codes, filename templates and a versioned JSON event protocol; interrupted batches can be rebuilt from the preserved page images without rescanning the paper.
