@@ -108,6 +108,81 @@ build_artifacts() {
     git worktree remove --force "$clean_dir"
     ls -1 dist
     check_artifact_hygiene
+    check_lockstep_bound dist/*
+}
+
+check_lockstep_bound() {
+    # Releases are lockstep and the GUI/CLI handshake is directional (a newer
+    # GUI refuses an older engine), so scanmole-gui's dependency lower bound
+    # must equal its own version, in the sources and in every built GUI
+    # artifact handed in as an argument.
+    log "Lockstep dependency bound (scanmole-gui needs scanmole>=<own version>)"
+    uv run python - "$@" <<'PY'
+import re
+import sys
+import tarfile
+import tomllib
+import zipfile
+from pathlib import Path
+
+errors: list[str] = []
+BOUND = re.compile(r"^scanmole\s*>=\s*([0-9.]+)\s*,\s*<\s*([0-9]+)$")
+
+def check(where: str, version: str, requirements: list[str]) -> None:
+    lines = [r for r in requirements if re.match(r"^scanmole\W", r)]
+    if len(lines) != 1:
+        errors.append(f"{where}: expected exactly one scanmole requirement, got {lines}")
+        return
+    match = BOUND.match(lines[0].strip())
+    if match is None:
+        errors.append(f"{where}: requirement {lines[0]!r} is not 'scanmole>=X.Y.Z,<N'")
+        return
+    lower, upper = match.group(1), match.group(2)
+    major = version.split(".")[0]
+    if lower != version:
+        errors.append(
+            f"{where}: lower bound {lower} != scanmole-gui version {version}; "
+            "lockstep releases must raise the bound with every release"
+        )
+    if upper != str(int(major) + 1):
+        errors.append(f"{where}: upper bound <{upper} does not cap the next major")
+
+pyproject = tomllib.loads(Path("packages/scanmole-gui/pyproject.toml").read_text())
+check(
+    "packages/scanmole-gui/pyproject.toml",
+    pyproject["project"]["version"],
+    pyproject["project"]["dependencies"],
+)
+
+def metadata_text(artifact: str) -> str:
+    if artifact.endswith(".whl"):
+        with zipfile.ZipFile(artifact) as bundle:
+            meta = next(n for n in bundle.namelist() if n.endswith(".dist-info/METADATA"))
+            return bundle.read(meta).decode("utf-8", errors="replace")
+    with tarfile.open(artifact) as bundle:
+        meta = next(n for n in bundle.getnames() if n.endswith("/PKG-INFO"))
+        member = bundle.extractfile(meta)
+        assert member is not None
+        return member.read().decode("utf-8", errors="replace")
+
+for artifact in sys.argv[1:]:
+    name = Path(artifact).name
+    if not (name.startswith("scanmole_gui-") or name.startswith("scanmole-gui-")):
+        continue
+    version, requirements = "", []
+    for line in metadata_text(artifact).splitlines():
+        if line.startswith("Version:"):
+            version = line.split(":", 1)[1].strip()
+        elif line.startswith("Requires-Dist:"):
+            requirements.append(line.split(":", 1)[1].strip())
+    check(artifact, version, requirements)
+
+if errors:
+    for line in errors:
+        print(f"error: {line}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"lockstep bound ok ({len(sys.argv) - 1} artifact(s) checked)")
+PY
 }
 
 check_artifact_hygiene() {
@@ -150,6 +225,7 @@ validate_artifacts() {
         exit 1
     fi
     check_artifact_hygiene
+    check_lockstep_bound dist/*
 
     log "Tree state, versions, tag, lockstep and prepared READMEs"
     uv run python - dist/* <<'PY'

@@ -16,8 +16,10 @@ maintainers = [
   { name = "Andreas Haerter", email = "ah@foundata.com" },
 ]
 requires-python = ">=3.12"
-# The pin mirrors the runtime version handshake: GUI and CLI are compatible
-# while their SemVer majors match.
+# The pin mirrors the runtime version handshake, which is directional: this
+# GUI drives its own or any newer same-major engine/CLI, never an older one.
+# Releases are lockstep, so the lower bound must equal this package's own
+# version; scripts/release-check.sh enforces that invariant.
 dependencies = ["scanmole>=1.0.0,<2"]
 
 # PyGObject/GTK4/libadwaita deliberately come from distribution packages (a
