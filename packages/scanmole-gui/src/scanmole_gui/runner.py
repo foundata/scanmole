@@ -17,6 +17,7 @@ import select
 import signal
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -32,14 +33,20 @@ would destroy exactly the recovery the escalation is meant to allow.
 """
 
 DRAIN_TIMEOUT_SECONDS = 10.0
-"""How long the exit report waits for the pipe pumps after the child died.
+"""Absolute bound on waiting for the pipe pumps after the child died.
 
 Normally the pipes hit EOF the moment the process group is gone and the
 wait is instant. If a pipe stays open regardless (a descendant that
-escaped the group inherited it) or a pump is wedged, the runner forces
-EOF by closing its end after this timeout, so a run can neither hang
-forever nor have its exit reported ahead of already-read output.
+escaped the group inherited it), the runner wakes the pumps after this
+one shared deadline; each then delivers a single bounded sweep and
+stops, so a run can neither hang forever nor have its exit reported
+ahead of a delivered line.
 """
+
+_FINAL_DRAIN_CHUNKS = 16
+"""Reads (64 KiB each) a pump may still do after the wake signal: enough
+for any realistic buffered backlog, finite against a writer that keeps
+the descriptor readable forever."""
 
 Schedule = Callable[[Callable[[], None]], None]
 """Dispatch a callback onto the owner's event loop (or run it directly)."""
@@ -132,12 +139,13 @@ class ScanRunner:
         """Worker thread: pump both pipes, wait, then report exactly once.
 
         The pumps multiplex the pipe against a wake pipe, so the drain is
-        bounded without ever losing already-written output: normally both
-        pipes hit EOF the moment the process group dies; if one stays open
-        (a descendant that escaped the group inherited it), the wake makes
-        the pump deliver everything buffered and stop. The exit report is
+        bounded: normally both pipes hit EOF the moment the process group
+        dies; if one stays open (a descendant that escaped the group
+        inherited it, possibly still writing), the wake makes each pump
+        deliver at most one bounded final sweep and stop. The drain
+        deadline is absolute across both pipes, and the exit report is
         scheduled only after both pumps finished, so it can never overtake
-        a delivered line.
+        a delivered line and never waits forever on a foreign writer.
         """
         proc = self._proc
         if proc is None:  # pragma: no cover -- start() sets it before the thread
@@ -158,12 +166,14 @@ class ScanRunner:
         for pump in pumps:
             pump.start()
         exit_code = proc.wait()
+        deadline = time.monotonic() + self._drain_timeout  # one bound, not per pipe
         for pump in pumps:
-            pump.join(timeout=self._drain_timeout)  # normally instant: EOF
+            pump.join(timeout=max(0.0, deadline - time.monotonic()))
         if any(pump.is_alive() for pump in pumps):
             os.write(wake_write, b"x")
+            finish = time.monotonic() + 5
             for pump in pumps:
-                pump.join(timeout=5)
+                pump.join(timeout=max(0.0, finish - time.monotonic()))
         os.close(wake_read)
         os.close(wake_write)
         self._close_streams(proc)  # deterministic teardown, nothing for the GC
@@ -188,8 +198,11 @@ class ScanRunner:
 
         Reads the raw descriptor (decoding with ``errors="replace"``, so a
         stray invalid byte cannot kill the pump mid-stream) and multiplexes
-        against ``wake_fd``: when the supervisor gives up waiting for EOF,
-        the pump drains whatever the pipe still holds and stops.
+        against ``wake_fd``. The wake signal has priority and ends the
+        pump after at most :data:`_FINAL_DRAIN_CHUNKS` reads: a foreign
+        writer that keeps the descriptor perpetually readable must not be
+        able to keep the pump alive, so output produced after the wake is
+        deliberately discarded.
         """
         fd = stream.fileno()  # type: ignore[attr-defined]
         pending = b""
@@ -217,14 +230,15 @@ class ScanRunner:
         try:
             while True:
                 ready, _, _ = select.select([fd, wake_fd], [], [])
-                if fd in ready:
-                    if not read_chunk():
-                        break  # EOF: the write ends are gone
-                elif wake_fd in ready:
-                    # Asked to finish: drain what is already buffered, stop.
-                    while select.select([fd], [], [], 0)[0] and read_chunk():
-                        pass
+                if wake_fd in ready:
+                    # Asked to finish: one bounded sweep of what is already
+                    # buffered, then stop no matter how readable fd stays.
+                    for _ in range(_FINAL_DRAIN_CHUNKS):
+                        if not select.select([fd], [], [], 0)[0] or not read_chunk():
+                            break
                     break
+                if not read_chunk():
+                    break  # EOF: the write ends are gone
         except OSError:
             pass  # the pipe went away with the process; exit reporting covers it
         if pending:

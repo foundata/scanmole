@@ -31,7 +31,7 @@ def _argv(code: str) -> list[str]:
 class _Harness:
     """Collects runner callbacks; schedule is direct, timers are manual."""
 
-    def __init__(self) -> None:
+    def __init__(self, drain_timeout: float | None = None) -> None:
         self.lock = threading.Lock()
         self.stdout: list[str] = []
         self.stderr: list[str] = []
@@ -40,8 +40,12 @@ class _Harness:
         self.escalations = 0
         self.wrong_runner = False
         self.first_line = threading.Event()
+        self.first_err = threading.Event()
         self.exited = threading.Event()
         self.timers: list[tuple[float, Callable[[], None]]] = []
+        options: dict[str, float] = {}
+        if drain_timeout is not None:
+            options["drain_timeout"] = drain_timeout
         self.runner = ScanRunner(
             schedule=lambda callback: callback(),
             timer=self._timer,
@@ -49,6 +53,7 @@ class _Harness:
             on_stderr=self._on_stderr,
             on_exit=self._on_exit,
             on_escalated=self._on_escalated,
+            **options,
         )
 
     def _timer(self, seconds: float, callback: Callable[[], None]) -> None:
@@ -71,6 +76,7 @@ class _Harness:
         self.wrong_runner |= runner is not self.runner
         with self.lock:
             self.stderr.append(line.rstrip("\n"))
+        self.first_err.set()
 
     def _on_exit(self, runner: ScanRunner, exit_code: int) -> None:
         self.wrong_runner |= runner is not self.runner
@@ -218,15 +224,7 @@ def test_a_held_open_pipe_neither_stalls_nor_reorders_the_exit(
     # join could report the exit while the pump was still alive; now the
     # runner forces EOF after the drain timeout, so everything written is
     # delivered before the exit report and completion never hangs.
-    harness = _Harness()
-    harness.runner = ScanRunner(
-        schedule=lambda callback: callback(),
-        timer=harness._timer,
-        on_stdout=harness._on_stdout,
-        on_stderr=harness._on_stderr,
-        on_exit=harness._on_exit,
-        drain_timeout=0.5,
-    )
+    harness = _Harness(drain_timeout=0.5)
     code = (
         "import subprocess, sys\n"
         "grand = subprocess.Popen("
@@ -251,6 +249,84 @@ def test_a_held_open_pipe_neither_stalls_nor_reorders_the_exit(
                 os.kill(grandchild, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_a_continuously_writing_descendant_cannot_stall_the_exit(
+    tmp_path: Path,
+) -> None:
+    # Regression: an escaped descendant that spams stdout keeps the
+    # descriptor perpetually readable. The wake signal has priority and
+    # the final sweep is bounded, so the exit still lands; output written
+    # after the deadline is deliberately discarded.
+    harness = _Harness(drain_timeout=0.3)
+    code = (
+        "import subprocess, sys\n"
+        "grand = subprocess.Popen([sys.executable, '-u', '-c',"
+        " 'while True: print(chr(115) * 40)'], start_new_session=True)\n"
+        "print(grand.pid, file=sys.stderr, flush=True)\n"
+    )
+    grandchild: int | None = None
+    try:
+        harness.runner.start(_argv(code), tmp_path)
+        assert harness.first_err.wait(_DEADLINE)
+        grandchild = int(harness.stderr[0])
+
+        assert harness.exited.wait(6)  # bounded despite the endless writer
+
+        assert harness.exits == [0]
+    finally:
+        if grandchild is not None:
+            try:
+                os.kill(grandchild, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_both_held_pipes_share_one_drain_deadline(tmp_path: Path) -> None:
+    # Regression: the drain bound is absolute, not per pipe. A silent
+    # descendant holding stdout and stderr must cost one deadline, not one
+    # per pump joined sequentially.
+    harness = _Harness(drain_timeout=2.0)
+    code = (
+        "import subprocess, sys, time\n"
+        "grand = subprocess.Popen([sys.executable, '-c',"
+        " 'import time; time.sleep(300)'], start_new_session=True)\n"
+        "print(grand.pid, flush=True)\n"
+    )
+    grandchild: int | None = None
+    try:
+        started = time.monotonic()
+        harness.runner.start(_argv(code), tmp_path)
+
+        assert harness.exited.wait(_DEADLINE)
+
+        elapsed = time.monotonic() - started
+        grandchild = int(harness.stdout[0])
+        assert harness.exits == [0]
+        assert elapsed < 3.5  # one shared 2 s deadline; per-pipe would be ~4 s
+    finally:
+        if grandchild is not None:
+            try:
+                os.kill(grandchild, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_invalid_utf8_does_not_kill_the_pump(harness: _Harness, tmp_path: Path) -> None:
+    # Regression: UnicodeDecodeError is a ValueError; the old text-mode
+    # pump died on it silently. Raw reads with replacement decoding must
+    # deliver the mangled line and keep pumping.
+    code = (
+        "import os\n"
+        "os.write(1, b'caf\\xe9 latin-1\\n')\n"
+        "print('still alive', flush=True)\n"
+    )
+
+    harness.runner.start(_argv(code), tmp_path)
+
+    assert harness.exited.wait(_DEADLINE)
+    assert harness.stdout == ["caf\ufffd latin-1", "still alive"]
+    assert harness.exits == [0]
 
 
 def test_concurrent_runners_never_cross_their_streams(tmp_path: Path) -> None:
