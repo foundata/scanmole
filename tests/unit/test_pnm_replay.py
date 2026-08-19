@@ -10,7 +10,11 @@ not duplicated here.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import random
+import re
 import zlib
 from functools import partial
 from pathlib import Path
@@ -19,6 +23,7 @@ import pytest
 from support import pnm_oracle
 from support.pnm_replay import (
     MAX_COMPRESSED_BYTES,
+    MAX_IMAGE_BYTES,
     Expectation,
     ReplayError,
     load_fixture,
@@ -348,6 +353,80 @@ def test_replay_detects_measurement_drift(tmp_path: Path) -> None:
     problems = verify_fixture(fixture, tmp_path / "work")
 
     assert len(problems) == 1 and "mean" in problems[0]
+
+
+def test_replay_rejects_non_finite_and_mistyped_expectations(tmp_path: Path) -> None:
+    rng = random.Random("scanmole-15-replay")
+    name, data, expect = _fixture_images(rng, 1)[0]
+    fixture = tmp_path / "fixture"
+
+    # NaN survives json.dumps as a bare constant; the loader must refuse
+    # it outright (NaN also defeats any comparison-based verification).
+    nan = dataclasses.replace(expect, mean=float("nan"))
+    write_fixture(fixture, [(name, data, nan)])
+    with pytest.raises(ReplayError, match="constant"):
+        load_fixture(fixture)
+
+    write_fixture(fixture, [(name, data, expect)])
+    manifest = fixture / "manifest.json"
+    text = manifest.read_text()
+    manifest.write_text(re.sub(r'"width": \d+', '"width": "wide"', text))
+    with pytest.raises(ReplayError, match="not an integer"):
+        load_fixture(fixture)
+    manifest.write_text(re.sub(r'"mean": [0-9.]+', '"mean": 1.5', text))
+    with pytest.raises(ReplayError, match=r"outside \[0.0, 1.0\]"):
+        load_fixture(fixture)
+    manifest.write_text(re.sub(r'"maxval": \d+', '"maxval": true', text))
+    with pytest.raises(ReplayError, match="not an integer"):  # bool is no int
+        load_fixture(fixture)
+
+
+def test_replay_bounds_decompression_before_allocating(tmp_path: Path) -> None:
+    # A run of zeros past the image budget compresses to a few KiB; the
+    # loader must reject it through bounded streaming decompression, not
+    # after materializing the whole expansion.
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    bomb = bytes(MAX_IMAGE_BYTES + 4096)
+    (fixture / "bomb.pnm.zz").write_bytes(zlib.compress(bomb, 9))
+    manifest = {
+        "schema": 1,
+        "images": [
+            {
+                "file": "bomb.pnm.zz",
+                "compression": "zlib",
+                "sha256": hashlib.sha256(bomb).hexdigest(),
+                "expect": {
+                    "format": "P5",
+                    "width": 1,
+                    "height": 1,
+                    "maxval": 255,
+                    "mean": 1.0,
+                },
+            }
+        ],
+    }
+    (fixture / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(ReplayError, match="image budget"):
+        load_fixture(fixture)
+
+
+def test_replay_rejects_duplicates_and_stray_files(tmp_path: Path) -> None:
+    rng = random.Random("scanmole-15-replay")
+    images = _fixture_images(rng, 1)
+    fixture = tmp_path / "fixture"
+    write_fixture(fixture, images)
+    (fixture / "stray.bin").write_bytes(b"noise")
+
+    with pytest.raises(ReplayError, match="unreferenced"):
+        load_fixture(fixture)
+
+    (fixture / "stray.bin").unlink()
+    name, data, expect = images[0]
+    write_fixture(fixture, [(name, data, expect), (name, data, expect)])
+    with pytest.raises(ReplayError, match="duplicate"):
+        load_fixture(fixture)
 
 
 def test_replay_rejects_schema_and_budget_violations(tmp_path: Path) -> None:

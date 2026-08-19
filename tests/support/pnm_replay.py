@@ -38,6 +38,12 @@ Rules:
   the repository.
 - ``mean`` is compared within :data:`MEAN_TOLERANCE` (it is stored
   rounded); every other expectation is exact.
+- Validation is strict, not coercing: every field must have its exact
+  type and range (no booleans standing in for integers, no NaN or
+  infinite means, no JSON constants at all), payload names must be
+  unique, and files a manifest does not reference are errors.
+  Decompression is bounded up front, so a small payload cannot allocate
+  beyond the image budget.
 - Unknown schema versions, unknown ``expect`` keys and stray manifest
   keys are errors: the format is frozen per version, not duck-typed.
 - Content policy (see ``tests/fixtures/replay/README.md``): synthetic,
@@ -135,6 +141,41 @@ def _require_keys(mapping: dict[str, object], allowed: set[str], where: str) -> 
         )
 
 
+def _reject_constant(token: str) -> object:
+    raise ReplayError(f"JSON constant {token} is not part of the schema")
+
+
+def _int_field(value: object, where: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ReplayError(f"{where}: {value!r} is not an integer")
+    if not minimum <= value <= maximum:
+        raise ReplayError(f"{where}: {value!r} outside [{minimum}, {maximum}]")
+    return value
+
+
+def _mean_field(value: object, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ReplayError(f"{where}: {value!r} is not a number")
+    mean = float(value)
+    if not 0.0 <= mean <= 1.0:  # also excludes NaN: comparisons are false
+        raise ReplayError(f"{where}: mean {value!r} outside [0.0, 1.0]")
+    return mean
+
+
+def _decompressed(payload: bytes, name: str) -> bytes:
+    """Bounded streaming decompression: never allocates past the budget."""
+    decompressor = zlib.decompressobj()
+    try:
+        data = decompressor.decompress(payload, MAX_IMAGE_BYTES + 1)
+    except zlib.error as exc:
+        raise ReplayError(f"{name}: cannot decompress: {exc}") from exc
+    if len(data) > MAX_IMAGE_BYTES or decompressor.unconsumed_tail:
+        raise ReplayError(f"{name}: decompressed size exceeds the image budget")
+    if not decompressor.eof:
+        raise ReplayError(f"{name}: truncated compressed payload")
+    return data
+
+
 def load_fixture(directory: Path) -> list[ReplayImage]:
     """Load and validate a fixture: schema, budgets, checksums.
 
@@ -142,19 +183,23 @@ def load_fixture(directory: Path) -> list[ReplayImage]:
         ReplayError: On any schema, size-budget or checksum violation.
     """
     try:
-        manifest = json.loads((directory / "manifest.json").read_text())
+        manifest = json.loads(
+            (directory / "manifest.json").read_text(),
+            parse_constant=_reject_constant,
+        )
     except (OSError, ValueError) as exc:
         raise ReplayError(f"unreadable manifest in {directory}: {exc}") from exc
     if not isinstance(manifest, dict):
         raise ReplayError("manifest is not an object")
     _require_keys(manifest, _MANIFEST_KEYS, "manifest")
-    if manifest["schema"] != 1:
+    if _int_field(manifest["schema"], "schema", 1, 999) != 1:
         raise ReplayError(f"unsupported schema version {manifest['schema']!r}")
     entries = manifest["images"]
     if not isinstance(entries, list):
         raise ReplayError("manifest images is not a list")
 
     total = (directory / "manifest.json").stat().st_size
+    referenced: set[str] = set()
     images: list[ReplayImage] = []
     for entry in entries:
         if not isinstance(entry, dict):
@@ -163,6 +208,9 @@ def load_fixture(directory: Path) -> list[ReplayImage]:
         name = entry["file"]
         if not isinstance(name, str) or "/" in name or name.startswith("."):
             raise ReplayError(f"bad payload file name {name!r}")
+        if name in referenced:
+            raise ReplayError(f"duplicate payload file name {name!r}")
+        referenced.add(name)
         payload_path = directory / name
         try:
             payload = payload_path.read_bytes()
@@ -175,36 +223,44 @@ def load_fixture(directory: Path) -> list[ReplayImage]:
             )
         total += len(payload)
         if entry["compression"] == "zlib":
-            try:
-                data = zlib.decompress(payload)
-            except zlib.error as exc:
-                raise ReplayError(f"{name}: cannot decompress: {exc}") from exc
+            data = _decompressed(payload, name)
         elif entry["compression"] == "none":
+            if len(payload) > MAX_IMAGE_BYTES:
+                raise ReplayError(f"{name}: size exceeds the image budget")
             data = payload
         else:
             raise ReplayError(f"{name}: unknown compression {entry['compression']!r}")
-        if len(data) > MAX_IMAGE_BYTES:
-            raise ReplayError(f"{name}: decompressed size exceeds the image budget")
         digest = hashlib.sha256(data).hexdigest()
-        if digest != entry["sha256"]:
+        declared = entry["sha256"]
+        if not isinstance(declared, str) or len(declared) != 64:
+            raise ReplayError(f"{name}: sha256 must be a 64-character hex digest")
+        if digest != declared:
             raise ReplayError(f"{name}: checksum mismatch (got {digest})")
         expect_raw = entry["expect"]
         if not isinstance(expect_raw, dict):
             raise ReplayError(f"{name}: expect is not an object")
         _require_keys(expect_raw, _EXPECT_KEYS, f"{name} expect")
+        declared_format = expect_raw["format"]
+        if declared_format not in ("P4", "P5", "P6"):
+            raise ReplayError(f"{name}: format {declared_format!r} is not raw PNM")
         images.append(
             ReplayImage(
                 name=name,
                 data=data,
                 expect=Expectation(
-                    format=str(expect_raw["format"]),
-                    width=int(expect_raw["width"]),
-                    height=int(expect_raw["height"]),
-                    maxval=int(expect_raw["maxval"]),
-                    mean=float(expect_raw["mean"]),
+                    format=str(declared_format),
+                    width=_int_field(expect_raw["width"], f"{name} width", 1, 10**6),
+                    height=_int_field(expect_raw["height"], f"{name} height", 1, 10**6),
+                    maxval=_int_field(expect_raw["maxval"], f"{name} maxval", 1, 65535),
+                    mean=_mean_field(expect_raw["mean"], name),
                 ),
             )
         )
+    stray = {
+        item.name for item in directory.iterdir() if item.name != "manifest.json"
+    } - referenced
+    if stray:
+        raise ReplayError(f"unreferenced files in the fixture: {sorted(stray)}")
     if total > MAX_FIXTURE_BYTES:
         raise ReplayError(
             f"fixture totals {total} bytes, over the {MAX_FIXTURE_BYTES}-byte budget"
