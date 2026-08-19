@@ -370,9 +370,7 @@ def _size_preserved_pages(
     """
     try:
         dpi = negotiated[0].resolution if negotiated else None
-        _apply_content_sizes(
-            measured, kept, negotiated, config, dpi or config.resolution
-        )
+        _apply_content_sizes(measured, kept, negotiated, config, dpi)
     except Exception:  # pragma: no cover -- defensive only
         LOGGER.debug("could not size the preserved pages", exc_info=True)
 
@@ -481,8 +479,8 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # both axes are the device's own result and stay untouched.
             mean_hint: float | None = None
             window = negotiated[0].window_mm if negotiated else None
-            if not from_images and auto_page_size and window:
-                dpi_now = negotiated[0].resolution or config.resolution
+            dpi_now = negotiated[0].resolution if negotiated else None
+            if not from_images and auto_page_size and window and dpi_now:
                 scale = dpi_now / 25.4
                 stats = image_content_stats(page, min_ink_px=max(4, round(scale)))
                 if stats is not None:
@@ -516,10 +514,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # gets one guarded rescue chance and, when rescued, reports the
             # coherent region's adaptive mean as the reason it is nonblank.
             # The page event is emitted only after the final conversion.
-            if gray_snapshot is not None:
-                dpi_now = (
-                    negotiated[0].resolution if negotiated else None
-                ) or config.resolution
+            if gray_snapshot is not None and dpi_now is not None:
                 keep, blank, mean = _adaptive_outcome(
                     page, gray_snapshot, (keep, blank), mean, measured, config, dpi_now
                 )
@@ -544,14 +539,13 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             scanned = scan_to_files(
                 config, device, work_dir, events, handle_page, negotiated.append
             )
-            # The backend may have snapped the requested dpi; the PDF must be
-            # stamped with what the pages were actually scanned at, or their
-            # geometry comes out wrong.
-            dpi = (
-                scanned.settings.resolution
-                if scanned.settings.resolution is not None
-                else config.resolution
-            )
+            # The PDF must be stamped with the dpi the pages were actually
+            # scanned at, or their geometry comes out wrong. scan_to_files
+            # refuses to run without established resolution evidence, so
+            # the requested dpi is never substituted here.
+            dpi = scanned.settings.resolution
+            if dpi is None:  # unreachable: the scan-time evidence gate
+                raise ProcessingError("scan finished without an established dpi")
 
         events.emit("scan_done", total=total, kept=len(kept), blanks=blanks)
         LOGGER.info("Scanned %d page(s), kept %d", total, len(kept))

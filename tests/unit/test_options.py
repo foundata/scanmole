@@ -10,6 +10,7 @@ import pytest
 from scanmole.errors import DeviceError, InputError
 from scanmole.options import (
     Capability,
+    format_mm,
     map_mode,
     map_source,
     parse_capabilities,
@@ -271,3 +272,47 @@ def test_scansnap_ix100_fixture_degrades_duplex_to_front() -> None:
 
     assert map_source("adf-duplex", caps) == "ADF Front"
     assert map_mode("lineart", caps) == "Lineart"
+
+
+def test_parse_retains_current_values_and_steps() -> None:
+    caps = _fixture_caps("fujitsu-scansnap-ix500.txt")
+
+    assert caps["resolution"].current == "600"
+    assert caps["resolution"].step == 1.0
+    assert caps["source"].current == "ADF Front"
+    assert caps["ald"].current == "no"  # the [advanced] qualifier is skipped
+    assert caps["page-width"].step == 0.0211639
+
+
+def test_parse_keeps_bracketed_choices_intact_with_current_values() -> None:
+    caps = _fixture_caps("brother-brscan4.txt")
+
+    assert "24bit Color[Fast]" in caps["mode"].choices
+    assert caps["mode"].current == "24bit Color[Fast]"
+
+
+def test_parse_inactive_options_have_no_current_value() -> None:
+    caps = _fixture_caps("epson-ds730n-epson2.txt")
+
+    assert caps["source"].active is False and caps["source"].current is None
+    assert caps["depth"].active is False and caps["depth"].choices == ["8bit"]
+
+
+def test_snap_resolution_honors_stepped_ranges() -> None:
+    caps = {
+        "resolution": Capability(kind="range", minimum=100, maximum=600, step=100.0)
+    }
+
+    assert snap_resolution(250, caps) == 200  # exact tie: the lower point
+    assert snap_resolution(260, caps) == 300
+    assert snap_resolution(100, caps) == 100
+    assert snap_resolution(90, caps) == 100  # clamped to the minimum
+    assert snap_resolution(700, caps) == 600  # clamped to the maximum
+
+
+def test_format_mm_snaps_stepped_ranges() -> None:
+    capability = Capability(kind="range", minimum=0.0, maximum=215.9, step=0.5)
+
+    assert format_mm(210.3, capability, "-x") == "210.5"
+    assert format_mm(210.25, capability, "-x") == "210"  # tie -> lower
+    assert format_mm(500.0, capability, "-x") == "215.9"  # clamp stays exact

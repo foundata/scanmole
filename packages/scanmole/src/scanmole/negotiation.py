@@ -591,25 +591,71 @@ def _assess_depth(
     )
 
 
+def _fixed_resolution(capability: Capability | None) -> int | None:
+    """The dpi an inactive resolution option is pinned to, if readable.
+
+    An inactive option cannot be set, but its current value (``[200]``) or
+    a single fixed choice (``200dpi``) still states the dpi the backend
+    will scan at, which is exactly the physical-geometry evidence the
+    pipeline needs.
+    """
+    if capability is None:
+        return None
+    texts = []
+    if capability.current:
+        texts.append(capability.current)
+    if capability.kind == "enum" and len(capability.choices) == 1:
+        texts.append(capability.choices[0])
+    for text in texts:
+        found = re.search(r"\d+", text)
+        if found is not None and int(found.group()) > 0:
+            return int(found.group())
+    return None
+
+
 def assess_resolution(
     caps: dict[str, Capability] | None, resolution: int
 ) -> Assessment:
-    """Negotiate the dpi: snapping or clamping degrades, but stays usable."""
+    """Negotiate the dpi that establishes the pages' physical geometry.
+
+    An active option is set explicitly after enum/range/step snapping; an
+    inactive option with a readable fixed value establishes the effective
+    dpi without emitting ``--resolution``. Everything else stays UNKNOWN
+    with an empty ``effective``: the requested dpi must never masquerade
+    as an established one, because PDF page dimensions are derived from
+    it (scan-time acquisition refuses to run on UNKNOWN).
+    """
     requested = str(resolution)
     if caps is None:
         return Assessment(
             requested=requested,
             support=Support.UNKNOWN,
             reason="probe-failed",
-            effective=requested,
         )
     if active_capability(caps, "resolution") is None:
+        fixed = _fixed_resolution(caps.get("resolution"))
+        if fixed is not None:
+            if fixed == resolution:
+                return Assessment(
+                    requested=requested,
+                    support=Support.NATIVE,
+                    reason="fixed-resolution",
+                    effective=str(fixed),
+                )
+            return Assessment(
+                requested=requested,
+                support=Support.DEGRADED,
+                reason="fixed-resolution",
+                consequence=(
+                    f"the device is fixed at {fixed} dpi instead of {resolution} dpi"
+                ),
+                effective=str(fixed),
+            )
         inactive = caps.get("resolution") is not None
         return Assessment(
             requested=requested,
             support=Support.UNKNOWN,
             reason="resolution-option-inactive" if inactive else "no-resolution-option",
-            effective=requested,
         )
     snapped = snap_resolution(resolution, caps)
     if snapped is None or snapped == resolution:

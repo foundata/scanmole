@@ -287,7 +287,7 @@ def _fake_gray_scan(
     on_page(page)
     return ScanResult(
         pages=[page],
-        settings=EffectiveSettings(source=None, mode="Gray", resolution=None),
+        settings=EffectiveSettings(source=None, mode="Gray", resolution=300),
     )
 
 
@@ -376,7 +376,7 @@ def test_auto_page_size_crops_before_binarization_and_blank_detection(
         on_page(blank)
         return ScanResult(
             pages=[content, blank],
-            settings=EffectiveSettings(source=None, mode="Gray", resolution=None),
+            settings=EffectiveSettings(source=None, mode="Gray", resolution=300),
         )
 
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
@@ -571,7 +571,7 @@ def test_recovery_sizing_waits_for_the_active_page_callback(
             f"echo '{page}'; exec sleep 30"
         )
         return ["sh", "-c", script], EffectiveSettings(
-            source=None, mode=None, resolution=None
+            source=None, mode=None, resolution=75
         )
 
     def blocking_mean(page: Path) -> float | None:
@@ -604,7 +604,10 @@ def test_recovery_sizing_waits_for_the_active_page_callback(
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
     monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
     monkeypatch.setattr(
-        "scanmole.scanner.probe_capabilities", lambda device, settings=(): {}
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
     )
     monkeypatch.setattr("scanmole.scanner.build_scan_command", fake_build)
     monkeypatch.setattr("scanmole.pipeline.image_mean", blocking_mean)

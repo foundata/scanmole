@@ -146,13 +146,14 @@ def build_scan_command(
         command += [extra_option, extra_value]
     if plan.depth.backend_value is not None:
         command += ["--depth", plan.depth.backend_value]
+    if plan.resolution.backend_value is not None:
+        command += ["--resolution", plan.resolution.backend_value]
+    # The settings carry the *established* dpi (empty for UNKNOWN): a
+    # fixed backend contributes it without any --resolution being emitted,
+    # and the requested dpi never masquerades as an established one.
     resolution = (
-        int(plan.resolution.backend_value)
-        if plan.resolution.backend_value is not None
-        else None
+        int(plan.resolution.effective) if plan.resolution.effective.isdigit() else None
     )
-    if resolution is not None:
-        command += ["--resolution", str(resolution)]
 
     size = parse_page_size(config.page_size)
     if size is None:
@@ -486,6 +487,16 @@ def scan_to_files(
         )
         plan = resolve_faint_plan(plan, caps, _staged_prober(device), base)
     require_supported(plan)
+    if plan.resolution.support is Support.UNKNOWN:
+        # Refuse before feeding paper: without an established physical
+        # resolution every PDF page dimension would be a guess. This is a
+        # scan-time evidence gate, not an UNSUPPORTED verdict; inactive
+        # evidence still never proves a capability is absent.
+        raise DeviceError(
+            "cannot establish the scanner's physical resolution (no usable "
+            "--resolution evidence); refusing to scan because the page "
+            "geometry would be untrustworthy"
+        )
     log_notices(plan, LOGGER)
     pattern = str(work_dir / "page_%04d.pnm")
     command, effective = build_scan_command(config, device, caps, pattern, plan)
@@ -499,11 +510,11 @@ def scan_to_files(
         resolution=effective.resolution,
     )
     LOGGER.info(
-        "Scanning from %s (%s, %s, %d dpi) ...",
+        "Scanning from %s (%s, %s, %s dpi) ...",
         device,
         effective.source or config.source,
         effective.mode or config.mode,
-        effective.resolution if effective.resolution is not None else config.resolution,
+        effective.resolution,
     )
     delivered: list[Path] = []
     seen: set[Path] = set()

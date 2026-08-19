@@ -481,7 +481,10 @@ def test_scan_to_files_reprobes_with_the_mapped_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
-    caps = {"source": Capability(kind="enum", choices=["ADF", "ADF Duplex"])}
+    caps = {
+        "source": Capability(kind="enum", choices=["ADF", "ADF Duplex"]),
+        "resolution": Capability(kind="range", minimum=50, maximum=600),
+    }
     probes: list[tuple[tuple[str, str], ...]] = []
 
     def fake_probe(
@@ -512,7 +515,10 @@ def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
     for name in ("page_0002.pnm", "page_0001.pnm"):
         (tmp_path / name).write_bytes(b"P4\n1 1\n\x00")
     monkeypatch.setattr(
-        "scanmole.scanner.probe_capabilities", lambda device, settings=(): {}
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
     )
     monkeypatch.setattr(
         "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
@@ -531,7 +537,10 @@ def test_scan_to_files_raises_when_nothing_was_scanned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "scanmole.scanner.probe_capabilities", lambda device, settings=(): {}
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
     )
     monkeypatch.setattr(
         "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
@@ -547,7 +556,10 @@ def test_scan_to_files_reports_scan_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "scanmole.scanner.probe_capabilities", lambda device, settings=(): {}
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
     )
     monkeypatch.setattr(
         "scanmole.scanner.run_scanimage",
@@ -589,6 +601,110 @@ def _fixture_caps(name: str) -> dict[str, Capability]:
 
     fixtures = Path(__file__).parent.parent / "fixtures" / "scanimage-A"
     return parse_capabilities((fixtures / name).read_text())
+
+
+def test_scan_refuses_without_resolution_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No --resolution option at all: the effective dpi stays UNKNOWN and
+    # acquisition must fail before any paper is fed.
+    caps = {"source": Capability(kind="enum", choices=["ADF Duplex"])}
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
+
+    def never_run(command: list[str], on_page: object) -> tuple[int, str]:
+        raise AssertionError("acquisition must not start")
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", never_run)
+
+    with pytest.raises(DeviceError, match="physical resolution"):
+        scan_to_files(
+            _config(), "test:0", tmp_path, EventWriter(enabled=False), lambda p: None
+        )
+
+
+def test_fixed_resolution_reaches_settings_without_being_emitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An inactive option pinned to 200 dpi establishes the effective dpi:
+    # nothing is emitted, but the settings and the settings event carry it.
+    import io
+    import json
+
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    caps = {
+        "source": Capability(kind="enum", choices=["ADF Duplex"]),
+        "resolution": Capability(kind="enum", choices=["200dpi"], active=False),
+    }
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    result = scan_to_files(
+        _config(resolution=300),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=True, stream=stream),
+        lambda p: None,
+    )
+
+    assert "--resolution" not in commands[0]
+    assert result.settings.resolution == 200
+    settings_event = next(
+        json.loads(line)
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["event"] == "settings"
+    )
+    assert settings_event["resolution"] == 200
+
+
+def test_source_dependent_snapshot_decides_the_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The authoritative source-applied listing advertises a smaller range
+    # than the bare one; the emitted and reported dpi must follow it.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    bare = {
+        "source": Capability(kind="enum", choices=["ADF Duplex"]),
+        "resolution": Capability(kind="range", minimum=50, maximum=600),
+    }
+    sourced = {
+        "source": Capability(kind="enum", choices=["ADF Duplex"]),
+        "resolution": Capability(kind="range", minimum=50, maximum=150),
+    }
+    commands: list[list[str]] = []
+
+    def fake_probe(
+        device: str, settings: tuple[tuple[str, str], ...] = ()
+    ) -> dict[str, Capability]:
+        return sourced if settings else bare
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(resolution=300),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p: None,
+    )
+
+    assert commands[0][commands[0].index("--resolution") + 1] == "150"
+    assert result.settings.resolution == 150
 
 
 def test_faint_command_engages_fujitsu_sdtc_in_order(
@@ -779,7 +895,10 @@ def test_scan_to_files_warns_exactly_once_per_fallback(
     # Negotiation runs twice (initial probe, source-applied reprobe) but the
     # selected plan's notices must reach the user exactly once.
     (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
-    caps = {"source": Capability(kind="enum", choices=["ADF Front"])}
+    caps = {
+        "source": Capability(kind="enum", choices=["ADF Front"]),
+        "resolution": Capability(kind="range", minimum=50, maximum=600),
+    }
     monkeypatch.setattr(
         "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
     )

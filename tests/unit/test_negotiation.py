@@ -14,6 +14,7 @@ from scanmole.negotiation import (
     Support,
     advisory_faint_assessment,
     assess_mode,
+    assess_resolution,
     assess_source,
     choice_support,
     detect_native_enhancement,
@@ -256,6 +257,58 @@ def test_resolution_snapping_is_degraded_but_usable() -> None:
     assert plan.resolution.support is Support.DEGRADED
     assert plan.resolution.effective == "200"
     assert "instead of 240 dpi" in plan.resolution.consequence
+
+
+# ---- resolution evidence --------------------------------------------------
+
+
+def test_fixed_single_choice_resolution_snaps_and_is_emitted() -> None:
+    caps = {"resolution": Capability(kind="enum", choices=["200dpi"], current="200")}
+
+    assessment = assess_resolution(caps, 300)
+
+    assert assessment.support is Support.DEGRADED
+    assert assessment.backend_value == "200"
+    assert assessment.effective == "200"
+
+
+def test_inactive_resolution_with_a_readable_value_establishes_the_dpi() -> None:
+    caps = {"resolution": Capability(kind="enum", choices=["200dpi"], active=False)}
+
+    degraded = assess_resolution(caps, 300)
+    matching = assess_resolution(caps, 200)
+
+    assert degraded.support is Support.DEGRADED
+    assert degraded.reason == "fixed-resolution"
+    assert degraded.backend_value is None  # never emitted for inactive options
+    assert degraded.effective == "200"
+    assert "fixed at 200 dpi" in degraded.consequence
+    assert matching.support is Support.NATIVE
+    assert matching.effective == "200"
+
+
+def test_unknown_resolution_never_fakes_an_effective_value() -> None:
+    absent = assess_resolution({}, 300)
+    inactive_unreadable = assess_resolution(
+        {"resolution": Capability(kind="range", minimum=0, maximum=0, active=False)},
+        300,
+    )
+
+    assert absent.support is Support.UNKNOWN and absent.effective == ""
+    assert inactive_unreadable.support is Support.UNKNOWN
+    assert inactive_unreadable.effective == ""
+
+
+def test_stepped_range_resolution_snaps_with_lower_ties() -> None:
+    caps = {
+        "resolution": Capability(kind="range", minimum=100, maximum=600, step=100.0)
+    }
+
+    assessment = assess_resolution(caps, 250)
+
+    assert assessment.support is Support.DEGRADED
+    assert assessment.effective == "200"
+    assert "200 dpi instead of 250 dpi" in assessment.consequence
 
 
 # ---- notices and errors ---------------------------------------------------

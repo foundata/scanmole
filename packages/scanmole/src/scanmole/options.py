@@ -8,6 +8,7 @@ from ``scanimage -A`` and fuzzy-matched rather than hardcoded.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import subprocess
 from collections.abc import Callable, Sequence
@@ -24,6 +25,10 @@ CapabilityKind = Literal["bool", "enum", "range", "other"]
 
 _OPTION_LINE = re.compile(r"^ {1,8}--?([a-zA-Z][a-zA-Z0-9-]*)(.*)$")
 _RANGE = re.compile(r"(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)")
+_STEP = re.compile(r"\(in steps of (\d+(?:\.\d+)?)\)")
+
+# Trailing markers that qualify an option rather than stating its value.
+_QUALIFIER_MARKERS = ("advanced", "hardware", "read-only", "default")
 
 _MODE_PREDICATES: dict[str, list[Callable[[str], bool]]] = {
     "lineart": [
@@ -61,7 +66,10 @@ class Capability:
     ``active=False`` preserves options the backend lists as ``[inactive]``
     (not settable in the device's current state). They are evidence for
     capability negotiation, which must distinguish inactive from absent, but
-    command construction never passes them.
+    command construction never passes them. ``current`` is the option's
+    value from its trailing bracket marker (``[600]``, ``[ADF Front]``),
+    ``step`` the increment of a stepped range (``(in steps of 100)``);
+    both feed the effective-resolution policy and grid snapping.
     """
 
     kind: CapabilityKind = "other"
@@ -69,6 +77,8 @@ class Capability:
     minimum: float | None = None
     maximum: float | None = None
     active: bool = True
+    current: str | None = None
+    step: float | None = None
 
 
 def active_capability(caps: dict[str, Capability], name: str) -> Capability | None:
@@ -79,20 +89,24 @@ def active_capability(caps: dict[str, Capability], name: str) -> Capability | No
     return capability
 
 
-def _strip_default_marker(spec: str) -> str:
-    """Drop a trailing ``[default]``/``[inactive]`` marker from an option spec.
+def _take_marker(spec: str) -> tuple[str, str | None]:
+    """Split one trailing ``[...]`` marker off an option spec.
 
     ``rfind`` copes with choices that themselves contain brackets, such as
     ``24bit Color[Fast]``.
+
+    Returns:
+        The spec without the marker, and the marker's content (``None``
+        when the spec carries no trailing marker).
     """
     if not spec.endswith("]"):
-        return spec
+        return spec, None
     bracket = spec.rfind(" [")
     if bracket != -1:
-        return spec[:bracket].strip()
+        return spec[:bracket].strip(), spec[bracket + 2 : -1]
     if spec.startswith("[") and "yes|no" not in spec:
-        return ""
-    return spec
+        return "", spec[1:-1] or None
+    return spec, None
 
 
 def probe_capabilities(
@@ -160,7 +174,16 @@ def parse_capabilities(listing: str) -> dict[str, Capability]:
             # evidence with active=False; never passed to scanimage.
             capability.active = False
             rest = rest[: -len("[inactive]")].strip()
-        spec = _strip_default_marker(rest)
+        # Peel trailing markers: qualifiers first ([advanced], [hardware]),
+        # then the option's current value ([600], [ADF Front]).
+        spec, marker = _take_marker(rest)
+        while marker in _QUALIFIER_MARKERS:
+            spec, marker = _take_marker(spec)
+        if marker:
+            capability.current = marker
+        found_step = _STEP.search(spec)
+        if found_step is not None:
+            capability.step = float(found_step.group(1))
         if "yes|no" in rest:
             capability.kind = "bool"
         elif "|" in spec:
@@ -323,10 +346,36 @@ def parse_page_size(spec: str) -> tuple[float, float] | None:
     return width, height
 
 
+def _snap_to_step(value: float, capability: Capability) -> float:
+    """Snap a finite value to the range's grid, anchored at its minimum.
+
+    Ties break deterministically to the lower grid point. Values are
+    clamped to the advertised limits afterwards by the callers, so a snap
+    can never escape the range.
+    """
+    step = capability.step
+    if step is None or step <= 0 or not math.isfinite(value):
+        return value
+    minimum = capability.minimum if capability.minimum is not None else 0.0
+    below = minimum + math.floor((value - minimum) / step) * step
+    above = below + step
+    if capability.maximum is not None and above > capability.maximum:
+        return below
+    if value - below <= above - value:  # tie -> lower
+        return below
+    return above
+
+
 def format_mm(value: float, capability: Capability | None, option: str) -> str:
-    """Clamp a millimetre value to a range capability and format it tersely."""
+    """Clamp a millimetre value to the range's grid and format it tersely.
+
+    Stepped ranges are snapped to their advertised grid first (anchored at
+    the range minimum, ties to the lower point), then clamped, so emitted
+    scan-window values are ones the backend can actually apply.
+    """
     clamped = value
     if capability is not None and capability.kind == "range":
+        clamped = _snap_to_step(clamped, capability)
         if capability.maximum is not None and clamped > capability.maximum:
             LOGGER.debug(
                 "clamping %s %g -> %gmm (device maximum)",
@@ -365,4 +414,7 @@ def snap_resolution(resolution: int, caps: dict[str, Capability]) -> int | None:
             return int(capability.maximum)
         if capability.minimum is not None and resolution < capability.minimum:
             return int(capability.minimum)
+        snapped = _snap_to_step(float(resolution), capability)
+        if snapped != resolution:
+            return round(snapped)
     return resolution
