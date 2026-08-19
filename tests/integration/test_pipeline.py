@@ -13,7 +13,6 @@ import random
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -648,22 +647,25 @@ def test_keyboard_interrupt_preserves_scanned_pages(
         on_page(page)
         raise KeyboardInterrupt
 
+    # Own the work directory instead of diffing a global /tmp glob, which
+    # could sweep up (and delete) directories of concurrent suites or of a
+    # real scan running on this machine.
+    work_dir = tmp_path / "scanmole-interrupt-work"
+
+    def owned_mkdtemp(prefix: str = "") -> str:
+        work_dir.mkdir()
+        return str(work_dir)
+
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
     monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
     monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr("scanmole.pipeline.tempfile.mkdtemp", owned_mkdtemp)
     config = _config(images=None, output=tmp_path / "out.pdf")
 
-    work_dirs_before = set(Path(tempfile.gettempdir()).glob("scanmole-*"))
     with pytest.raises(KeyboardInterrupt):
         run_pipeline(config, EventWriter(enabled=False))
 
-    new_dirs = set(Path(tempfile.gettempdir()).glob("scanmole-*")) - work_dirs_before
-    try:
-        assert len(new_dirs) == 1
-        assert (next(iter(new_dirs)) / "page_0001.pnm").is_file()
-    finally:
-        for directory in new_dirs:
-            shutil.rmtree(directory, ignore_errors=True)
+    assert (work_dir / "page_0001.pnm").is_file()  # preserved for recovery
 
 
 def test_hardware_cropped_frames_stay_untouched(
