@@ -42,10 +42,7 @@ from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E4
 from scanmole.negotiation import (  # noqa: E402
     ADVISORY_PROBE_TIMEOUT_SECONDS,
     Support,
-    advisory_faint_assessment,
-    assess_mode,
     assess_resolution,
-    assess_source,
     probe_snapshot,
 )
 from scanmole_gui import __version__, desktop  # noqa: E402
@@ -57,9 +54,10 @@ from scanmole_gui.discovery import (  # noqa: E402
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES  # noqa: E402
 from scanmole_gui.probing import (  # noqa: E402
-    ProbeCoordinator,
+    SOURCE_VALUES,
+    CapabilityFlow,
+    CapabilityUpdate,
     ProbeRequest,
-    selection_blocked,
 )
 from scanmole_gui.protocol import RawLine, decode_stdout  # noqa: E402
 from scanmole_gui.request import ScanRequest, request_argv  # noqa: E402
@@ -105,6 +103,9 @@ if tuple(value for _label, value in MODES) != tuple(
     value for _label, value in SCAN_MODES
 ):  # pragma: no cover -- import-time consistency guard
     raise RuntimeError("MODES and scanmole_gui.modes.SCAN_MODES diverged")
+if tuple(value for _label, value in SOURCES) != SOURCE_VALUES:
+    # pragma: no cover -- import-time consistency guard
+    raise RuntimeError("SOURCES and scanmole_gui.probing.SOURCE_VALUES diverged")
 MODE_TOOLTIPS = (
     _("Black and white (1-bit)"),
     "",
@@ -455,14 +456,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._close_patience = 0
         self._searching = False
         self._device_poll_id: int | None = None
-        self._probes = ProbeCoordinator()
-        self._base_snapshot: object = None
-        self._base_snapshot_device: str | None = None
-        self._negotiation_logged_failure = False
-        self._last_caps: object = None
+        self._flow = CapabilityFlow()
         self._selection_block_reason: str | None = None
         self._devices: list[dict[str, str]] = []
-        self._preferred_source = "adf-duplex"
         self._reconciling_source = False
         self._run_folder = Path(default_folder())
         self._last_output: Path | None = None
@@ -1055,8 +1051,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _apply_saved_settings(self) -> None:
         """Restore form widgets from the persisted settings."""
         settings = self._settings
-        self._preferred_source = str(settings.get("source", "adf-duplex"))
-        self._source_row.select(self._preferred_source)
+        self._flow.preferred_source = str(settings.get("source", "adf-duplex"))
+        self._source_row.select(self._flow.preferred_source)
         self._mode_row.select(str(settings.get("mode", "lineart")))
         try:
             resolution = int(str(settings.get("resolution", "300")))
@@ -1166,7 +1162,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "device": self._selected_device() or "",
             # The user's own choice, not a temporary sole-source adoption:
             # a duplex-capable scanner must get the preference back.
-            "source": self._preferred_source,
+            "source": self._flow.preferred_source,
             "mode": self._mode_row.value(),
             "resolution": str(self._current_resolution()),
             "page_size": combo_value(self._size_dropdown, PAGE_SIZES),
@@ -1344,61 +1340,35 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     # -------------------------------------------- capability negotiation
 
     def _on_source_changed(self) -> None:
-        """The source choice changed: refine mode-dependent options."""
-        if not self._reconciling_source:
-            # A manual change states a preference; a programmatic
-            # reconciliation (sole-source adoption, preference restore)
-            # must not overwrite what the user actually wants.
-            self._preferred_source = self._source_row.value()
-        self._update_selection_block()
-        device = self._selected_device()
-        caps = self._base_snapshot
-        if (
-            device is None
-            or self._runner is not None
-            or not isinstance(caps, dict)
-            or self._base_snapshot_device != device
-        ):
-            # No bare snapshot of *this* device yet (its probe may still be
-            # queued behind another device's): the refinement would judge it
-            # with foreign availability. The bare apply below re-derives it.
-            return
-        assessment = assess_source(caps, self._source_row.value())
-        if assessment.backend_value is not None:
-            self._launch_probe(
-                ProbeRequest(device, (("--source", assessment.backend_value),))
-            )
+        """The source choice changed: refine mode-dependent options.
+
+        Whether the change is manual (a preference) or programmatic (a
+        reconciliation select) is widget-callback context only this
+        window has; the GTK-free flow owns everything else.
+        """
+        update = self._flow.change_source(
+            self._selected_device(),
+            self._runner is not None,
+            self._source_row.value(),
+            manual=not self._reconciling_source,
+        )
+        self._render_capability_update(update)
 
     def _start_negotiation(self) -> None:
         """Kick off an advisory capability probe for the selected device.
 
         Two stages: a bare probe derives source availability, a follow-up
         with the negotiated source applied refines the mode-dependent
-        options. Serialized through the coordinator; stale results are
-        dropped by generation token. Never probes while a scan owns the
-        device. Advisory only: the engine re-negotiates before every scan.
+        options. The GTK-free flow serializes probes, drops stale results
+        and never probes while a scan owns the device. Advisory only: the
+        engine re-negotiates before every scan.
         """
-        device = self._selected_device()
-        if device != self._base_snapshot_device:
-            # Invalidate immediately: until the new device's own bare
-            # snapshot lands, nothing may be assessed with the old one.
-            self._base_snapshot = None
-            self._base_snapshot_device = None
-        if device is None or self._runner is not None:
-            return
-        self._launch_probe(ProbeRequest(device))
-
-    def _launch_probe(self, request: ProbeRequest) -> None:
-        hit, snapshot = self._probes.cached(request)
-        if hit:
-            self._apply_snapshot(request, snapshot)
-            return
-        token = self._probes.begin(request)
-        if token is None:
-            return  # queued behind the running probe
-        threading.Thread(
-            target=self._probe_worker, args=(token, request), daemon=True
-        ).start()
+        update = self._flow.select_device(
+            self._selected_device(),
+            self._runner is not None,
+            self._source_row.value(),
+        )
+        self._render_capability_update(update)
 
     def _probe_worker(self, token: int, request: ProbeRequest) -> None:
         snapshot = probe_snapshot(
@@ -1409,87 +1379,44 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_probe_done(
         self, token: int, request: ProbeRequest, snapshot: object
     ) -> None:
-        current, follow_up = self._probes.complete(token, snapshot)
-        if follow_up is not None:
-            self._launch_probe(follow_up)
-        if not current or request.device != self._selected_device():
-            return  # stale: the user moved on
-        self._apply_snapshot(request, snapshot)
+        update = self._flow.probe_completed(
+            token, request, snapshot, self._selected_device(), self._source_row.value()
+        )
+        self._render_capability_update(update)
 
-    def _apply_snapshot(self, request: ProbeRequest, snapshot: object) -> None:
-        caps = snapshot if isinstance(snapshot, dict) else None
-        if caps is None and not self._negotiation_logged_failure:
-            self._negotiation_logged_failure = True
+    def _render_capability_update(self, update: CapabilityUpdate) -> None:
+        """Apply one flow outcome to the widgets, log and workers."""
+        if update.log_probe_failure:
             self._append_log(
                 "[gui] capability probe failed; leaving all options selectable"
             )
-        if not request.settings:
-            # Bare snapshot: source availability, then refine the modes with
-            # the currently selected source applied.
-            self._base_snapshot = caps
-            self._base_snapshot_device = request.device if caps is not None else None
-            blocked: dict[str, str] = {}
-            for value in ("flatbed", "adf", "adf-duplex", "adf-back"):
-                assessment = assess_source(caps, value)
-                if selection_blocked(assessment.support):
-                    blocked[value] = assessment.consequence
-            self._source_row.set_availability(blocked, self._on_choice_blocked)
-            self._reconcile_source_choice(blocked)
-            selected = assess_source(caps, self._source_row.value())
-            if caps is not None and selected.backend_value is not None:
-                self._launch_probe(
-                    ProbeRequest(
-                        request.device,
-                        (("--source", selected.backend_value),),
-                    )
-                )
-        self._last_caps = caps
-        self._apply_mode_availability(caps)
-        self._on_document_changed()
-        self._update_selection_block()
-
-    def _reconcile_source_choice(self, blocked: dict[str, str]) -> None:
-        """Re-apply the user's source preference to new availability.
-
-        The preferred source wins whenever the device offers it. When it
-        is blocked and exactly one source remains selectable (the ScanSnap
-        iX100 offers ADF Front alone), that sole source is adopted so
-        Start stays usable instead of demanding a pointless click; the
-        stored preference is untouched, so a capable scanner gets it back.
-        While a real choice remains, nothing is changed silently: Start
-        stays disabled with the reason, exactly as before.
-        """
-        available = [value for _label, value in SOURCES if value not in blocked]
-        target: str | None = None
-        if self._preferred_source in available:
-            target = self._preferred_source
-        elif self._source_row.value() in blocked and len(available) == 1:
-            target = available[0]
-            self._append_log(
-                f"[gui] '{target}' is the only source this scanner offers; selected it"
+        if update.source_blocked is not None:
+            self._source_row.set_availability(
+                update.source_blocked, self._on_choice_blocked
             )
-        if target is not None and target != self._source_row.value():
+        if update.adopted_sole_source is not None:
+            self._append_log(
+                f"[gui] '{update.adopted_sole_source}' is the only source "
+                "this scanner offers; selected it"
+            )
+        if update.select_source is not None:
             self._reconciling_source = True
             try:
-                self._source_row.select(target)
+                self._source_row.select(update.select_source)
             finally:
                 self._reconciling_source = False
-
-    def _apply_mode_availability(self, caps: object) -> None:
-        capabilities = caps if isinstance(caps, dict) else None
-        blocked: dict[str, str] = {}
-        for value in ("lineart", "gray", "color", "lineart-auto"):
-            # The faint mode takes the optimistic advisory verdict: a
-            # visible native-enhancement signature keeps it selectable, and
-            # the engine confirms the path with staged probes at scan time.
-            assessment = (
-                advisory_faint_assessment(capabilities)
-                if value == "lineart-auto"
-                else assess_mode(capabilities, value)
+        if update.mode_blocked is not None:
+            self._mode_row.set_availability(
+                update.mode_blocked, self._on_choice_blocked
             )
-            if selection_blocked(assessment.support):
-                blocked[value] = assessment.consequence
-        self._mode_row.set_availability(blocked, self._on_choice_blocked)
+        if update.start_probe is not None:
+            token, request = update.start_probe
+            threading.Thread(
+                target=self._probe_worker, args=(token, request), daemon=True
+            ).start()
+        if update.refresh:
+            self._on_document_changed()
+            self._update_selection_block()
 
     def _on_choice_blocked(self, value: str, reason: str) -> None:
         """A visible-but-unavailable choice was clicked: explain, keep state."""
@@ -1601,7 +1528,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         dpi = self._current_resolution()
         base = _SIZE_BASE_MB.get(self._mode_row.value(), 0.3)
         estimate = max(base * (dpi / 300.0) ** 2, 0.1)
-        capabilities = self._last_caps if isinstance(self._last_caps, dict) else None
+        capabilities = self._flow.last_caps
         assessment = assess_resolution(capabilities, dpi)
         effective = (
             int(assessment.effective)
