@@ -59,7 +59,7 @@ It consists of two components, shipped as two Python packages, so servers and sc
 Main features:
 
 - **Scan a stack of paper into one searchable PDF with a single command:** duplex batch, blank backsides dropped, OCR text layer, archival PDF/A output by default.
-- **Automatic page size detection crops every page to the paper's real edges**, so receipts come out receipt-sized and mixed stacks need no set-up. When content fits A4 and US Letter alike, `--auto-size-preference iso|north-american` decides the ambiguity (ISO by default).
+- **Automatic page size detection crops every page to the detected paper edges**, falling back to conservative framing around the printed content where a device hides the paper boundary, so receipts come out receipt-sized and mixed stacks need no set-up. When content fits A4 and US Letter alike, `--auto-size-preference iso|north-american` decides the ambiguity (ISO by default).
 - **Small files by default:** 1-bit black-and-white at 300 dpi lands at roughly 100 KB per A4 text page, and ocrmypdf shrinks that further where `jbig2enc` is installed.
 - **Works with anything [SANE](https://en.wikipedia.org/wiki/Scanner_Access_Now_Easy)** can drive, including driverless eSCL devices via `sane-airscan`. Device capabilities are probed and mapped instead of hardcoded, and devices without a native 1-bit mode get software binarization automatically.
 - **Automation-grade CLI** with defined exit codes, filename templates and a versioned JSON event protocol; interrupted batches can be rebuilt from the preserved page images without rescanning the paper.
@@ -305,14 +305,14 @@ The defaults are already tuned for small files: 1-bit black-and-white (lineart) 
 
 To keep files small:
 
-1. Stay with the 300 dpi black-and-white default for usual documents. Use `--mode gray` or `--mode color` only when a document really needs it (photos, stamps, faint or colored originals): they store 8 or 24 bits per pixel instead of 1, and sizes explode. The same goes for resolutions above 300 dpi, since data grows quadratically with dpi.
+1. Stay with the 300 dpi black-and-white default for usual documents. Use `--mode gray` or `--mode color` only when a document really needs it (photos, stamps, faint or colored originals): they store 8 or 24 bits per pixel instead of 1, and sizes explode. The same goes for resolutions above 300 dpi, since data grows quadratically with dpi. For wholly faint originals such as thermal-paper receipts or washed-out copies, the GUI's "B/W (faint)" mode (CLI: `--lineart-threshold auto`) keeps the small 1-bit output; it applies one guarded threshold per page, so a page mixing normal print with a much fainter region can still lose the faint part, and Gray remains the reliable choice for those.
 2. Use `-r 200` for documents where quality matters less; it roughly halves the data. Where no text layer is needed either, `--no-ocr` skips OCR entirely.
 3. Highly recommended: make sure `jbig2enc` is installed. ocrmypdf detects it automatically during its optimization pass and recodes 1-bit pages losslessly to a fraction of their size. `command -v jbig2` shows whether it is present; if it prints nothing, follow the [installation instructions](#installation).
 
 
 ### Why is a page missing from my PDF, or a blank page kept?<a id="faq-blank-pages"></a>
 
-Duplex scanning reads both sides of every sheet, and ScanMole drops a page as blank when its mean brightness is above `0.995`, i.e. when less than 0.5% of it is "ink". That is what removes the empty backsides of single-sided documents. Both failure directions have knobs: if a page with faint content was dropped, raise `--blank-threshold` towards `1`, or use `--keep-blanks` to keep every page (`--blank-threshold 0` disables the detection entirely). If a truly blank page survives, something dark is pulling its mean down, typically punch holes, staple shadows or a skewed scan showing the scan-bed edge; if tuning the threshold does not fix it, [report the device quirk](CONTRIBUTING.md#issues-scanner-quirks).
+Duplex scanning reads both sides of every sheet, and ScanMole drops a page as blank when its mean brightness is above `0.995`, i.e. when less than 0.5% of it is "ink". The mean is measured over the cropped page, or over the detected content area on frames still at the full scan window, so window padding cannot hide sparse content. That is what removes the empty backsides of single-sided documents, but a page holding only a line or two sits close to the cutoff and can land on either side of it. Both failure directions have knobs: if a page with sparse or faint content was dropped, raise `--blank-threshold` towards `1`, use `--keep-blanks` to keep every page while blanks are still counted, or set `--blank-threshold 0` to switch the classification off entirely; in the GUI, disable "Skip blank pages" (it maps to `--keep-blanks`). If a truly blank page survives, something dark is pulling its mean down, typically punch holes, staple shadows or a skewed scan showing the scan-bed edge; if tuning the threshold does not fix it, [report the device quirk](CONTRIBUTING.md#issues-scanner-quirks).
 
 
 
