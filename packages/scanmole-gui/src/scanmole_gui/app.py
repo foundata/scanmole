@@ -519,6 +519,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._device_poll_id: int | None = None
         self._probes = ProbeCoordinator()
         self._base_snapshot: object = None
+        self._base_snapshot_device: str | None = None
         self._negotiation_logged_failure = False
         self._last_caps: object = None
         self._selection_block_reason: str | None = None
@@ -1444,7 +1445,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._update_selection_block()
         device = self._selected_device()
         caps = self._base_snapshot
-        if device is None or self._runner is not None or not isinstance(caps, dict):
+        if (
+            device is None
+            or self._runner is not None
+            or not isinstance(caps, dict)
+            or self._base_snapshot_device != device
+        ):
+            # No bare snapshot of *this* device yet (its probe may still be
+            # queued behind another device's): the refinement would judge it
+            # with foreign availability. The bare apply below re-derives it.
             return
         assessment = assess_source(caps, self._source_row.value())
         if assessment.backend_value is not None:
@@ -1462,6 +1471,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         device. Advisory only: the engine re-negotiates before every scan.
         """
         device = self._selected_device()
+        if device != self._base_snapshot_device:
+            # Invalidate immediately: until the new device's own bare
+            # snapshot lands, nothing may be assessed with the old one.
+            self._base_snapshot = None
+            self._base_snapshot_device = None
         if device is None or self._runner is not None:
             return
         self._launch_probe(ProbeRequest(device))
@@ -1505,6 +1519,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             # Bare snapshot: source availability, then refine the modes with
             # the currently selected source applied.
             self._base_snapshot = caps
+            self._base_snapshot_device = request.device if caps is not None else None
             blocked: dict[str, str] = {}
             for value in ("flatbed", "adf", "adf-duplex", "adf-back"):
                 assessment = assess_source(caps, value)

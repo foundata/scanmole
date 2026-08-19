@@ -118,6 +118,57 @@ def test_sole_available_source_is_adopted_and_preference_kept() -> None:
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_source_change_needs_the_selected_devices_own_snapshot() -> None:
+    # While device B's bare probe is still queued behind A's, a source
+    # change must not use A's retained snapshot to request a source-applied
+    # probe for B; once B's own bare snapshot is applied, it may.
+    from scanmole.options import Capability
+    from scanmole_gui.app import MainWindow
+
+    class Row:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def value(self) -> str:
+            return self._value
+
+    class Window:
+        _on_source_changed = MainWindow._on_source_changed
+
+        def __init__(self, base_device: str) -> None:
+            self._reconciling_source = False
+            self._preferred_source = "adf-duplex"
+            self._source_row = Row("adf-duplex")
+            self._runner = None
+            self._base_snapshot = {
+                "source": Capability(kind="enum", choices=["ADF Duplex"])
+            }
+            self._base_snapshot_device = base_device
+            self.launched: list[object] = []
+
+        def _update_selection_block(self) -> None:
+            pass
+
+        def _selected_device(self) -> str:
+            return "dev-b"
+
+        def _launch_probe(self, request: object) -> None:
+            self.launched.append(request)
+
+    foreign = Window(base_device="dev-a")
+    foreign._on_source_changed()  # type: ignore[misc]
+    assert foreign.launched == []  # A's snapshot must never assess B
+
+    own = Window(base_device="dev-b")
+    own._on_source_changed()  # type: ignore[misc]
+    assert [getattr(request, "settings", None) for request in own.launched] == [
+        (("--source", "ADF Duplex"),)
+    ]
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_application_shutdown_delegates_to_the_synchronous_barrier() -> None:
     # Once application shutdown begins, GLib sources may never fire again;
     # the handler must call the window's synchronous shutdown path, not the

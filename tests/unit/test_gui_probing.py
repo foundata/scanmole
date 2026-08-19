@@ -114,6 +114,82 @@ def test_stale_candidate_probe_never_downgrades_a_newer_selection() -> None:
     assert current is False  # the caller must drop it before any blocking
 
 
+def test_source_refinement_cannot_displace_a_queued_bare_probe() -> None:
+    # The regression sequence: while device A's probe runs, selecting B
+    # queues B's mandatory bare probe. A source-change callback then asks
+    # for B with a source applied; that refinement must not replace the
+    # queued bare request (B would be assessed with A's availability). It
+    # is re-derived from the newest selection once B's bare snapshot lands.
+    coordinator = ProbeCoordinator()
+    a_token = coordinator.begin(ProbeRequest("dev-a"))
+    assert a_token is not None
+    assert coordinator.begin(ProbeRequest("dev-b")) is None  # queued
+    assert coordinator.begin(ProbeRequest("dev-b", (("--source", "ADF"),))) is None
+
+    current, follow_up = coordinator.complete(a_token, {"a": True})
+
+    assert current is True
+    assert follow_up == ProbeRequest("dev-b")  # the bare probe survived
+
+    b_token = coordinator.begin(follow_up)
+    assert b_token is not None
+    coordinator.complete(b_token, {"b": True})
+    assert coordinator.cached(ProbeRequest("dev-b"))[0] is True
+    # With the bare snapshot cached, the refinement may run normally.
+    assert coordinator.begin(ProbeRequest("dev-b", (("--source", "ADF"),)))
+
+
+def test_rapid_switching_keeps_the_newest_bare_probe() -> None:
+    # A -> B -> A while A's probe still runs: the newest bare request wins
+    # the queue slot; the obsolete intermediate is dropped.
+    coordinator = ProbeCoordinator()
+    a_token = coordinator.begin(ProbeRequest("dev-a"))
+    assert a_token is not None
+    assert coordinator.begin(ProbeRequest("dev-b")) is None
+    assert coordinator.begin(ProbeRequest("dev-a")) is None
+
+    _, follow_up = coordinator.complete(a_token, {"a": True})
+
+    assert follow_up == ProbeRequest("dev-a")
+
+
+def test_stale_completion_never_disturbs_the_running_probe() -> None:
+    # A slow worker's late completion must neither clear the newer running
+    # probe nor steal its queued follow-up.
+    coordinator = ProbeCoordinator()
+    stale = coordinator.begin(ProbeRequest("dev-a"))
+    assert stale is not None
+    coordinator.complete(stale, None)  # the device switch obsoletes it
+    fresh = coordinator.begin(ProbeRequest("dev-b"))
+    assert fresh is not None
+    assert coordinator.begin(ProbeRequest("dev-c")) is None  # queued
+
+    current, follow_up = coordinator.complete(stale, {"old": True})
+
+    assert current is False
+    assert follow_up is None  # the queue belongs to the running probe
+    current, follow_up = coordinator.complete(fresh, {"new": True})
+    assert current is True
+    assert follow_up == ProbeRequest("dev-c")
+    assert coordinator.cached(ProbeRequest("dev-b")) == (True, {"new": True})
+
+
+def test_probe_failure_is_cached_and_does_not_wedge_the_queue() -> None:
+    # A failed probe (None snapshot) is a result too: it caches, the
+    # queued follow-up still comes back, and nothing stays "running".
+    coordinator = ProbeCoordinator()
+    token = coordinator.begin(ProbeRequest("dev-a"))
+    assert token is not None
+    assert coordinator.begin(ProbeRequest("dev-b")) is None
+
+    current, follow_up = coordinator.complete(token, None)
+
+    assert current is True
+    assert follow_up == ProbeRequest("dev-b")
+    assert coordinator.cached(ProbeRequest("dev-a")) == (True, None)
+    assert coordinator.begin(ProbeRequest("dev-b")) is not None  # queue is free
+
+
 def test_selection_blocking_policy() -> None:
     # NATIVE, EMULATED and UNKNOWN stay selectable; lossy paths do not.
     assert selection_blocked(Support.NATIVE) is False

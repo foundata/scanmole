@@ -47,8 +47,22 @@ class ProbeCoordinator:
     _cache: dict[tuple[str, Settings], Snapshot] = field(default_factory=dict)
 
     def begin(self, request: ProbeRequest) -> int | None:
-        """Start a probe now (returns its token) or queue it (returns None)."""
+        """Start a probe now (returns its token) or queue it (returns None).
+
+        A settings-applied refinement never displaces a queued bare probe:
+        the bare snapshot is its prerequisite (a device switch queued it,
+        and assessing the new device with the old device's availability is
+        exactly the bug this prevents). Dropping the refinement loses
+        nothing, because it is re-derived from the newest selection when
+        the bare snapshot is applied.
+        """
         if self._running is not None:
+            if (
+                request.settings
+                and self._queued is not None
+                and not self._queued.settings
+            ):
+                return None
             self._queued = request
             return None
         self._running = request
@@ -60,17 +74,22 @@ class ProbeCoordinator:
     ) -> tuple[bool, ProbeRequest | None]:
         """Report a finished probe.
 
+        A stale completion (a slow worker outlived a newer ``begin()``)
+        touches nothing: the running probe stays running and keeps its
+        queued follow-up.
+
         Returns:
             ``(current, follow_up)``: whether the result is still current
             (stale results must be dropped by the caller) and a queued
             request the caller should ``begin()`` next, if any.
         """
-        current = generation == self._generation
-        if current and self._running is not None:
+        if generation != self._generation:
+            return False, None
+        if self._running is not None:
             self._cache[self._running.key] = snapshot
         self._running = None
         follow_up, self._queued = self._queued, None
-        return current, follow_up
+        return True, follow_up
 
     def cached(self, request: ProbeRequest) -> tuple[bool, Snapshot]:
         """The cached snapshot for a request: ``(hit, snapshot)``."""
