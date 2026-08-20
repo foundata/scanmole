@@ -83,7 +83,20 @@ scanmole/                      # repository root (uv workspace)
 │       ├── pyproject.toml     # metadata + scanmole-gui console script; depends on scanmole
 │       ├── po/                # translation template, per-language .po, scripts
 │       └── src/scanmole_gui/  # import package
-│           ├── app.py         # the window and event handling
+│           ├── app.py         # MainWindow orchestration, ScanMoleApp, main()
+│           ├── form.py        # scan form component (GTK)
+│           ├── status.py      # log pane and result bar (GTK)
+│           ├── dialogs.py     # settings, About and OCR-language dialogs (GTK)
+│           ├── widgets.py     # reusable form widgets (GTK, policy-free)
+│           ├── request.py     # immutable scan request + argv mapping (GTK-free)
+│           ├── protocol.py    # tolerant JSON event decoding (GTK-free)
+│           ├── session.py     # session state fold + completion (GTK-free)
+│           ├── runner.py      # scan subprocess supervision (GTK-free)
+│           ├── probing.py     # capability probe flow (GTK-free)
+│           ├── discovery.py   # device listing decisions (GTK-free)
+│           ├── settings.py    # gui.json load/store (GTK-free)
+│           ├── desktop.py     # desktop entry + icon install (GTK-free)
+│           ├── modes.py       # scan mode table (GTK-free)
 │           ├── i18n.py        # gettext catalog loading (_ and ngettext)
 │           ├── locale/        # compiled .mo catalogs (committed, ship in wheel)
 │           └── icons/         # hicolor tree with the logo (header bar, About, README)
