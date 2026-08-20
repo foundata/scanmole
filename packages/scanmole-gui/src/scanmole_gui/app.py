@@ -18,7 +18,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -44,6 +43,7 @@ from scanmole.negotiation import (  # noqa: E402
     probe_snapshot,
 )
 from scanmole_gui import __version__, desktop  # noqa: E402
+from scanmole_gui.advisory import AdvisoryCommands  # noqa: E402
 from scanmole_gui.dialogs import (  # noqa: E402
     build_about_dialog,
     build_more_languages_dialog,
@@ -198,6 +198,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._close_patience = 0
         self._searching = False
         self._device_poll_id: int | None = None
+        self._advisory = AdvisoryCommands()
+        # Once released (window close, application shutdown), advisory
+        # results must no longer touch the widgets.
+        self._released = False
         self._flow = CapabilityFlow()
         self._selection_block_reason: str | None = None
         self._devices: list[dict[str, str]] = []
@@ -425,11 +429,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._form.set_refresh_enabled(False)
         self._form.set_device_subtitle(_("Searching for scanners…"))
         prefer = self._selected_device() or str(self._settings.get("device") or "")
-        threading.Thread(
-            target=self._devices_worker, args=(prefer,), daemon=True
-        ).start()
+        self._advisory.spawn_worker(
+            self._devices_worker, prefer, self._advisory.generation
+        )
 
-    def _devices_worker(self, prefer: str) -> None:
+    def _devices_worker(self, prefer: str, generation: int) -> None:
         """Worker thread: query devices and hand results back to the main loop.
 
         The parsing and the compatibility decision live in the GTK-free
@@ -438,14 +442,16 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         cannot leave descendants behind on timeout) and translates the
         typed outcome for the user.
         """
+        adopt = self._advisory.adopter(generation)
         if self._cli_version is None:
-            self._cli_version = self._probe_cli_version()
+            self._cli_version = self._probe_cli_version(adopt)
         devices: list[dict[str, str]] = []
         err = ""
         try:
             result = run_command(
                 [self._scanmole, "--list-devices", "--json"],
                 timeout_seconds=120,
+                on_spawn=adopt,
             )
             if result.stderr.strip():
                 GLib.idle_add(self._append_log, result.stderr.strip())
@@ -478,20 +484,32 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         finally:
             # Always reaches the main loop, or the refresh button and the
             # "Searching for scanners…" subtitle would stay stuck forever.
-            GLib.idle_add(self._apply_devices, devices, err, prefer)
+            GLib.idle_add(self._apply_devices, devices, err, prefer, generation)
 
-    def _probe_cli_version(self) -> str | None:
+    def _probe_cli_version(
+        self, adopt: Callable[[subprocess.Popen[bytes]], None]
+    ) -> str | None:
         """Return the supervised CLI's version string, or ``None``."""
         try:
-            result = run_command([self._scanmole, "--version"], timeout_seconds=30)
+            result = run_command(
+                [self._scanmole, "--version"],
+                timeout_seconds=30,
+                on_spawn=adopt,
+            )
         except (OSError, subprocess.TimeoutExpired):
             return None
         return parse_version(result.stdout)
 
     def _apply_devices(
-        self, devices: list[dict[str, str]], err: str, prefer: str
+        self, devices: list[dict[str, str]], err: str, prefer: str, generation: int
     ) -> None:
         """Populate the device dropdown on the main loop."""
+        if self._released or generation != self._advisory.generation:
+            # The search was cancelled underneath this result (a scan took
+            # the device, the window is closing): stay quiet, but never
+            # leave the search latch stuck.
+            self._searching = False
+            return
         self._searching = False
         self._form.set_refresh_enabled(self._runner is None)
         self._form.set_scan_enabled(
@@ -602,15 +620,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         self._render_capability_update(update)
 
-    def _probe_worker(self, token: int, request: ProbeRequest) -> None:
+    def _probe_worker(self, token: int, request: ProbeRequest, generation: int) -> None:
         snapshot = probe_snapshot(
-            request.device, request.settings, ADVISORY_PROBE_TIMEOUT_SECONDS
+            request.device,
+            request.settings,
+            ADVISORY_PROBE_TIMEOUT_SECONDS,
+            on_spawn=self._advisory.adopter(generation),
         )
-        GLib.idle_add(self._on_probe_done, token, request, snapshot)
+        GLib.idle_add(self._on_probe_done, token, request, snapshot, generation)
 
     def _on_probe_done(
-        self, token: int, request: ProbeRequest, snapshot: object
+        self, token: int, request: ProbeRequest, snapshot: object, generation: int
     ) -> None:
+        if self._released or generation != self._advisory.generation:
+            return  # cancelled underneath: the result must not render
         update = self._flow.probe_completed(
             token, request, snapshot, self._selected_device(), self._form.source_value()
         )
@@ -635,9 +658,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._form.set_mode_availability(update.mode_blocked)
         if update.start_probe is not None:
             token, request = update.start_probe
-            threading.Thread(
-                target=self._probe_worker, args=(token, request), daemon=True
-            ).start()
+            self._advisory.spawn_worker(
+                self._probe_worker, token, request, self._advisory.generation
+            )
         if update.refresh:
             self._form.refresh_document_hints()
             self._update_selection_block()
@@ -794,6 +817,19 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         except OSError as exc:
             self._alert(_("Cannot Create Output Folder"), f"{folder}\n\n{exc}")
             return
+        # Acquisition probes the device authoritatively at scan start; a
+        # still-running advisory probe would race it on the same scanner
+        # (DEVICE_BUSY on some backends), so stop the advisory children
+        # and join their workers boundedly before launching. A worker
+        # thread that outlives the bound is harmless: any child it still
+        # spawns carries a stale generation and is killed on adoption.
+        if not self._advisory.cancel_pending():
+            self._append_log("[gui] advisory worker still busy; child stopped")
+        self._searching = False
+        # The cancelled probes' completions never arrive; reset the flow
+        # so nothing queues behind a phantom running probe. A fresh
+        # negotiation starts after the scan exits.
+        self._flow.reset()
         self._save_settings()
 
         request = self._form.scan_request(self._selected_device(), folder)
@@ -881,6 +917,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._runner = None
         self._form.set_running(False)
         self._append_log(f"[gui] scanmole exited with code {exit_code}")
+        # The scan takeover reset the capability flow; renegotiate the
+        # selected device's availability now that it is free again.
+        self._start_negotiation()
 
         outcome = complete(self._session, exit_code, self._run_folder)
         if outcome.kind == "cancelled":
@@ -940,6 +979,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         scan's process group on this thread instead.
         """
         self._persist_ui_state()
+        self._released = True
+        self._advisory.cancel_pending(close=True)
         runner = self._runner
         if runner is not None:
             runner.shutdown()
@@ -947,6 +988,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_close_request(self, *_args: object) -> bool:
         """Persist the form and window geometry, stop any running scan."""
         self._persist_ui_state()
+        # No advisory child may outlive the window, and no late advisory
+        # result may touch it while it is closing.
+        self._released = True
+        self._advisory.cancel_pending(close=True)
         runner = self._runner
         if runner is not None and runner.is_running():
             # Closing must not orphan the engine mid-batch: run the normal
@@ -1029,6 +1074,10 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
         # Set by the settings dialog's Restart row; main() re-executes the
         # process after the main loop ends.
         self.restart_requested: bool = False
+        # Own reference: props.active_window stays None until the window
+        # received focus, which an early Ctrl+C beats. The shutdown paths
+        # must find the window regardless.
+        self.window: MainWindow | None = None
         self.connect("activate", self._on_activate)
         self.connect("shutdown", self._on_shutdown)
 
@@ -1042,7 +1091,7 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
         the synchronous shutdown barrier while the window is still alive;
         on the normal close path the window is already gone here.
         """
-        window = self.props.active_window
+        window = self.props.active_window or self.window
         shutdown_now = getattr(window, "_shutdown_now", None)
         if shutdown_now is not None:
             shutdown_now()
@@ -1061,6 +1110,7 @@ class ScanMoleApp(Adw.Application):  # type: ignore[misc]
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
         win = self.props.active_window or MainWindow(application=app)
+        self.window = win
         win.present()
 
 
@@ -1073,7 +1123,15 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         # PyGObject's SIGINT fallback quits the main loop cleanly, then
         # re-raises so the caller learns about the interrupt; map it to the
-        # conventional exit code instead of a traceback.
+        # conventional exit code instead of a traceback. An interrupt that
+        # lands while the main thread runs Python code (e.g. during
+        # startup) aborts app.run() without the shutdown signal, so the
+        # synchronous barrier must run here too: without it a wedged
+        # advisory probe child would outlive the GUI holding the scanner.
+        window = app.props.active_window or app.window
+        shutdown_now = getattr(window, "_shutdown_now", None)
+        if shutdown_now is not None:
+            shutdown_now()
         return 130
     if app.restart_requested:
         # Re-execute the process so the launcher re-applies the persisted

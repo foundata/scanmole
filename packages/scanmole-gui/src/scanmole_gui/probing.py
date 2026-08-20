@@ -169,6 +169,20 @@ class CapabilityFlow:
         """The most recently applied snapshot (source-applied when the
         follow-up ran); feeds the window's resolution hint."""
 
+    def reset(self) -> None:
+        """Forget every probe in flight, queued or cached.
+
+        A scan takeover cancels the advisory workers, so a running
+        probe's completion never arrives; without this reset the
+        coordinator would wait for it forever and queue every later
+        probe behind the phantom. The preference and the one-per-window
+        failure log survive; the window starts a fresh negotiation
+        after the scan exits.
+        """
+        self._coordinator = ProbeCoordinator()
+        self._base_snapshot = None
+        self._base_device = None
+
     def select_device(
         self, device: str | None, scanning: bool, current_source: str
     ) -> CapabilityUpdate:

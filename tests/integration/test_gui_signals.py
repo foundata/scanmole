@@ -92,6 +92,7 @@ def test_application_shutdown_delegates_to_the_synchronous_barrier() -> None:
 
     class GoneApp:
         props = GoneProps()
+        window = None
 
     ScanMoleApp._on_shutdown(GoneApp())  # type: ignore[arg-type]
     assert calls == ["shutdown_now"]  # no window left: nothing to do
@@ -110,11 +111,15 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
         def shutdown(self) -> None:
             self.shutdowns += 1
 
+    from scanmole_gui.advisory import AdvisoryCommands
+
     class Window:
         _shutdown_now = MainWindow._shutdown_now
 
         def __init__(self) -> None:
             self.persisted = 0
+            self._released = False
+            self._advisory = AdvisoryCommands()
             self._runner: Runner | None = Runner()
 
         def _persist_ui_state(self) -> None:
@@ -156,3 +161,54 @@ def test_sigint_exits_with_130_and_saves_settings(tmp_path: Path) -> None:
     assert "Traceback" not in stderr_file.read_text()
     # The SIGINT path must persist state like a normal window close does.
     assert (tmp_path / "config" / "scanmole" / "gui.json").is_file()
+
+
+@_NEEDS_DESKTOP
+def test_sigint_kills_a_hung_advisory_discovery_child(tmp_path: Path) -> None:
+    # The orphan regression: a wedged device search must not survive the
+    # GUI. The fake CLI answers the version probe, then hangs the device
+    # listing; interrupting the GUI has to take the whole advisory child
+    # group down with it.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    # A per-run marker duration: a stale child of an earlier run must
+    # never satisfy (or poison) this run's pgrep checks.
+    marker = f"47{os.getpid() % 10000}.375"
+    fake = fake_bin / "scanmole"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "scanmole 0.0.0"; exit 0; fi\n'
+        f"exec sleep {marker}\n"
+    )
+    fake.chmod(0o755)
+    env = dict(os.environ)
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    # Bracket the final character: the regex still matches the real
+    # child's argv but never the script's own command line, which embeds
+    # this very pattern.
+    probe = f"pgrep -f 'sleep {marker[:-1]}[{marker[-1]}]' >/dev/null"
+    script = (
+        "set -m; scanmole-gui & pid=$!; "
+        f"for i in $(seq 1 100); do {probe} && break; sleep 0.1; done; "
+        f"{probe}; echo PROBE:$?; "
+        "kill -INT $pid; wait $pid; echo EXIT:$?; "
+        f"for i in $(seq 1 50); do {probe} || break; sleep 0.1; done; "
+        f"{probe}; echo ORPHAN:$?"
+    )
+    try:
+        result = subprocess.run(
+            ["dbus-run-session", "--", "bash", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=env,
+            check=False,
+        )
+    finally:
+        subprocess.run(["pkill", "-f", f"sleep {marker}"], check=False)
+
+    assert "PROBE:0" in result.stdout  # the hung advisory child was running
+    assert "EXIT:130" in result.stdout
+    assert "ORPHAN:1" in result.stdout  # and it did not survive the GUI

@@ -490,3 +490,18 @@ def test_flow_obsolete_source_result_cannot_block_a_valid_choice() -> None:
         flat_token, flat_request, _caps("ADF Duplex", "Flatbed"), "dev-a", "flatbed"
     )
     assert current.mode_blocked == {}  # everything the flatbed offers
+
+
+def test_flow_reset_clears_a_cancelled_running_probe() -> None:
+    # The scan takeover cancels the advisory worker, so the running
+    # probe's completion never arrives. Without the reset every later
+    # probe queues forever behind the phantom.
+    flow = CapabilityFlow()
+    started = flow.select_device("dev-a", False, "adf-duplex")
+    assert started.start_probe is not None  # in flight, then cancelled
+
+    flow.reset()
+    fresh = flow.select_device("dev-a", False, "adf-duplex")
+
+    assert fresh.start_probe is not None  # starts at once, nothing queued
+    assert fresh.start_probe[1] == ProbeRequest("dev-a")  # bare comes first
