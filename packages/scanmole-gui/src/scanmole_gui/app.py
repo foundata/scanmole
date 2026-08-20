@@ -67,6 +67,13 @@ from scanmole_gui.session import (  # noqa: E402
     mark_cancelled,
 )
 from scanmole_gui.settings import load_settings, store_settings  # noqa: E402
+from scanmole_gui.status import (  # noqa: E402
+    LogView,
+    ResultBar,
+    exit_failure_texts,
+    render_session_update,
+    success_summary,
+)
 from scanmole_gui.widgets import combo_select, combo_value  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
@@ -80,41 +87,6 @@ LOGO_FILE = ICON_DIR / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
 # Endonyms on purpose: a language name is most recognizable in itself.
 UI_LANGUAGES = ((_("System default"), ""), ("English", "en"), ("Deutsch", "de"))
 COLOR_SCHEMES = ((_("System default"), ""), (_("Light"), "light"), (_("Dark"), "dark"))
-
-# Friendly texts for the CLI's documented exit codes.
-EXIT_HINTS: dict[int, tuple[str, str]] = {
-    6: (
-        _("No Pages Scanned"),
-        _(
-            "No pages were scanned — is the ADF (Automatic Document Feeder) "
-            "loaded?\n"
-            "(All pages may also have been detected as blank.)"
-        ),
-    ),
-    3: (
-        _("Scanner Error"),
-        _(
-            "The scanner reported an error.\n"
-            "\n"
-            "Make sure it is connected, powered on and not in use by another "
-            "application, then try again."
-        ),
-    ),
-    4: (
-        _("Missing Dependency"),
-        _(
-            "scanmole is missing a required tool (e.g. scanimage, img2pdf, "
-            "ocrmypdf) on this system. See the log for details."
-        ),
-    ),
-    5: (
-        _("Processing Failed"),
-        _(
-            "PDF assembly or OCR failed after scanning. The scanned pages "
-            "were kept; see the log for the folder path."
-        ),
-    ),
-}
 
 DEVICE_POLL_SECONDS = 15
 """Pause between device searches while no scanner has been found.
@@ -346,9 +318,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             device_for_preview=self._selected_device,
             effective_resolution=self._effective_resolution,
         )
-        self._build_log_area()
+        self._log = LogView()
+        self._status = ResultBar(
+            on_show=self._show_in_folder, on_open=self._open_output
+        )
 
-        toolbar.add_bottom_bar(self._build_result_bar())
+        toolbar.add_bottom_bar(self._status.widget)
 
         # Responsive layout: two columns only when each column can give the
         # form fields their full width (~430 px per column, matching the
@@ -371,14 +346,14 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             (self._form.output_group, 1, 0, 1),
             (self._form.document_group, 0, 1, 1),
             (self._form.processing_group, 1, 1, 1),
-            (self._log_area, 0, 2, 2),  # spans both columns
+            (self._log.widget, 0, 2, 2),  # spans both columns
         )
         sections_narrow = (
             self._form.scanner_group,
             self._form.output_group,
             self._form.document_group,
             self._form.processing_group,
-            self._log_area,
+            self._log.widget,
         )
         for section in sections_narrow:
             parent = section.get_parent()
@@ -395,116 +370,22 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._clamp.set_maximum_size(1080 if wide else 640)
         self._clamp.set_tightening_threshold(900 if wide else 480)
 
-    def _build_log_area(self) -> None:
-        """Build the collapsed, copyable log below the form."""
-        self._log_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        log_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self._log_expander = Gtk.Expander(
-            label=_("Log"), hexpand=True, valign=Gtk.Align.CENTER
-        )
-        log_header.append(self._log_expander)
-        copy_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        copy_btn.set_child(
-            Adw.ButtonContent(icon_name="edit-copy-symbolic", label=_("Copy"))
-        )
-        copy_btn.add_css_class("flat")
-        copy_btn.connect("clicked", self._on_copy_log)
-        log_header.append(copy_btn)
-        self._log_area.append(log_header)
-        log_scroller = Gtk.ScrolledWindow(
-            min_content_height=210, has_frame=True, visible=False
-        )
-        self._log_view = Gtk.TextView(
-            editable=False,
-            cursor_visible=False,
-            monospace=True,
-            left_margin=6,
-            right_margin=6,
-            top_margin=4,
-            bottom_margin=4,
-        )
-        self._log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self._log_buf = self._log_view.get_buffer()
-        self._log_end = self._log_buf.create_mark(
-            None, self._log_buf.get_end_iter(), False
-        )
-        log_scroller.set_child(self._log_view)
-        self._log_expander.connect(
-            "notify::expanded",
-            lambda *_a: log_scroller.set_visible(self._log_expander.get_expanded()),
-        )
-        self._log_area.append(log_scroller)
+    def _set_result_bar(self, state: str, title: str, detail: str = "") -> None:
+        """Put the bottom bar into ``idle``/``running``/``success``/``error``.
 
-    def _build_result_bar(self) -> Gtk.Box:
-        """Build the persistent bottom bar showing progress and the result."""
-        # Centered as a whole: with mixed icon, two-line text and buttons a
-        # left-aligned bar never lines up optically with the groups above.
-        bar = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            spacing=10,
-            halign=Gtk.Align.CENTER,
-            margin_top=8,
-            margin_bottom=8,
-            margin_start=12,
-            margin_end=12,
+        The Show/Open actions appear only when a finished output exists,
+        which only the window knows.
+        """
+        self._status.set_state(
+            state,
+            title,
+            detail,
+            actions=state == "success" and self._last_output is not None,
         )
-        self._status_spinner = Gtk.Spinner(visible=False)
-        bar.append(self._status_spinner)
-        self._status_icon = Gtk.Image(icon_name="object-select-symbolic", visible=False)
-        bar.append(self._status_icon)
-        labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
-        self._status_title = Gtk.Label(xalign=0.0, label=_("Ready."))
-        self._status_title.add_css_class("heading")
-        self._status_title.set_ellipsize(3)  # Pango.EllipsizeMode.END
-        labels.append(self._status_title)
-        self._status_detail = Gtk.Label(xalign=0.0, visible=False)
-        self._status_detail.add_css_class("caption")
-        self._status_detail.add_css_class("dim-label")
-        self._status_detail.add_css_class("monospace")
-        self._status_detail.set_ellipsize(3)
-        labels.append(self._status_detail)
-        bar.append(labels)
-        self._show_btn = Gtk.Button(visible=False)
-        self._show_btn.set_child(
-            Adw.ButtonContent(icon_name="folder-open-symbolic", label=_("Show"))
-        )
-        self._show_btn.connect("clicked", lambda *_a: self._show_in_folder())
-        bar.append(self._show_btn)
-        self._open_btn = Gtk.Button(visible=False)
-        self._open_btn.set_child(
-            Adw.ButtonContent(icon_name="x-office-document-symbolic", label=_("Open"))
-        )
-        self._open_btn.connect("clicked", lambda *_a: self._open_output())
-        bar.append(self._open_btn)
-        return bar
 
-    def _set_result_bar(
-        self,
-        state: str,
-        title: str,
-        detail: str = "",
-    ) -> None:
-        """Put the bottom bar into ``idle``/``running``/``success``/``error``."""
-        self._status_title.set_text(title)
-        self._status_detail.set_text(detail)
-        self._status_detail.set_visible(bool(detail))
-        running = state == "running"
-        self._status_spinner.set_visible(running)
-        if running:
-            self._status_spinner.start()
-        else:
-            self._status_spinner.stop()
-        self._status_icon.set_visible(state in ("success", "error"))
-        self._status_icon.set_from_icon_name(
-            "dialog-error-symbolic" if state == "error" else "object-select-symbolic"
-        )
-        if state == "success":
-            self._status_icon.add_css_class("success")
-        else:
-            self._status_icon.remove_css_class("success")
-        finished = state == "success" and self._last_output is not None
-        self._show_btn.set_visible(finished)
-        self._open_btn.set_visible(finished)
+    def _append_log(self, text: str) -> None:
+        """Append a line to the log pane."""
+        self._log.append(text)
 
     # ------------------------------------------------------- settings I/O
 
@@ -1168,36 +1049,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _render_update(self, update: Update) -> None:
         """Render a session update into translated result-bar text."""
-        state = self._session
-        if update is Update.STARTED:
-            self._set_result_bar("running", _("Scanning\u2026"))
-        elif update is Update.PAGE:
-            text = _("Page %d scanned") % state.pages
-            if state.blanks:
-                text += (
-                    ngettext(
-                        " (%d blank skipped)", " (%d blanks skipped)", state.blanks
-                    )
-                    % state.blanks
-                )
-            self._set_result_bar("running", text + "\u2026")
-        elif update is Update.SCAN_DONE:
-            total = state.total or 0
-            kept = state.kept or 0
-            self._set_result_bar(
-                "running",
-                ngettext(
-                    "Scan finished \u2014 keeping %(kept)d of %(total)d page\u2026",
-                    "Scan finished \u2014 keeping %(kept)d of %(total)d pages\u2026",
-                    total,
-                )
-                % {"kept": kept, "total": total},
-            )
-        elif update is Update.OCR_STARTED:
-            self._set_result_bar("running", _("Running OCR\u2026"))
-        elif update is Update.ERROR:
-            message = state.error_message or _("Unknown error")
-            self._append_log(f"[error] {message}")
+        render_session_update(
+            self._session,
+            update,
+            lambda title: self._set_result_bar("running", title),
+            self._append_log,
+        )
 
     def _on_stderr_line(self, runner: ScanRunner, line: str) -> None:
         """Append a raw stderr line to the log view."""
@@ -1224,31 +1081,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if outcome.kind == "success":
             if outcome.output is not None:
                 self._last_output = outcome.output
-                summary = (
-                    ngettext("%d page saved", "%d pages saved", outcome.pages)
-                    % outcome.pages
+                self._set_result_bar(
+                    "success",
+                    success_summary(outcome.pages, outcome.blanks),
+                    outcome.output.name,
                 )
-                if outcome.blanks:
-                    summary += " \u00b7 " + (
-                        ngettext(
-                            "%d blank skipped", "%d blanks skipped", outcome.blanks
-                        )
-                        % outcome.blanks
-                    )
-                self._set_result_bar("success", summary, outcome.output.name)
             else:
                 self._set_result_bar("idle", _("Finished."))
             return
-        heading, body = EXIT_HINTS.get(
-            outcome.exit_code,
-            (
-                _("Scan Failed"),
-                _("scanmole exited with status %(code)d. See the log for details.")
-                % {"code": outcome.exit_code},
-            ),
-        )
-        if outcome.error_message:
-            body = body + "\n\n" + _("Details:") + " " + outcome.error_message
+        heading, body = exit_failure_texts(outcome.exit_code, outcome.error_message)
         self._set_result_bar("error", heading)
         self._alert(heading, body)
 
@@ -1324,18 +1165,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         return bool(GLib.SOURCE_REMOVE)
 
     # -------------------------------------------------------- UI plumbing
-
-    def _append_log(self, text: str) -> None:
-        """Append a line to the log view and scroll it into view."""
-        self._log_buf.insert(self._log_buf.get_end_iter(), text.rstrip("\n") + "\n")
-        self._log_view.scroll_to_mark(self._log_end, 0.0, False, 0.0, 1.0)
-
-    def _on_copy_log(self, *_args: object) -> None:
-        """Copy the whole log text to the clipboard."""
-        start, end = self._log_buf.get_bounds()
-        text = self._log_buf.get_text(start, end, True)
-        provider = Gdk.ContentProvider.new_for_value(text)
-        self.get_clipboard().set_content(provider)
 
     def _alert(self, heading: str, body: str) -> None:
         """Present a simple modal alert dialog."""
