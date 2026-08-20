@@ -393,10 +393,17 @@ class ChoiceRow:
         self._blocked = blocked
         self._on_blocked = on_blocked
         if self._toggles is not None and hasattr(self._toggles, "get_toggle"):
+            current = self.value()
             for index, (_label, value) in enumerate(self._items):
                 toggle = self._toggles.get_toggle(index)
                 if toggle is not None and hasattr(toggle, "set_enabled"):
-                    toggle.set_enabled(value not in blocked)
+                    # Never disable the active toggle: Adw.ToggleGroup
+                    # clears a disabled active toggle, which would
+                    # silently change the selection to the first item.
+                    # The blocked current choice stays visible and the
+                    # revert path enforces the block, exactly like the
+                    # ComboRow fallback.
+                    toggle.set_enabled(value not in blocked or value == current)
 
     def blocked_reason(self) -> str | None:
         """The reason the current selection is unavailable, if it is."""
