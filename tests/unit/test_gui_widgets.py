@@ -62,7 +62,7 @@ def choice_backend(request: Any, adw: Any, monkeypatch: pytest.MonkeyPatch) -> s
 
 
 def _choice_row(adw: Any, **kwargs: Any) -> Any:
-    from scanmole_gui.app import ChoiceRow
+    from scanmole_gui.widgets import ChoiceRow
 
     group = adw.PreferencesGroup()
     return ChoiceRow(group, "Title", ITEMS, **kwargs)
@@ -151,7 +151,7 @@ def test_combo_helpers_round_trip_values(adw: Any) -> None:
     gi.require_version("Gtk", "4.0")
     from gi.repository import Gtk
 
-    from scanmole_gui.app import combo_select, combo_value
+    from scanmole_gui.widgets import combo_select, combo_value
 
     row = adw.ComboRow()
     row.set_model(Gtk.StringList.new([label for label, _value in ITEMS]))
@@ -169,7 +169,7 @@ def test_plain_string_factory_builds_a_factory(adw: Any) -> None:
     gi.require_version("Gtk", "4.0")
     from gi.repository import Gtk
 
-    from scanmole_gui.app import plain_string_factory
+    from scanmole_gui.widgets import plain_string_factory
 
     assert isinstance(plain_string_factory(), Gtk.SignalListItemFactory)
 
