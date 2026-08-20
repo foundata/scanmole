@@ -2,7 +2,7 @@
 
 [project]
 name = "scanmole"
-version = "1.0.0"
+version = "1.1.0"
 description = "Scan documents from a SANE scanner straight to a searchable PDF."
 keywords = ["scanning", "scanner", "document-processing", "linux", "sane", "pdf", "ocr"]
 license = "GPL-3.0-or-later"

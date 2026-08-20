@@ -357,12 +357,12 @@ wheels = [
 
 [[package]]
 name = "scanmole"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "packages/scanmole" }
 
 [[package]]
 name = "scanmole-gui"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "packages/scanmole-gui" }
 dependencies = [
     { name = "scanmole" },

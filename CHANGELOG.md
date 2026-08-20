@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Nothing worth mentioning right now.
+
+
+## [1.1.0] - 2026-08-20
+
 ### Added
 
 - Content-based automatic page size: where neither the device nor software edge detection can find the paper boundary (white ADF backings as on the Epson DS series, white flatbed lids), pages are now sized from their printed content, snapping to standard paper sizes with a batch majority vote. Detection is judged per axis, so a device that shortens only the paper length still gets its width sized, and an observed hardware extent pins the standard size against both sparse content and the batch majority.
@@ -18,12 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--auto-size-preference iso|north-american` (GUI: a preference dropdown next to the page size): decides whether ambiguous automatic page sizes resolve to the ISO A series or to Letter/Legal when the content fits both. A tie-break only, defaulting to ISO; detected paper bounds always win.
 - Capability negotiation: the engine, CLI and GUI now share one support model (native, emulated in software, degraded, unsupported, unknown). The CLI warns once per scan when a fallback loses something (naming the consequence, e.g. "backs will not be scanned") and only notes equivalent software emulation; the GUI grays out degraded and unsupported source/mode choices after probing the selected device and disables Start with a reason when a saved choice is unavailable, instead of silently changing it.
 
+
 ### Changed
 
 - Deskew is on by default and works on every device through a cascade: the device's own deskew where the backend offers it, otherwise straightening during OCR, otherwise a warning; the request is never a silent no-op anymore. `--no-deskew` turns it off, and the GUI got a matching toggle.
 - `--keep-images` archives each batch into its own subdirectory named after the output file (`scan/`, `scan_2/`, ...), so reused and concurrent archive directories no longer overwrite or mix batches.
 - `--from-images` now honors `-r/--resolution` as the one uniform input dpi for the whole batch (previously the pages were rebuilt at img2pdf's 96 dpi assumption and changed size). This deliberately overrides any resolution metadata embedded in PNG/JPEG inputs; the recovery command printed after a failed run names the correct `-r` value for rebuilding.
 - GUI/CLI compatibility is now directional: an older GUI still drives any newer same-major CLI, but a newer GUI refuses an older CLI (whose options and behavior it would exceed) with a clear version message instead of failing mid-scan.
+
 
 ### Fixed
 
@@ -62,5 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All functionality and files.
 
 
-[unreleased]: https://github.com/foundata/scanmole/compare/v1.0.0...HEAD
+[unreleased]: https://github.com/foundata/scanmole/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/foundata/scanmole/releases/tag/v1.1.0
 [1.0.0]: https://github.com/foundata/scanmole/releases/tag/v1.0.0
