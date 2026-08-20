@@ -252,6 +252,58 @@ def test_interrupt_during_the_drain_is_raised_after_it(
     assert _no_scanner_threads()
 
 
+def test_callback_failure_keeps_precedence_over_a_drain_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The failure event already ended the wait when the interrupt lands
+    # in the reader join: the diagnosis must stay the processing failure,
+    # not the later Ctrl-C.
+    page = tmp_path / "page_0001.pnm"
+
+    def failing_callback(path: Path) -> None:
+        raise RuntimeError("callback exploded")
+
+    real_join = threading.Thread.join
+    armed = {"value": True}
+
+    def interrupting_join(self: threading.Thread, timeout: float | None = None) -> None:
+        if armed["value"]:
+            armed["value"] = False
+            raise KeyboardInterrupt
+        real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", interrupting_join)
+
+    with pytest.raises(ScanMoleError, match="callback exploded") as info:
+        run_scanimage(["sh", "-c", f"echo '{page}'; sleep 30"], failing_callback)
+
+    assert isinstance(info.value.__cause__, RuntimeError)
+    assert _no_scanner_threads()  # the drain still ran to its end
+
+
+def test_interrupt_before_a_drain_failure_keeps_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The reverse order: the interrupt terminated the wait first, and a
+    # callback failing on a buffered page during the drain must not
+    # replace it.
+    pages = [tmp_path / f"page_{n:04d}.pnm" for n in (1, 2)]
+    entered = threading.Event()
+
+    def failing_late(path: Path) -> None:
+        entered.set()
+        if path.name == "page_0002.pnm":
+            raise RuntimeError("late failure")
+
+    _interrupting_wait(monkeypatch, entered)
+    announce = "; ".join(f"echo '{page}'" for page in pages)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_scanimage(["sh", "-c", f"{announce}; sleep 30"], failing_late)
+
+    assert _no_scanner_threads()
+
+
 def _term_ignoring_announcer(page: Path) -> list[str]:
     """A fake scanimage that announces one page, ignores TERM and lingers."""
     code = (

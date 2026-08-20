@@ -374,6 +374,21 @@ def run_scanimage(
         except BaseException as exc:  # SIGINT/SIGTERM: stop acquiring, drain
             cause = exc
             process.terminate()
+        if cause is None and failure_event.is_set():
+            # The callback failure ended the wait: promote it to the
+            # terminating cause now, so an interrupt landing in the drain
+            # below cannot replace the real diagnosis. A timeout or
+            # interrupt that fired first keeps precedence (the branches
+            # above already recorded it).
+            with failure_lock:
+                failure = page_failure
+            if failure is not None:
+                if isinstance(failure, ScanMoleError):
+                    cause = failure
+                else:
+                    promoted = ScanMoleError(f"page processing failed: {failure}")
+                    promoted.__cause__ = failure
+                    cause = promoted
     except BaseException as exc:  # an interrupt outside the wait itself
         cause = exc
         process.terminate()
