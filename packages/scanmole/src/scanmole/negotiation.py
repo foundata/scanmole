@@ -826,6 +826,7 @@ def probe_snapshot(
     device: str,
     settings: Sequence[tuple[str, str]] = (),
     timeout_seconds: float = ADVISORY_PROBE_TIMEOUT_SECONDS,
+    on_spawn: Callable[[subprocess.Popen[bytes]], None] | None = None,
 ) -> dict[str, Capability] | None:
     """An advisory capability probe: failure and timeout become ``None``.
 
@@ -835,7 +836,7 @@ def probe_snapshot(
     an error.
     """
     try:
-        return probe_capabilities(device, settings, timeout_seconds)
+        return probe_capabilities(device, settings, timeout_seconds, on_spawn)
     except (DeviceError, subprocess.SubprocessError, OSError) as exc:
         LOGGER.debug("advisory probe of %s failed: %s", device, exc)
         return None

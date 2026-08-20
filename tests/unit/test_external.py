@@ -299,3 +299,34 @@ def test_require_tools_reports_missing_tools_with_the_hint() -> None:
         require_tools(["sh", "no-such-tool-xyz"])
 
     assert "install" in info.value.message
+
+
+def test_on_spawn_exposes_the_child_for_external_cancellation() -> None:
+    # A GUI supervisor must be able to stop an advisory command from
+    # outside: the hook hands out the started process, and killing its
+    # group makes run_command return promptly instead of waiting for
+    # the full timeout.
+    import os
+    import signal
+    import threading
+    import time
+
+    spawned: list[subprocess.Popen[bytes]] = []
+
+    def cancel_soon() -> None:
+        deadline = time.monotonic() + 5
+        while not spawned and time.monotonic() < deadline:
+            time.sleep(0.01)
+        os.killpg(spawned[0].pid, signal.SIGTERM)
+
+    killer = threading.Thread(target=cancel_soon, daemon=True)
+    killer.start()
+    started = time.monotonic()
+    result = run_command(
+        ["sh", "-c", "sleep 30"], timeout_seconds=25, on_spawn=spawned.append
+    )
+    killer.join(timeout=5)
+
+    assert spawned and spawned[0].pid > 0
+    assert result.returncode == -signal.SIGTERM
+    assert time.monotonic() - started < 10  # nowhere near the timeout

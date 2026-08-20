@@ -178,7 +178,7 @@ def test_probe_capabilities_applies_the_source(
     seen: list[list[str]] = []
 
     def fake_run(
-        command: list[str], timeout_seconds: float
+        command: list[str], timeout_seconds: float, on_spawn: object = None
     ) -> subprocess.CompletedProcess[str]:
         seen.append(command)
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")

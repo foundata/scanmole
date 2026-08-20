@@ -674,7 +674,9 @@ def test_native_faint_plan_logs_one_info_notice(
 def test_probe_snapshot_turns_failures_into_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def failing(command: list[str], timeout_seconds: float) -> None:
+    def failing(
+        command: list[str], timeout_seconds: float, on_spawn: object = None
+    ) -> None:
         raise subprocess.TimeoutExpired(command, timeout_seconds)
 
     monkeypatch.setattr("scanmole.options.run_command", failing)

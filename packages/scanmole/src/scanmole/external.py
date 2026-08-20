@@ -200,6 +200,7 @@ def run_command(
     *,
     timeout_seconds: float,
     check: bool = False,
+    on_spawn: Callable[[subprocess.Popen[bytes]], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external command in its own process group, capturing text.
 
@@ -217,6 +218,10 @@ def run_command(
             ``subprocess.TimeoutExpired`` (with the partial output
             attached, as ``subprocess.run`` would).
         check: Raise ``subprocess.CalledProcessError`` on a non-zero exit.
+        on_spawn: Observation hook receiving the started process, so a
+            caller can cancel the group from outside (a GUI stopping its
+            advisory probes). It runs on the calling thread and must not
+            raise; the supervision here stays in charge either way.
 
     Returns:
         The completed process with captured ``stdout`` and ``stderr``.
@@ -229,6 +234,8 @@ def run_command(
         stderr=subprocess.PIPE,
         start_new_session=True,  # own group: cleanup reaches descendants
     )
+    if on_spawn is not None:
+        on_spawn(process)
     capture = _PipeCapture(process)
     outcome: BaseException | None = None
     try:

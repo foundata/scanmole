@@ -116,6 +116,7 @@ def probe_capabilities(
     device: str,
     settings: Sequence[tuple[str, str]] = (),
     timeout_seconds: float = PROBE_TIMEOUT_SECONDS,
+    on_spawn: Callable[[subprocess.Popen[bytes]], None] | None = None,
 ) -> dict[str, Capability]:
     """Parse ``scanimage -d DEV -A`` into a capability per option name.
 
@@ -123,6 +124,7 @@ def probe_capabilities(
     settings (eSCL devices report a different scan window per source, mode
     choices can depend on the source), so ``settings`` applies ordered
     ``(option, value)`` pairs, as argv entries, before the listing is read.
+    ``on_spawn`` passes through to :func:`~scanmole.external.run_command`.
 
     Raises:
         DeviceError: If the device cannot be queried.
@@ -135,6 +137,7 @@ def probe_capabilities(
         result = run_command(
             command,
             timeout_seconds=timeout_seconds,
+            on_spawn=on_spawn,
         )
     except subprocess.TimeoutExpired as exc:
         raise DeviceError(f"timed out probing options of {device}") from exc
