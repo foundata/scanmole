@@ -268,7 +268,7 @@ Both packages always release together, with the same version and one `vX.Y.Z` ta
 3. Update several files to match the new release version:
    - [`CHANGELOG.md`](./CHANGELOG.md): insert a section for the new release with the date (Keep a Changelog format).
    - [`uv.lock`](./uv.lock): updated by running `uv lock` after the pyproject bump, never edited by hand.
-   - [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml): the `version` variable. A new **major** additionally widens the `scanmole>=X,<X+1` dependency pin in the GUI package by hand (minor and patch releases leave it untouched; the snippet below does not cover it).
+   - [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml): the `version` variable, plus the GUI package's `scanmole>=X.Y.Z,<N` dependency pin. Releases are lockstep, so **every** release raises the pin's lower bound to its own new version (the release gate rejects the artifacts otherwise); only a new **major** additionally raises the `<N` cap to the next major, by hand. The snippet below covers the lower bound.
    - [`packages/scanmole/src/scanmole/__init__.py`](./packages/scanmole/src/scanmole/__init__.py) and [`packages/scanmole-gui/src/scanmole_gui/__init__.py`](./packages/scanmole-gui/src/scanmole_gui/__init__.py): the `__version__` variable.
    - The following snippet can help with these files:
      ```sh
@@ -293,6 +293,11 @@ Both packages always release together, with the same version and one `vX.Y.Z` ta
        grep -B 1 -E "^([[:space:]]*(__version__|version)[[:space:]]*[:=][[:space:]]*)\"?${new_version}\"?$" "$file" || true
        echo
      done
+
+     # Lockstep dependency: every release raises the GUI pin's lower bound.
+     sed -i -E "s@\"scanmole>=${old_version_regex},<@\"scanmole>=${new_version},<@" \
+       ./packages/scanmole-gui/pyproject.toml
+     grep -n "scanmole>=" ./packages/scanmole-gui/pyproject.toml
 
      uv lock # update the member versions in the lockfile
      ```
