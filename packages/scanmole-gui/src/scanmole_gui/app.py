@@ -44,6 +44,11 @@ from scanmole.negotiation import (  # noqa: E402
     probe_snapshot,
 )
 from scanmole_gui import __version__, desktop  # noqa: E402
+from scanmole_gui.dialogs import (  # noqa: E402
+    build_about_dialog,
+    build_more_languages_dialog,
+    build_settings_dialog,
+)
 from scanmole_gui.discovery import (  # noqa: E402
     display_name,
     evaluate_listing,
@@ -74,7 +79,6 @@ from scanmole_gui.status import (  # noqa: E402
     render_session_update,
     success_summary,
 )
-from scanmole_gui.widgets import combo_select, combo_value  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -83,10 +87,6 @@ PROJECT_URL = "https://foundata.com/en/projects/scanmole/"
 CONFIG_FILE = Path(GLib.get_user_config_dir()) / "scanmole" / "gui.json"
 ICON_DIR = Path(__file__).resolve().parent / "icons"
 LOGO_FILE = ICON_DIR / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
-
-# Endonyms on purpose: a language name is most recognizable in itself.
-UI_LANGUAGES = ((_("System default"), ""), ("English", "en"), ("Deutsch", "de"))
-COLOR_SCHEMES = ((_("System default"), ""), (_("Light"), "light"), (_("Dark"), "dark"))
 
 DEVICE_POLL_SECONDS = 15
 """Pause between device searches while no scanner has been found.
@@ -397,40 +397,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _on_more_languages(self) -> None:
         """Explain OCR language management and take a custom code to use."""
-        dialog = Adw.AlertDialog(
-            heading=_("More OCR Languages"),
-            body=_(
-                "OCR languages are Tesseract language packs, installed and "
-                "removed with the distribution's package manager. The codes "
-                "are three-letter ISO 639-2/T codes (deu, eng, fra, ...).\n"
-                "\n"
-                "Fedora: sudo dnf install tesseract-langpack-fra\n"
-                "Debian/Ubuntu: sudo apt install tesseract-ocr-fra\n"
-                "(remove instead of install to uninstall)\n"
-                "\n"
-                "To use installed languages here, enter the codes below; "
-                "combine several with +."
-            ),
-        )
-        # Roughly double the default alert width so the install commands fit
-        # on one line; the extra child's minimum width backs the request up.
-        dialog.set_content_width(680)
-        entry = Gtk.Entry(placeholder_text="deu+fra")
-        entry.set_size_request(440, -1)
-        dialog.set_extra_child(entry)
-        dialog.add_response("cancel", _("Cancel"))
-        dialog.add_response("use", _("Use language"))
-        dialog.set_response_appearance("use", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("use")
-        dialog.set_close_response("cancel")
-
-        def on_response(_dialog: object, response: str) -> None:
-            code = entry.get_text().strip()
-            if response == "use" and code:
-                self._form.select_language(code)
-
-        dialog.connect("response", on_response)
-        dialog.present(self)
+        build_more_languages_dialog(self._form.select_language).present(self)
 
     def _save_settings(self) -> None:
         """Snapshot the current form into the settings file.
@@ -729,126 +696,31 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _on_settings_action(self, *_args: object) -> None:
         """Open the settings dialog (color scheme, language, reset)."""
-        dialog = Adw.PreferencesDialog(title=_("Settings"))
-        page = Adw.PreferencesPage()
-        group = Adw.PreferencesGroup()
-
-        scheme_row = Adw.ComboRow(title=_("Color scheme"))
-        scheme_row.set_model(
-            Gtk.StringList.new([label for label, _value in COLOR_SCHEMES])
-        )
-        combo_select(
-            scheme_row, COLOR_SCHEMES, str(self._settings.get("color_scheme") or "")
-        )
-
-        def scheme_changed(*_a: object) -> None:
-            value = combo_value(scheme_row, COLOR_SCHEMES)
-            self._apply_color_scheme(value)
-            self._store_pref("color_scheme", value)
-
-        scheme_row.connect("notify::selected", scheme_changed)
-        group.add(scheme_row)
-
-        lang_row = Adw.ComboRow(
-            title=_("Interface language"), subtitle=_("Restart required")
-        )
-        lang_row.set_model(
-            Gtk.StringList.new([label for label, _value in UI_LANGUAGES])
-        )
-        combo_select(
-            lang_row, UI_LANGUAGES, str(self._settings.get("ui_language") or "")
-        )
-        group.add(lang_row)
-
-        desktop_row = Adw.ActionRow(
-            title=_("Desktop entry"),
-            subtitle=_("Show ScanMole in the application launcher and window switcher"),
-        )
-        installed = desktop_entry_path().is_file()
-        remove_btn = Gtk.Button(label=_("Remove"), valign=Gtk.Align.CENTER)
-        remove_btn.add_css_class("destructive-action")
-        remove_btn.set_sensitive(installed)
-        desktop_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        desktop_btn.set_label(_("Update") if installed else _("Install"))
-
-        def install_clicked(*_a: object) -> None:
-            if install_desktop_entry():
-                desktop_btn.set_label(_("Update"))
-                remove_btn.set_sensitive(True)
-                dialog.add_toast(Adw.Toast(title=_("Desktop entry installed.")))
-            else:
-                dialog.add_toast(
-                    Adw.Toast(title=_("Could not install the desktop entry."))
-                )
-
-        def remove_clicked(*_a: object) -> None:
-            if remove_desktop_entry():
-                desktop_btn.set_label(_("Install"))
-                remove_btn.set_sensitive(False)
-                dialog.add_toast(Adw.Toast(title=_("Desktop entry removed.")))
-            else:
-                dialog.add_toast(
-                    Adw.Toast(title=_("Could not remove the desktop entry."))
-                )
-
-        desktop_btn.connect("clicked", install_clicked)
-        remove_btn.connect("clicked", remove_clicked)
-        desktop_row.add_suffix(remove_btn)
-        desktop_row.add_suffix(desktop_btn)
-        desktop_row.set_activatable_widget(desktop_btn)
-        group.add(desktop_row)
-
-        reset_row = Adw.ActionRow(
-            title=_("Reset settings"),
-            subtitle=_("Restore all options to their defaults"),
-        )
-        reset_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        reset_btn.set_child(
-            Adw.ButtonContent(
-                icon_name="edit-undo-symbolic", label=_("Reset to defaults")
-            )
-        )
-        reset_btn.add_css_class("destructive-action")
-        reset_btn.connect("clicked", self._on_reset_clicked)
-        reset_row.add_suffix(reset_btn)
-        reset_row.set_activatable_widget(reset_btn)
-        group.add(reset_row)
-
-        # Inactive until a change actually needs a restart (the interface
-        # language differs from what this process started with).
-        restart_row = Adw.ActionRow(
-            title=_("Restart now"),
-            subtitle=_("Apply changes that require a restart"),
-        )
-        restart_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        restart_btn.set_child(
-            Adw.ButtonContent(icon_name="view-refresh-symbolic", label=_("Restart"))
-        )
-        restart_btn.add_css_class("suggested-action")
-        restart_btn.connect("clicked", self._on_restart_clicked)
-        restart_row.add_suffix(restart_btn)
-        restart_row.set_activatable_widget(restart_btn)
-        group.add(restart_row)
-
-        def update_restart_row() -> None:
-            pending = (
+        dialog = build_settings_dialog(
+            current_scheme=str(self._settings.get("color_scheme") or ""),
+            current_ui_language=str(self._settings.get("ui_language") or ""),
+            desktop_installed=desktop_entry_path().is_file(),
+            on_scheme_selected=self._on_scheme_selected,
+            on_ui_language_selected=lambda value: self._store_pref(
+                "ui_language", value
+            ),
+            restart_pending=lambda: (
                 str(self._settings.get("ui_language") or "")
                 != self._startup_ui_language
-            )
-            restart_row.set_sensitive(pending)
-
-        def language_changed(*_a: object) -> None:
-            self._store_pref("ui_language", combo_value(lang_row, UI_LANGUAGES))
-            update_restart_row()
-
-        lang_row.connect("notify::selected", language_changed)
-        update_restart_row()
-
-        page.add(group)
-        dialog.add(page)
+            ),
+            on_restart=self._on_restart_clicked,
+            on_reset=self._on_reset_clicked,
+            on_install_desktop=install_desktop_entry,
+            on_remove_desktop=remove_desktop_entry,
+        )
         self._settings_dialog = dialog
         dialog.connect("closed", lambda *_a: setattr(self, "_settings_dialog", None))
         dialog.present(self)
+
+    def _on_scheme_selected(self, value: str) -> None:
+        """Apply and persist a color-scheme choice from the dialog."""
+        self._apply_color_scheme(value)
+        self._store_pref("color_scheme", value)
 
     def _on_restart_clicked(self, *_args: object) -> None:
         """Quit and re-execute the application (see ``main``)."""
@@ -904,75 +776,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _on_about_clicked(self, *_args: object) -> None:
         """Show a flat, single-page About dialog (no nested subpages)."""
-        dialog = Adw.Dialog(title=_("About ScanMole"), content_width=440)
-        toolbar = Adw.ToolbarView()
-        toolbar.add_top_bar(Adw.HeaderBar())
-        content = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=14,
-            margin_top=12,
-            margin_bottom=20,
-            margin_start=20,
-            margin_end=20,
-        )
-
-        identity = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
-        if LOGO_FILE.is_file():
-            logo = Gtk.Image.new_from_file(str(LOGO_FILE))
-            logo.set_pixel_size(72)
-            identity.append(logo)
-        id_labels = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, spacing=2
-        )
-        name = Gtk.Label(label="ScanMole", xalign=0.0)
-        name.add_css_class("title-4")
-        id_labels.append(name)
-        tagline = Gtk.Label(label=_("Easy document scanning for Linux"), xalign=0.0)
-        tagline.add_css_class("dim-label")
-        id_labels.append(tagline)
-        identity.append(id_labels)
-        content.append(identity)
-
-        facts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        for key, value in (
-            ("scanmole CLI", self._cli_version or _("unknown")),
-            ("scanmole-gui", __version__),
-            (_("License"), "GPL-3.0-or-later"),
-        ):
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-            key_label = Gtk.Label(label=key, xalign=0.0, hexpand=True)
-            row.append(key_label)
-            value_label = Gtk.Label(label=value, xalign=1.0)
-            value_label.add_css_class("monospace")
-            row.append(value_label)
-            facts.append(row)
-        content.append(facts)
-
-        description = Gtk.Label(
-            label=_(
-                "ScanMole scans documents through SANE, detects blank pages, "
-                "assembles PDFs, and optionally makes them text-searchable "
-                "with OCR."
-            ),
-            xalign=0.0,
-            wrap=True,
-        )
-        description.add_css_class("dim-label")
-        content.append(description)
-
-        website = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        website_label = Gtk.Label(label=_("Website:"), valign=Gtk.Align.CENTER)
-        website.append(website_label)
-        link = Gtk.LinkButton.new_with_label(
-            PROJECT_URL, "foundata.com/en/projects/scanmole"
-        )
-        link.set_halign(Gtk.Align.START)
-        website.append(link)
-        content.append(website)
-
-        toolbar.set_content(content)
-        dialog.set_child(toolbar)
-        dialog.present(self)
+        build_about_dialog(
+            cli_version=self._cli_version,
+            logo_file=LOGO_FILE,
+            project_url=PROJECT_URL,
+        ).present(self)
 
     # ----------------------------------------------------------- scanning
 
