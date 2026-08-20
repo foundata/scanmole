@@ -136,6 +136,52 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
     assert idle.persisted == 1  # state persists even without a scan
 
 
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_start_predicate_requires_a_device_outside_a_search() -> None:
+    # The one Start predicate: without a selected device, or while a
+    # search runs, clicking Scan could only repeat discovery and fail.
+    from scanmole_gui.app import MainWindow
+
+    class Form:
+        def __init__(self) -> None:
+            self.enabled: bool | None = None
+
+        def set_scan_enabled(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    class Window:
+        _update_scan_enabled = MainWindow._update_scan_enabled
+
+        def __init__(self) -> None:
+            self._form = Form()
+            self._runner = None
+            self._cli_blocked = False
+            self._selection_block_reason: str | None = None
+            self._searching = False
+            self.device: str | None = "sane:0"
+
+        def _selected_device(self) -> str | None:
+            return self.device
+
+    window = Window()
+    window._update_scan_enabled()  # type: ignore[misc]
+    assert window._form.enabled is True  # idle, device selected
+
+    for attribute, value in (
+        ("device", None),  # nothing to scan with
+        ("_searching", True),  # discovery still running
+        ("_cli_blocked", True),  # incompatible CLI
+        ("_selection_block_reason", "no duplex"),  # blocked saved choice
+        ("_runner", object()),  # a scan already runs
+    ):
+        window = Window()
+        setattr(window, attribute, value)
+        window._update_scan_enabled()  # type: ignore[misc]
+        assert window._form.enabled is False, attribute
+
+
 @_NEEDS_DESKTOP
 def test_sigint_exits_with_130_and_saves_settings(tmp_path: Path) -> None:
     stderr_file = tmp_path / "gui-stderr.log"

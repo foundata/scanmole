@@ -427,6 +427,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             return
         self._searching = True
         self._form.set_refresh_enabled(False)
+        # No Start during a search: the CLI would only repeat the same
+        # discovery and fail without a scanner.
+        self._update_scan_enabled()
         self._form.set_device_subtitle(_("Searching for scanners…"))
         prefer = self._selected_device() or str(self._settings.get("device") or "")
         self._advisory.spawn_worker(
@@ -512,11 +515,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             return
         self._searching = False
         self._form.set_refresh_enabled(self._runner is None)
-        self._form.set_scan_enabled(
-            self._runner is None
-            and not self._cli_blocked
-            and self._selection_block_reason is None
-        )
         if self._cli_blocked and err and not self._version_alert_shown:
             self._version_alert_shown = True
             self._alert(_("Incompatible scanmole CLI"), err)
@@ -550,6 +548,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # found, stop the moment something is (issue #7). One-shot chain, so
         # the pause counts from the end of a search, not its start; every
         # completed search (auto or manual refresh) restarts the countdown.
+        # Re-evaluated only now: a scan needs an actual selected device,
+        # which the empty result above never provides.
+        self._update_scan_enabled()
         if self._device_poll_id is not None:
             GLib.source_remove(self._device_poll_id)
             self._device_poll_id = None
@@ -669,6 +670,23 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """A visible-but-unavailable choice was clicked: explain, keep state."""
         self._set_result_bar("idle", _("Not available on this scanner: %s") % reason)
 
+    def _update_scan_enabled(self) -> None:
+        """The one Start predicate.
+
+        A scan needs an idle runner, a driveable CLI, an available saved
+        selection and an actually selected device outside a running
+        search; anything else launches work that can only fail. Advisory
+        probes stay out of the predicate on purpose: Start cancels and
+        joins them itself, so they never gate the button.
+        """
+        self._form.set_scan_enabled(
+            self._runner is None
+            and not self._cli_blocked
+            and self._selection_block_reason is None
+            and not self._searching
+            and self._selected_device() is not None
+        )
+
     def _update_selection_block(self) -> None:
         """Disable Start while the active saved choice is unavailable.
 
@@ -677,9 +695,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """
         reason = self._form.selection_blocked_reason()
         self._selection_block_reason = reason
-        self._form.set_scan_enabled(
-            self._runner is None and not self._cli_blocked and reason is None
-        )
+        self._update_scan_enabled()
         if reason is not None:
             self._set_result_bar(
                 "idle", _("Selected option not available: %s") % reason
@@ -916,6 +932,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             return
         self._runner = None
         self._form.set_running(False)
+        self._update_scan_enabled()
         self._append_log(f"[gui] scanmole exited with code {exit_code}")
         # The scan takeover reset the capability flow; renegotiate the
         # selected device's availability now that it is free again.
