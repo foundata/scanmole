@@ -249,6 +249,194 @@ def test_from_images_pdf_geometry_honors_the_requested_dpi(tmp_path: Path) -> No
     assert dims[3] == pytest.approx(72, abs=0.5)
 
 
+def _unannounced_scan(pages: list[bytes], error: BaseException):  # type: ignore[no-untyped-def]
+    """A scan that writes page files without announcing them, then dies."""
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(EffectiveSettings(source=None, mode=None, resolution=300))
+        for index, data in enumerate(pages, start=1):
+            (work_dir / f"page_{index:04d}.pnm").write_bytes(data)
+        raise error
+
+    return fake_scan
+
+
+def _owned_work_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    work_dir = tmp_path / "preserved-work"
+
+    def owned_mkdtemp(prefix: str = "") -> str:
+        work_dir.mkdir()
+        return str(work_dir)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.tempfile.mkdtemp", owned_mkdtemp)
+    return work_dir
+
+
+_COMPLETE_FRAME = b"P5\n40 40\n255\n" + bytes([120] * 1600)
+
+
+def test_unannounced_complete_frame_survives_a_scan_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The scanner finished writing the frame but died before --batch-print
+    # announced it: no callback ran, yet the file may be the only copy.
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _unannounced_scan([_COMPLETE_FRAME], ScanMoleError("lamp failure")),
+    )
+    stream = io.StringIO()
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=True, stream=stream),
+        )
+
+    assert (work_dir / "page_0001.pnm").read_bytes() == _COMPLETE_FRAME
+    assert info.value.message.startswith("lamp failure")  # original cause
+    assert "incomplete" in info.value.message  # the inspect caveat
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert not [e for e in events if e["event"] == "page"]  # never announced
+
+
+def test_unannounced_frame_survives_an_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _unannounced_scan([_COMPLETE_FRAME], KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert (work_dir / "page_0001.pnm").read_bytes() == _COMPLETE_FRAME
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [b"P5\n40 40\n255\n" + bytes([120] * 100), b""],
+    ids=["partial", "zero-length"],
+)
+def test_partial_final_frame_is_preserved_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: bytes
+) -> None:
+    # Questionable bytes are evidence: preserved exactly, never validated,
+    # renamed or fed to processing during failure handling.
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _unannounced_scan([_COMPLETE_FRAME, tail], ScanMoleError("feeder jam")),
+    )
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert (work_dir / "page_0001.pnm").read_bytes() == _COMPLETE_FRAME
+    assert (work_dir / "page_0002.pnm").read_bytes() == tail
+    assert info.value.message.startswith("feeder jam")
+
+
+def test_no_artifacts_and_no_callbacks_removes_the_work_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _unannounced_scan([], ScanMoleError("no device")),
+    )
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert not work_dir.exists()  # nothing to keep: no litter either
+    assert "preserved" not in info.value.message
+
+
+def test_announced_and_unannounced_pages_keep_both_messages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One page went through its callback, a second was still unannounced:
+    # the established recovery message stays, plus the inspect caveat.
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir_arg: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(EffectiveSettings(source=None, mode=None, resolution=300))
+        page = work_dir_arg / "page_0001.pnm"
+        page.write_bytes(_COMPLETE_FRAME)
+        assert callable(on_page)
+        on_page(page)
+        (work_dir_arg / "page_0002.pnm").write_bytes(_COMPLETE_FRAME[:20])
+        raise ScanMoleError("feeder jam")
+
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert f"the 1 scanned page(s) are kept in {work_dir}" in info.value.message
+    assert "recover with:" in info.value.message
+    assert "incomplete" in info.value.message
+    assert (work_dir / "page_0002.pnm").read_bytes() == _COMPLETE_FRAME[:20]
+
+
+def test_from_images_failure_never_preserves_a_work_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # User inputs are not scanner output: a failing run neither claims
+    # nor keeps copies of them.
+    image = _gray_page(tmp_path / "in.pgm")
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+
+    def failing_build(pages: object, output: Path, dpi: int) -> None:
+        raise ScanMoleError("assembly failed")
+
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", failing_build)
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=(image,), output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert not work_dir.exists()
+    assert "kept" not in info.value.message
+    assert "preserved" not in info.value.message
+    assert image.is_file()  # the input itself is untouched
+
+
 def _failing_scan_at(resolution: int):  # type: ignore[no-untyped-def]
     def fake_scan(
         config: ScanConfig,

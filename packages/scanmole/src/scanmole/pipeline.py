@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import re
 import shlex
 import shutil
 import tempfile
@@ -642,32 +643,90 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         # The paper has already gone through the feeder and may be unstapled
         # or shredded; once pages exist, they may be the only copy. Keep them
         # and tell the user where they are, whatever went wrong afterwards.
-        if total > 0 and config.from_images is None:
-            preserve = True
-            _size_preserved_pages(measured, kept, negotiated, config)
-            exc.message += (
-                f" -- the {total} scanned page(s) are kept in {work_dir} "
-                f"(recover with: {_recovery_command(work_dir, negotiated, config)})"
-            )
-            exc.args = (exc.message,)
+        # Preservation looks at the scanner's page files, not the callback
+        # count: a completed frame the interrupt beat to its --batch-print
+        # announcement never incremented total, yet must survive too.
+        if config.from_images is None:
+            artifacts = _scan_artifacts(work_dir)
+            unannounced = artifacts is not None and len(artifacts) > total
+            if total > 0:
+                preserve = True
+                _size_preserved_pages(measured, kept, negotiated, config)
+                exc.message += (
+                    f" -- the {total} scanned page(s) are kept in {work_dir} "
+                    f"(recover with: "
+                    f"{_recovery_command(work_dir, negotiated, config)})"
+                )
+                if unannounced:
+                    exc.message += (
+                        "; unannounced raw page file(s) were preserved too "
+                        "and the final frame may be incomplete -- inspect it "
+                        "before recovering it"
+                    )
+                exc.args = (exc.message,)
+            elif artifacts is None or artifacts:
+                preserve = True
+                exc.message += (
+                    f" -- the work directory {work_dir} was preserved; it "
+                    "may hold raw page file(s) and the final frame may be "
+                    "incomplete -- inspect it before recovering"
+                )
+                exc.args = (exc.message,)
         raise
     except BaseException:
         # Same contract for everything else that can abort a run, including
         # SIGINT/SIGTERM (KeyboardInterrupt, SystemExit) and unexpected bugs:
         # scanned pages must never be deleted before a successful publish.
-        if total > 0 and config.from_images is None:
-            preserve = True
-            _size_preserved_pages(measured, kept, negotiated, config)
-            LOGGER.info(
-                "The %d scanned page(s) are kept in %s (recover with: %s)",
-                total,
-                work_dir,
-                _recovery_command(work_dir, negotiated, config),
-            )
+        if config.from_images is None:
+            artifacts = _scan_artifacts(work_dir)
+            unannounced = artifacts is not None and len(artifacts) > total
+            if total > 0:
+                preserve = True
+                _size_preserved_pages(measured, kept, negotiated, config)
+                LOGGER.info(
+                    "The %d scanned page(s) are kept in %s (recover with: %s)",
+                    total,
+                    work_dir,
+                    _recovery_command(work_dir, negotiated, config),
+                )
+                if unannounced:
+                    LOGGER.info(
+                        "Unannounced raw page file(s) were preserved too; "
+                        "the final frame may be incomplete -- inspect it "
+                        "before recovering it"
+                    )
+            elif artifacts is None or artifacts:
+                preserve = True
+                LOGGER.info(
+                    "The work directory %s was preserved; it may hold raw "
+                    "page file(s) and the final frame may be incomplete -- "
+                    "inspect it before recovering",
+                    work_dir,
+                )
         raise
     finally:
         if not preserve:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _scan_artifacts(work_dir: Path) -> list[Path] | None:
+    """Scanner-created page files in the work directory, or ``None``.
+
+    ``None`` means the directory could not be inspected; the caller must
+    preserve conservatively, because unknown contents may hold the only
+    scanned copy. The files are never validated, modified or renamed
+    here: an interrupted final frame stays exactly as the scanner left
+    it, and only announced pages ever reach processing or recovery
+    sizing.
+    """
+    try:
+        return sorted(
+            path
+            for path in work_dir.iterdir()
+            if path.is_file() and re.fullmatch(r"page_\d{4}\.pnm", path.name)
+        )
+    except OSError:
+        return None
 
 
 def _check_input_images(images: tuple[Path, ...]) -> None:
