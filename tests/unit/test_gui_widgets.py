@@ -175,7 +175,8 @@ def test_plain_string_factory_builds_a_factory(adw: Any) -> None:
 
 
 def test_pure_helpers() -> None:
-    from scanmole_gui.app import abbreviate_home, as_int
+    from scanmole_gui.app import as_int
+    from scanmole_gui.form import abbreviate_home
 
     assert as_int(7, 3) == 7
     assert as_int("7", 3) == 3
