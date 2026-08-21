@@ -59,6 +59,8 @@ def _form(
         on_pick_folder=events.cb("pick_folder"),
         on_more_languages=events.cb("more_languages"),
         on_choice_blocked=events.cb("blocked"),
+        on_hardware_button_selected=events.cb("button_pref"),
+        on_insert_to_scan=events.cb("insert_pref"),
         device_for_preview=lambda: device,
         effective_resolution=lambda _dpi: effective,
     )
@@ -416,3 +418,25 @@ def test_primary_scan_uses_the_single_flow_when_stack_is_off() -> None:
     form._scan_btn.emit("clicked")
 
     assert events.calls == [("scan", ("single",))]
+
+
+def test_scanner_trigger_rows_fire_and_round_trip() -> None:
+    from scanmole_gui.form import HARDWARE_BUTTON_ACTIONS
+    from scanmole_gui.widgets import combo_select
+
+    events = Events()
+    form = _form(events)
+    assert events.calls == []  # construction fires no preference callbacks
+
+    combo_select(form._button_row, HARDWARE_BUTTON_ACTIONS, "single")
+    form._insert_row.set_active(True)
+    assert ("button_pref", ("single",)) in events.calls
+    assert ("insert_pref", (True,)) in events.calls
+
+    persisted = form.persisted_values()
+    assert persisted["hardware_button"] == "single"
+    assert persisted["insert_to_scan"] is True
+
+    form.apply_settings({"hardware_button": "bogus"})  # tolerant fallback
+    assert form.persisted_values()["hardware_button"] == "off"
+    assert form.persisted_values()["insert_to_scan"] is False

@@ -106,6 +106,14 @@ FLOW_ACTIONS: tuple[tuple[str, SheetFlow], ...] = (
     (_("Collect sheets"), "collect"),
 )
 
+# What a press of the scanner's own button starts while ScanMole is idle.
+HARDWARE_BUTTON_ACTIONS = (
+    (_("Off"), "off"),
+    (_("Same as Scan"), "same"),
+    (_("Scan one sheet"), "single"),
+    (_("Collect sheets"), "collect"),
+)
+
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
 _SIZE_BASE_MB = {"lineart": 0.1, "lineart-auto": 0.1, "gray": 0.3, "color": 0.5}
@@ -146,6 +154,8 @@ class ScanForm:
         on_pick_folder: Callable[[], None],
         on_more_languages: Callable[[], None],
         on_choice_blocked: Callable[[str, str], None],
+        on_hardware_button_selected: Callable[[str], None],
+        on_insert_to_scan: Callable[[bool], None],
         device_for_preview: Callable[[], str | None],
         effective_resolution: Callable[[int], int | None],
     ) -> None:
@@ -164,6 +174,8 @@ class ScanForm:
         self._on_pick_folder = on_pick_folder
         self._on_more_languages = on_more_languages
         self._on_choice_blocked = on_choice_blocked
+        self._on_hardware_button_selected = on_hardware_button_selected
+        self._on_insert_to_scan = on_insert_to_scan
         self._device_for_preview = device_for_preview
         self._effective_resolution = effective_resolution
 
@@ -236,6 +248,29 @@ class ScanForm:
         )
         self.scanner_group.add(self._collect_row)
         self._update_stack_row()
+        # The scanner-trigger preferences belong with the other scanner
+        # options: what the device's own button starts, and whether an
+        # inserted sheet starts a scan by itself. The window persists both
+        # immediately and re-evaluates the idle sensor poller.
+        self._button_row = Adw.ComboRow(
+            title=_("Hardware scan button"),
+            subtitle=_("What a press of the scanner's button starts"),
+        )
+        self._button_row.set_model(
+            Gtk.StringList.new([label for label, _value in HARDWARE_BUTTON_ACTIONS])
+        )
+        self._button_row.connect("notify::selected", self._on_button_pref_changed)
+        self.scanner_group.add(self._button_row)
+        self._insert_row = Adw.SwitchRow(
+            title=_("Start when paper is inserted"),
+            subtitle=_("Begin scanning when a sheet is loaded into the idle scanner"),
+            active=False,
+        )
+        self._insert_row.connect(
+            "notify::active",
+            lambda *_a: self._on_insert_to_scan(bool(self._insert_row.get_active())),
+        )
+        self.scanner_group.add(self._insert_row)
 
         # One primary action: Scan is the only accented control, full width at
         # the bottom of the Scanner group (mockup rule); Cancel swaps in while
@@ -276,6 +311,12 @@ class ScanForm:
             child=self._cancel_btn, activatable=False, selectable=False, visible=False
         )
         self.scanner_group.add(self._cancel_row)
+
+    def _on_button_pref_changed(self, *_args: object) -> None:
+        """Forward the button-mapping choice to the window."""
+        self._on_hardware_button_selected(
+            combo_value(self._button_row, HARDWARE_BUTTON_ACTIONS)
+        )
 
     def _build_flow_popover(self) -> Gtk.Popover:
         """The split-button menu with the one-shot sheet-flow actions."""
@@ -838,6 +879,11 @@ class ScanForm:
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
         self._stack_row.set_active(bool(settings.get("scan_loaded_stack", True)))
         self._collect_row.set_active(bool(settings.get("wait_for_more_sheets", False)))
+        mapping = str(settings.get("hardware_button") or "off")
+        if mapping not in [value for _label, value in HARDWARE_BUTTON_ACTIONS]:
+            mapping = "off"
+        combo_select(self._button_row, HARDWARE_BUTTON_ACTIONS, mapping)
+        self._insert_row.set_active(bool(settings.get("insert_to_scan")))
         template = str(settings.get("filename_template") or "")
         self._name_entry.set_text(
             "" if template in ("", DEFAULT_OUTPUT_TEMPLATE) else template
@@ -865,6 +911,8 @@ class ScanForm:
             "skip_blanks": self._blank_row.get_active(),
             "scan_loaded_stack": self._stack_row.get_active(),
             "wait_for_more_sheets": self._collect_row.get_active(),
+            "hardware_button": combo_value(self._button_row, HARDWARE_BUTTON_ACTIONS),
+            "insert_to_scan": self._insert_row.get_active(),
             "filename_template": self._current_template(),
             "folder": self._folder,
         }

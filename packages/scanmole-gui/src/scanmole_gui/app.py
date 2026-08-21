@@ -365,6 +365,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             on_pick_folder=self._on_pick_folder,
             on_more_languages=self._on_more_languages,
             on_choice_blocked=self._on_choice_blocked,
+            on_hardware_button_selected=self._on_hardware_button_selected,
+            on_insert_to_scan=self._on_insert_to_scan_toggled,
             device_for_preview=self._selected_device,
             effective_resolution=self._effective_resolution,
         )
@@ -1014,20 +1016,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         store_settings(CONFIG_FILE, self._settings)
 
     def _on_settings_action(self, *_args: object) -> None:
-        """Open the settings dialog (look, scanner triggers, reset)."""
-        mapping, insert = self._sensor_prefs()
+        """Open the settings dialog (color scheme, language, reset)."""
         dialog = build_settings_dialog(
             current_scheme=str(self._settings.get("color_scheme") or ""),
             current_ui_language=str(self._settings.get("ui_language") or ""),
             desktop_installed=desktop_entry_path().is_file(),
-            current_hardware_button=mapping,
-            current_insert_to_scan=insert,
             on_scheme_selected=self._on_scheme_selected,
             on_ui_language_selected=lambda value: self._store_pref(
                 "ui_language", value
             ),
-            on_hardware_button_selected=self._on_hardware_button_selected,
-            on_insert_to_scan_toggled=self._on_insert_to_scan_toggled,
             restart_pending=lambda: (
                 str(self._settings.get("ui_language") or "")
                 != self._startup_ui_language
