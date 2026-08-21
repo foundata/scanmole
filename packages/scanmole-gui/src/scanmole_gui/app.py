@@ -113,7 +113,7 @@ without churning the device; the engine's own collect wait polls
 faster because a sheet is imminently expected there.
 """
 
-DEFAULT_WINDOW_SIZE = (645, 840)  # starts in the single-column layout
+DEFAULT_WINDOW_SIZE = (1050, 655)  # starts in the two-column layout
 
 # App-level styling: compact resolution preset chips, a dpi entry sized to
 # its digits, and no separator between the .joined-below/.joined-above row
