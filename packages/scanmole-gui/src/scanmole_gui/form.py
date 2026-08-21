@@ -107,13 +107,15 @@ FLOW_ACTIONS: tuple[tuple[str, SheetFlow], ...] = (
 )
 
 # What a press of the scanner's own button starts while ScanMole is idle.
+# The flow names match the Behaviour switches they stand in for, so the
+# mapping reads as the setting it applies.
 HARDWARE_BUTTON_ACTIONS = (
     (_("Off"), "off"),
     # The play glyph mirrors the Scan button's icon, so the mapping names
     # the control it copies instead of just its word.
     (_('Same as "▶ Scan"'), "same"),
     (_("Scan one sheet"), "single"),
-    (_("Collect sheets"), "collect"),
+    (_("Combine scans"), "collect"),
 )
 
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
