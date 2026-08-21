@@ -583,6 +583,127 @@ def test_build_scan_command_requested_flatbed_gets_batch_count(
     assert "--batch-count=1" in command
 
 
+_FEEDER_SOURCES = Capability(
+    kind="enum", choices=["ADF Front", "ADF Back", "ADF Duplex"]
+)
+
+
+def test_single_sheet_on_a_duplex_source_limits_to_two_frames(
+    tmp_path: Path,
+) -> None:
+    # One physical sheet is two frames on a duplex source; --batch-count=1
+    # would stop after the front side and split the sheet.
+    caps = {"source": _FEEDER_SOURCES}
+
+    command, effective = build_scan_command(
+        _config(source="adf-duplex", sheet_flow="single"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert effective.source == "ADF Duplex"
+    assert "--batch-count=2" in command
+    assert "--batch-count=1" not in command
+
+
+@pytest.mark.parametrize("source", ["adf", "adf-back"])
+def test_single_sheet_on_a_simplex_source_limits_to_one_frame(
+    tmp_path: Path, source: str
+) -> None:
+    caps = {"source": _FEEDER_SOURCES}
+
+    command, _effective = build_scan_command(
+        _config(source=source, sheet_flow="single"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert command.count("--batch-count=1") == 1
+    assert "--batch-count=2" not in command
+
+
+def test_single_sheet_uses_the_degraded_effective_source(tmp_path: Path) -> None:
+    # A simplex request on a duplex-only feeder runs duplex; the frame
+    # limit must follow what the scanner will actually deliver, not the
+    # request, or the sheet's back side is cut off.
+    caps = {"source": Capability(kind="enum", choices=["ADF Duplex"])}
+
+    command, effective = build_scan_command(
+        _config(source="adf", sheet_flow="single"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert effective.source == "ADF Duplex"
+    assert "--batch-count=2" in command
+
+
+def test_single_sheet_on_a_flatbed_keeps_one_batch_count(tmp_path: Path) -> None:
+    caps = {"source": Capability(kind="enum", choices=["Flatbed"])}
+
+    command, _effective = build_scan_command(
+        _config(source="flatbed", sheet_flow="single"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert command.count("--batch-count=1") == 1
+
+
+def test_single_sheet_refuses_unknown_source_evidence(tmp_path: Path) -> None:
+    # Without a conclusively negotiated source ScanMole cannot know whether
+    # one physical sheet is one frame or two; refuse before feeding paper.
+    with pytest.raises(DeviceError, match="single"):
+        build_scan_command(
+            _config(source="adf-duplex", sheet_flow="single"),
+            "test:0",
+            {},
+            str(tmp_path / "page_%04d.pnm"),
+        )
+
+
+def test_stack_flow_keeps_the_existing_command(tmp_path: Path) -> None:
+    # The default flow must stay byte-for-byte what it was before sheet
+    # flows existed: no frame limit on a feeder, --batch-count=1 on the
+    # flatbed only.
+    caps = {"source": _FEEDER_SOURCES}
+
+    command, _effective = build_scan_command(
+        _config(source="adf-duplex", sheet_flow="stack"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert not any(part.startswith("--batch-count") for part in command)
+    assert not any(part.startswith("--batch-start") for part in command)
+
+
+def test_batch_start_is_emitted_for_continuation_segments(tmp_path: Path) -> None:
+    caps = {"source": _FEEDER_SOURCES}
+
+    first, _ = build_scan_command(
+        _config(source="adf", sheet_flow="collect"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+    continuation, _ = build_scan_command(
+        _config(source="adf", sheet_flow="collect"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+        batch_start=4,
+    )
+
+    assert not any(part.startswith("--batch-start") for part in first)
+    assert "--batch-start=4" in continuation
+
+
 def test_build_scan_command_auto_size_omits_geometry_without_ranges(
     tmp_path: Path,
 ) -> None:

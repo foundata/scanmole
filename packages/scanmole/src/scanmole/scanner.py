@@ -112,22 +112,48 @@ def _window_cap(page: Capability | None, axis: Capability | None) -> Capability 
     return axis
 
 
+def _single_sheet_count(plan: Plan) -> int:
+    """The frame limit that represents one physical sheet.
+
+    Keyed on the conclusively negotiated effective source: a duplex source
+    delivers a sheet as two frames, every other source as one. A degraded
+    source counts by what the scanner will actually deliver, not by the
+    request.
+
+    Raises:
+        DeviceError: If the source evidence is UNKNOWN. Without it ScanMole
+            cannot promise one physical sheet, so it refuses before feeding
+            paper.
+    """
+    if plan.source.support is Support.UNKNOWN:
+        raise DeviceError(
+            "cannot scan a single sheet: the paper source could not be "
+            "negotiated conclusively, so one sheet may be one frame or two "
+            "(scan with --sheet-flow stack instead)"
+        )
+    return 2 if plan.source.effective == "adf-duplex" else 1
+
+
 def build_scan_command(
     config: ScanConfig,
     device: str,
     caps: dict[str, Capability],
     batch_pattern: str,
     plan: Plan | None = None,
+    batch_start: int | None = None,
 ) -> tuple[list[str], EffectiveSettings]:
     """Assemble the ``scanimage`` command for a batch scan.
 
     Only options the device actively advertises (per ``caps``) are included.
     The source, mode and resolution come from the negotiated ``plan`` (one
     is computed from ``caps`` when the caller has none), so fallback policy
-    lives in one place.
+    lives in one place. ``batch_start`` numbers a collect continuation
+    segment (``--batch-start=N``); the first invocation of every flow omits
+    it.
 
     Raises:
-        DeviceError: If the plan marks the source or mode UNSUPPORTED.
+        DeviceError: If the plan marks the source or mode UNSUPPORTED, or a
+            single-sheet flow lacks conclusive source evidence.
 
     Returns:
         The command and the settings the scan will actually run with.
@@ -230,14 +256,21 @@ def build_scan_command(
         command.append(f"--swcrop={'yes' if config.crop else 'no'}")
 
     command += ["--format=pnm", f"--batch={batch_pattern}", "--batch-print"]
+    if batch_start is not None:
+        command.append(f"--batch-start={batch_start}")
     # Keyed on the *mapped* source: a feeder request degraded to the flatbed
     # (flatbed-only device) must not batch-scan "infinity pages" on hardware
     # that never reports "feeder empty".
     flatbed = plan.source.effective == "flatbed" or (
         source is not None and is_flatbed_source(source)
     )
-    if flatbed:
-        command.append("--batch-count=1")  # a flatbed never reports "feeder empty"
+    # A flatbed never reports "feeder empty", so it always carries a frame
+    # limit; a single-sheet flow limits every source to one physical sheet.
+    batch_count = 1 if flatbed else None
+    if config.sheet_flow == "single":
+        batch_count = _single_sheet_count(plan)
+    if batch_count is not None:
+        command.append(f"--batch-count={batch_count}")
     return command, EffectiveSettings(
         source=source,
         mode=mode,
