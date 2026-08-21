@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import subprocess
 import sys
 import threading
@@ -25,7 +27,8 @@ from scanmole.scanner import (
     run_scanimage,
     scan_to_files,
 )
-from scanmole.sheetflow import PageOrigin
+from scanmole.sensors import SensorSnapshot
+from scanmole.sheetflow import CollectCommands, PageOrigin
 
 
 def _config(**overrides: object) -> ScanConfig:
@@ -1376,3 +1379,201 @@ def test_scan_to_files_warns_exactly_once_per_fallback(
         if r.levelno >= 30 and "backs will not be scanned" in r.message
     ]
     assert len(warnings) == 1
+
+
+def _sensor_caps() -> dict[str, Capability]:
+    return {
+        "source": Capability(kind="enum", choices=["ADF Front"]),
+        "resolution": Capability(kind="range", minimum=50, maximum=600),
+    }
+
+
+def _collect_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    paper: bool = True,
+) -> tuple[CollectCommands, list[list[str]]]:
+    """Wire a collect run: fake probes, fake sensors, owned command channel."""
+    commands = CollectCommands()
+    monkeypatch.setattr("scanmole.scanner._collect_commands", lambda: commands)
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): _sensor_caps(),
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_sensors",
+        lambda device, settings=(): SensorSnapshot(scan=False, page_loaded=paper),
+    )
+    calls: list[list[str]] = []
+    return commands, calls
+
+
+def test_collect_runs_segments_across_reloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands, calls = _collect_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        calls.append(cmd)
+        start = 1
+        for part in cmd:
+            if part.startswith("--batch-start="):
+                start = int(part.split("=")[1])
+        page = tmp_path / f"page_{start:04d}.pnm"
+        page.write_bytes(b"P4\n1 1\n\x00")
+        on_page(page)
+        if len(calls) == 2:
+            commands.feed_line("done\n")
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    origins: list[PageOrigin] = []
+
+    result = scan_to_files(
+        _config(source="adf", sheet_flow="collect"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: origins.append(o),
+    )
+
+    assert [page.name for page in result.pages] == ["page_0001.pnm", "page_0002.pnm"]
+    assert not any(part.startswith("--batch-start") for part in calls[0])
+    assert "--batch-start=2" in calls[1]
+    assert origins == [
+        PageOrigin(segment=1, frame=1),
+        PageOrigin(segment=2, frame=1),
+    ]
+
+
+def test_collect_emits_settings_once_and_reads_sensors_with_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands = CollectCommands()
+    monkeypatch.setattr("scanmole.scanner._collect_commands", lambda: commands)
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): _sensor_caps(),
+    )
+    sensor_settings: list[tuple[tuple[str, str], ...]] = []
+
+    def fake_sensors(
+        device: str, settings: tuple[tuple[str, str], ...] = ()
+    ) -> SensorSnapshot:
+        sensor_settings.append(tuple(settings))
+        return SensorSnapshot(scan=False, page_loaded=True)
+
+    monkeypatch.setattr("scanmole.scanner.probe_sensors", fake_sensors)
+    runs: list[int] = []
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        runs.append(1)
+        page = tmp_path / f"page_{len(runs):04d}.pnm"
+        page.write_bytes(b"P4\n1 1\n\x00")
+        on_page(page)
+        if len(runs) == 2:
+            commands.feed_line("done\n")
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    scan_to_files(
+        _config(source="adf", sheet_flow="collect"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=True, stream=stream),
+        lambda p, o: None,
+    )
+
+    events = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
+    assert events.count("settings") == 1
+    # Every sensor read applied the final acquisition settings, so the
+    # snapshot is the same source-dependent state the scan will use.
+    assert sensor_settings
+    assert set(sensor_settings) == {(("--source", "ADF Front"),)}
+
+
+def test_collect_numbers_the_next_segment_past_unannounced_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands, calls = _collect_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        calls.append(cmd)
+        if len(calls) == 1:
+            announced = tmp_path / "page_0001.pnm"
+            announced.write_bytes(b"P4\n1 1\n\x00")
+            on_page(announced)
+            # A completed frame the announcement race missed.
+            (tmp_path / "page_0002.pnm").write_bytes(b"P4\n1 1\n\x00")
+        else:
+            commands.feed_line("done\n")
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    seen: list[tuple[str, PageOrigin]] = []
+
+    scan_to_files(
+        _config(source="adf", sheet_flow="collect"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: seen.append((p.name, o)),
+    )
+
+    # The sweep delivered the unannounced frame on its own segment and the
+    # next invocation numbered past it instead of overwriting it.
+    assert ("page_0002.pnm", PageOrigin(segment=1, frame=2)) in seen
+    assert "--batch-start=3" in calls[1]
+
+
+def test_collect_stops_when_a_swept_frame_fails_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A partial or invalid unannounced frame must stop the collection and
+    # reach the ordinary preservation path, never be skipped or replaced.
+    _commands, calls = _collect_setup(tmp_path, monkeypatch)
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        calls.append(cmd)
+        (tmp_path / "page_0001.pnm").write_bytes(b"P5\n2 2\n255\n\x00")  # truncated
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    def parse_like_the_pipeline(page: Path, origin: PageOrigin) -> None:
+        raise ValueError("truncated PNM raster")
+
+    with pytest.raises(ValueError, match="truncated"):
+        scan_to_files(
+            _config(source="adf", sheet_flow="collect"),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            parse_like_the_pipeline,
+        )
+
+    assert len(calls) == 1  # no further segment was started
+    assert (tmp_path / "page_0001.pnm").exists()  # left exactly as written
+
+
+def test_collect_idle_timeout_without_pages_raises_no_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commands, _calls = _collect_setup(tmp_path, monkeypatch, paper=False)
+    monkeypatch.setattr("scanmole.scanner.COLLECT_IDLE_TIMEOUT_SECONDS", 0.05)
+
+    def never_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        raise AssertionError("scanimage must not start against an empty feeder")
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", never_run)
+
+    with pytest.raises(NoPagesError):
+        scan_to_files(
+            _config(source="adf", sheet_flow="collect"),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
+        )

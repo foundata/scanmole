@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -99,3 +101,49 @@ def test_probe_sensors_applies_settings_and_a_short_timeout(
     assert recorded["settings"] == (("--source", "ADF Front"),)
     assert isinstance(recorded["timeout"], float)
     assert 0 < recorded["timeout"] <= 30
+
+
+def test_an_interrupt_kills_a_term_ignoring_sensor_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A hung or TERM-ignoring scanimage during a sensor read must not
+    # survive a cancellation: the read runs under run_command's ordinary
+    # process-group supervision, and the interrupt propagates.
+    monkeypatch.setattr("scanmole.external.GROUP_KILL_GRACE_SECONDS", 0.3)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pid_file = tmp_path / "probe.pid"
+    script = fake_bin / "scanimage"
+    script.write_text(f"#!/bin/bash\ntrap '' TERM\necho $$ > {pid_file}\nsleep 30\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    from scanmole.external import _PipeCapture
+
+    real_pump = _PipeCapture.pump
+    state = {"armed": True}
+
+    def interrupting_pump(self: object, deadline: float) -> None:
+        if state["armed"]:
+            state["armed"] = False
+            for _ in range(100):  # the child provably started
+                if pid_file.exists() and pid_file.read_text().strip():
+                    break
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+        real_pump(self, deadline)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("scanmole.external._PipeCapture.pump", interrupting_pump)
+
+    with pytest.raises(KeyboardInterrupt):
+        probe_sensors("test:0")
+
+    pid = int(pid_file.read_text().strip())
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("the sensor read's child survived the interrupt")

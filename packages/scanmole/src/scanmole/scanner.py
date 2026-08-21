@@ -7,6 +7,7 @@ import logging
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -36,7 +37,16 @@ from scanmole.options import (
     parse_page_size,
     probe_capabilities,
 )
-from scanmole.sheetflow import PageOrigin, page_file_number
+from scanmole.sensors import probe_sensors
+from scanmole.sheetflow import (
+    COLLECT_IDLE_TIMEOUT_SECONDS,
+    CollectCommands,
+    CollectController,
+    PageOrigin,
+    next_page_number,
+    page_file_number,
+    start_stdin_commands,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -657,20 +667,73 @@ def scan_to_files(
         seen.add(path)
         on_page(path, PageOrigin(segment=segment, frame=frame))
 
-    exit_code, stderr_text = run_scanimage(command, lambda path: deliver(path, 1, 1))
+    def sweep(segment: int, segment_start: int) -> None:
+        for path in sorted(work_dir.iterdir()):
+            if _PAGE_NAME.fullmatch(path.name) and path not in seen:
+                deliver(path, segment, segment_start)
 
-    for path in sorted(work_dir.iterdir()):
-        if _PAGE_NAME.fullmatch(path.name) and path not in seen:
-            deliver(path, 1, 1)
-
-    if exit_code == _NO_DOCS_EXIT and delivered:
-        LOGGER.debug("feeder empty (scanimage exit 7) -- normal end of batch")
-    elif exit_code not in (0, _NO_DOCS_EXIT):
-        tail = (
+    def stderr_tail(exit_code: int, stderr_text: str) -> str:
+        return (
             "\n".join(stderr_text.strip().splitlines()[-4:])
             or f"scanimage exited {exit_code}"
         )
-        raise DeviceError(f"scan failed: {tail}")
+
+    if config.sheet_flow == "collect":
+        segment = 0
+
+        def acquire() -> int:
+            # One collect segment: drain whatever the feeder currently
+            # holds, with the numbering continuing from the greatest
+            # artifact on disk (unannounced frames included), so nothing
+            # is ever overwritten. The negotiated plan is reused as-is;
+            # only --batch-start differs between segments.
+            nonlocal segment
+            segment += 1
+            start = next_page_number(work_dir)
+            segment_command = (
+                command
+                if start == 1
+                else build_scan_command(config, device, caps, pattern, plan, start)[0]
+            )
+            before = len(delivered)
+            exit_code, stderr_text = run_scanimage(
+                segment_command, lambda path: deliver(path, segment, start)
+            )
+            sweep(segment, start)
+            if exit_code == _NO_DOCS_EXIT:
+                LOGGER.debug("feeder empty (scanimage exit 7) -- end of segment")
+            elif exit_code != 0:
+                raise DeviceError(f"scan failed: {stderr_tail(exit_code, stderr_text)}")
+            return len(delivered) - before
+
+        conclusive = plan.source.support is not Support.UNKNOWN
+        controller = CollectController(
+            commands=_collect_commands(),
+            # The final acquisition settings make the sensor snapshot
+            # source-dependent state, exactly like the last negotiation
+            # probe; sensor options themselves are never emitted.
+            read_sensors=lambda: probe_sensors(device, final_settings),
+            feeder=conclusive
+            and plan.source.effective in ("adf", "adf-duplex", "adf-back"),
+            duplex=conclusive and plan.source.effective == "adf-duplex",
+            events=events,
+            idle_seconds=COLLECT_IDLE_TIMEOUT_SECONDS,
+        )
+        controller.run(acquire)
+    else:
+        exit_code, stderr_text = run_scanimage(
+            command, lambda path: deliver(path, 1, 1)
+        )
+        sweep(1, 1)
+        if exit_code == _NO_DOCS_EXIT and delivered:
+            LOGGER.debug("feeder empty (scanimage exit 7) -- normal end of batch")
+        elif exit_code not in (0, _NO_DOCS_EXIT):
+            raise DeviceError(f"scan failed: {stderr_tail(exit_code, stderr_text)}")
     if not delivered:
         raise NoPagesError("no pages were scanned -- is there paper in the feeder?")
     return ScanResult(pages=delivered, settings=effective)
+
+
+def _collect_commands() -> CollectCommands:
+    """The standard-input control channel of a collect run (test seam)."""
+    return start_stdin_commands(sys.stdin)
