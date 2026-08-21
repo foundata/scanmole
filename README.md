@@ -181,7 +181,11 @@ scanmole -r 300 'contract_{YYYY}-{MM}-{DD}_{NN}'  # higher dpi for small print
 scanmole --source adf --keep-blanks               # single-sided stack, keep every page
 scanmole --mode gray -l deu --no-pdfa notes       # grayscale, German-only OCR, plain PDF
 scanmole --keep-images /tmp/pages -v receipts     # keep page images, verbose log
+scanmole --sheet-flow single                      # exactly one sheet, rest stays in the tray
+scanmole --sheet-flow collect                     # one PDF across reloads; finish with "done"
 ```
+
+`--sheet-flow` controls how many physical sheets one run acquires. The default `stack` drains the loaded feeder once, `single` scans exactly one sheet (both sides on a duplex source) and leaves the rest in the tray, and `collect` keeps the run open across reloads: insert the next sheet (single-sheet feeders like the ScanSnap iX100 continue automatically, and the scanner's own button works too), or type `next` for flatbeds, and type `done` to build the PDF. A collect run that waits more than 15 minutes finishes on its own with the sheets it has.
 
 What if my scanner acts up, for example wrong page sizes in `auto` mode, surviving blank pages, or a badly mapped mode? Every device behaves a little differently at the edges of a scan, and we can usually fix it from a few captured files alone: see [reporting scanner problems and device quirks](CONTRIBUTING.md#issues-scanner-quirks) for exactly what to include.
 
@@ -197,6 +201,8 @@ uv run scanmole-gui
 The settings dialog can install a menu entry (`.desktop` file) for your user, so later starts work straight from the desktop's application grid.
 
 `scanmole-gui` is a form over the same engine with the same defaults. It covers and presents the CLI features in an easy-to-use way. The Scan button turns into Cancel while a batch runs, a collapsible log shows the underlying CLI output, and a result bar opens the finished PDF or its folder. The GUI remembers the last used form values and the window size in `~/.config/scanmole/gui.json` and restores them on the next start.
+
+Multi-sheet documents on single-sheet scanners: turn on "Wait for more sheets" (or pick "Collect sheets" from the Scan button's menu for one run) and the scan keeps going as you insert sheet after sheet, with a Finish action building the one PDF; the Scan menu also offers "Scan one sheet" for a quick single grab that leaves a loaded stack in the tray. The settings dialog can map the scanner's own hardware button so a press starts a scan while the window is idle, and can start a scan automatically when a sheet is inserted; both are off by default.
 
 
 ### Exit codes<a id="usage-exit-codes"></a>

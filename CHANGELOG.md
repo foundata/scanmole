@@ -8,7 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Nothing worth mentioning right now.
+### Added
+
+- `--sheet-flow single|stack|collect`: how many physical sheets one run acquires. `stack` keeps today's behavior (drain the loaded feeder once), `single` scans exactly one sheet (both sides on a duplex source; the rest of a loaded stack stays in the tray), and `collect` keeps one run, and one PDF, open across scanner reloads: a feeder with a paper sensor continues automatically when the next sheet is inserted, flatbeds and sensorless devices continue on `next` via standard input or a fresh press of the scanner's own button, and `done` (or end of input) finishes the collection. The scanner is never started against an empty sensed feeder, waits are bounded by a 15 minute idle timeout, and a new additive `waiting` JSON event reports each actual wait with segment-aware sheet counts.
+- The GUI's Scan action is now a split button: the primary click uses the persisted choice (a new "Wait for more sheets" switch selects collecting), and its menu starts one scan with an explicit flow ("Scan one sheet", "Scan loaded stack", "Collect sheets") without changing any setting. A waiting collection shows how many sheets are in, with Finish and, where continuing is manual, Next Sheet actions.
+- Hardware scan buttons and insert-to-scan in the GUI: on devices exposing the sensors, an idle poller can start a scan from a press of the scanner's own button (a settings preference mapping it to the form's flow, a single sheet or collecting) or when a sheet is inserted; both preferences are off by default, presses made while a scan runs or Start is blocked are ignored, and polling never interferes with discovery or capability probes.
 
 
 ## [1.1.0] - 2026-08-20
