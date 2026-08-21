@@ -364,6 +364,18 @@ def run_scanimage(
                     continue
             return -1  # callback failure: reaped and reported below
 
+        def recorded_failure() -> BaseException | None:
+            """The recorded page-callback failure, wrapped for raising."""
+            with failure_lock:
+                failure = page_failure
+            if failure is None:
+                return None
+            if isinstance(failure, ScanMoleError):
+                return failure
+            wrapped = ScanMoleError(f"page processing failed: {failure}")
+            wrapped.__cause__ = failure
+            return wrapped
+
         try:
             exit_code = wait_for_scan()
         except subprocess.TimeoutExpired as exc:
@@ -380,15 +392,7 @@ def run_scanimage(
             # below cannot replace the real diagnosis. A timeout or
             # interrupt that fired first keeps precedence (the branches
             # above already recorded it).
-            with failure_lock:
-                failure = page_failure
-            if failure is not None:
-                if isinstance(failure, ScanMoleError):
-                    cause = failure
-                else:
-                    promoted = ScanMoleError(f"page processing failed: {failure}")
-                    promoted.__cause__ = failure
-                    cause = promoted
+            cause = recorded_failure()
     except BaseException as exc:  # an interrupt outside the wait itself
         cause = exc
         process.terminate()
@@ -421,7 +425,10 @@ def run_scanimage(
                     return
                 except (KeyboardInterrupt, Terminated) as exc:
                     if cause is None:
-                        cause = exc
+                        # A callback that failed earlier in this drain (a
+                        # buffered page) stays the diagnosis; only a truly
+                        # first interrupt becomes the cause.
+                        cause = recorded_failure() or exc
                 except BaseException as exc:
                     if cause is None:
                         cause = exc
@@ -444,12 +451,9 @@ def run_scanimage(
         absorbing(lambda: _close_stream(stderr))
     if cause is not None:
         raise cause
-    with failure_lock:
-        failure = page_failure
-    if failure is not None:
-        if isinstance(failure, ScanMoleError):
-            raise failure
-        raise ScanMoleError(f"page processing failed: {failure}") from failure
+    late_failure = recorded_failure()
+    if late_failure is not None:
+        raise late_failure
     return exit_code, "\n".join(lines)
 
 

@@ -281,6 +281,39 @@ def test_callback_failure_keeps_precedence_over_a_drain_interrupt(
     assert _no_scanner_threads()  # the drain still ran to its end
 
 
+def test_interrupt_after_a_drain_callback_failure_keeps_the_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The child exited with a buffered announcement; the callback fails
+    # during the drain, and only then an interrupt lands in a later join:
+    # the earlier failure must stay the diagnosis.
+    page = tmp_path / "page_0001.pnm"
+    in_drain = threading.Event()
+
+    def failing_callback(path: Path) -> None:
+        assert in_drain.wait(10)  # fail only once the drain has begun
+        raise RuntimeError("late boom")
+
+    real_join = threading.Thread.join
+    calls = {"count": 0}
+
+    def sequenced_join(self: threading.Thread, timeout: float | None = None) -> None:
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise KeyboardInterrupt  # lands after the failure was recorded
+        if calls["count"] == 1:
+            in_drain.set()  # the reader now fails and records the cause
+        real_join(self, timeout)  # a retried step joins normally
+
+    monkeypatch.setattr(threading.Thread, "join", sequenced_join)
+
+    with pytest.raises(ScanMoleError, match="late boom") as info:
+        run_scanimage(["sh", "-c", f"echo '{page}'"], failing_callback)
+
+    assert isinstance(info.value.__cause__, RuntimeError)
+    assert _no_scanner_threads()  # the drain still ran to its end
+
+
 def test_interrupt_before_a_drain_failure_keeps_precedence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
