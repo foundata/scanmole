@@ -36,6 +36,7 @@ from scanmole.pnm import (
     image_mean,
 )
 from scanmole.scanner import EffectiveSettings, scan_to_files
+from scanmole.sheetflow import PageOrigin
 from scanmole.sizing import PageContent, choose_crops
 
 LOGGER = logging.getLogger(__name__)
@@ -453,10 +454,11 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         negotiated: list[EffectiveSettings] = []
         measured: list[PageContent] = []
 
-        def handle_page(page: Path) -> None:
+        def handle_page(page: Path, origin: PageOrigin | None = None) -> None:
             # Called per page as it lands: from the scanner's reader thread
-            # during a batch, or inline for --from-images. Frontends see the
-            # page event while the rest of the batch is still scanning.
+            # during a batch (with its acquisition segment identity), or
+            # inline for --from-images (no origin). Frontends see the page
+            # event while the rest of the batch is still scanning.
             nonlocal total, blanks, binarized
             total += 1
             window = negotiated[0].window_mm if negotiated else None
@@ -540,6 +542,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                                 bbox_px=stats.bbox,
                                 reach_px=stats.reach,
                                 unresolved=unresolved,
+                                origin=origin,
                             )
                         )
                         # Hint only when a content box exists. Without one,

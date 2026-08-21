@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from scanmole.scanner import (
     run_scanimage,
     scan_to_files,
 )
+from scanmole.sheetflow import PageOrigin
 
 
 def _config(**overrides: object) -> ScanConfig:
@@ -745,7 +747,7 @@ def test_scan_to_files_returns_the_effective_settings(
         "test:0",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     assert result.settings.resolution == 150
@@ -777,7 +779,7 @@ def test_scan_to_files_reprobes_with_the_mapped_source(
         "test:0",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     # Bare, source-applied, then the final acquisition state (source plus
@@ -806,11 +808,54 @@ def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
     seen: list[Path] = []
 
     result = scan_to_files(
-        _config(), "test:0", tmp_path, EventWriter(enabled=False), seen.append
+        _config(),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: seen.append(p),
     )
 
     assert [page.name for page in result.pages] == ["page_0001.pnm", "page_0002.pnm"]
     assert seen == result.pages
+
+
+def test_scan_to_files_delivers_segment_origins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Announced and swept frames alike carry their acquisition identity;
+    # the frame index comes from the file number, so an unannounced final
+    # frame still lands on the physical sheet it belongs to.
+    (tmp_path / "page_0002.pnm").write_bytes(b"P4\n1 1\n\x00")  # never announced
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
+    )
+
+    def fake_run(
+        command: list[str], on_page: Callable[[Path], None]
+    ) -> tuple[int, str]:
+        page = tmp_path / "page_0001.pnm"
+        page.write_bytes(b"P4\n1 1\n\x00")
+        on_page(page)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    origins: list[tuple[str, PageOrigin]] = []
+
+    scan_to_files(
+        _config(),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: origins.append((p.name, o)),
+    )
+
+    assert origins == [
+        ("page_0001.pnm", PageOrigin(segment=1, frame=1)),
+        ("page_0002.pnm", PageOrigin(segment=1, frame=2)),
+    ]
 
 
 def test_scan_to_files_raises_when_nothing_was_scanned(
@@ -828,7 +873,11 @@ def test_scan_to_files_raises_when_nothing_was_scanned(
 
     with pytest.raises(NoPagesError):
         scan_to_files(
-            _config(), "test:0", tmp_path, EventWriter(enabled=False), lambda p: None
+            _config(),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
         )
 
 
@@ -848,7 +897,11 @@ def test_scan_to_files_reports_scan_failures(
 
     with pytest.raises(DeviceError, match="sane_start failed"):
         scan_to_files(
-            _config(), "test:0", tmp_path, EventWriter(enabled=False), lambda p: None
+            _config(),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
         )
 
 
@@ -900,7 +953,11 @@ def test_scan_refuses_without_resolution_evidence(
 
     with pytest.raises(DeviceError, match="physical resolution"):
         scan_to_files(
-            _config(), "test:0", tmp_path, EventWriter(enabled=False), lambda p: None
+            _config(),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
         )
 
 
@@ -934,7 +991,7 @@ def test_fixed_resolution_reaches_settings_without_being_emitted(
         "test:0",
         tmp_path,
         EventWriter(enabled=True, stream=stream),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     assert "--resolution" not in commands[0]
@@ -980,7 +1037,7 @@ def test_source_dependent_snapshot_decides_the_resolution(
         "test:0",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     assert commands[0][commands[0].index("--resolution") + 1] == "150"
@@ -1022,7 +1079,7 @@ def test_mode_dependent_resolution_is_renegotiated(
         "test:0",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     assert commands[0][commands[0].index("--resolution") + 1] == "150"
@@ -1059,7 +1116,7 @@ def test_software_faint_resolution_follows_the_gray_state(
         "test:0",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     assert commands[0][commands[0].index("--mode") + 1] == "Gray"
@@ -1095,7 +1152,7 @@ def test_native_faint_resolution_follows_the_enhanced_state(
         "fujitsu:iX500",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     assert commands[0][commands[0].index("--threshold") + 1] == "0"  # native path
@@ -1128,7 +1185,7 @@ def test_faint_command_engages_fujitsu_sdtc_in_order(
         "fujitsu:iX500",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     source = ("--source", "ADF Duplex")
@@ -1177,7 +1234,7 @@ def test_faint_command_engages_epson_tet(
         "epson2:libusb:001:004",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     command = commands[0]
@@ -1213,7 +1270,7 @@ def test_faint_fallback_scans_gray_with_pinned_depth(
         "epsonds:net:192.168.0.167",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     command = commands[0]
@@ -1245,7 +1302,7 @@ def test_faint_on_a_lineart_only_device_fails_before_acquisition(
             "test:0",
             tmp_path,
             EventWriter(enabled=False),
-            lambda p: None,
+            lambda p, o: None,
         )
 
 
@@ -1278,7 +1335,7 @@ def test_faint_candidate_probe_failure_falls_back_to_gray(
         "fujitsu:iX500",
         tmp_path,
         EventWriter(enabled=False),
-        lambda p: None,
+        lambda p, o: None,
     )
 
     assert commands[0][commands[0].index("--mode") + 1] == "Gray"
@@ -1310,7 +1367,7 @@ def test_scan_to_files_warns_exactly_once_per_fallback(
             "test:0",
             tmp_path,
             EventWriter(enabled=False),
-            lambda p: None,
+            lambda p, o: None,
         )
 
     warnings = [

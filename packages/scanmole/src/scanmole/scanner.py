@@ -36,6 +36,7 @@ from scanmole.options import (
     parse_page_size,
     probe_capabilities,
 )
+from scanmole.sheetflow import PageOrigin, page_file_number
 
 LOGGER = logging.getLogger(__name__)
 
@@ -535,7 +536,7 @@ def scan_to_files(
     device: str,
     work_dir: Path,
     events: EventWriter,
-    on_page: Callable[[Path], None],
+    on_page: Callable[[Path, PageOrigin], None],
     on_settings: Callable[[EffectiveSettings], None] | None = None,
 ) -> ScanResult:
     """Scan into ``work_dir`` and return the pages plus the effective settings.
@@ -546,8 +547,10 @@ def scan_to_files(
     pages were actually scanned at. ``on_settings``, when given, receives the
     same values before the first page, so per-page processing can already use
     them. Each page is delivered through ``on_page`` as soon as scanimage
-    finishes writing it; page files that scanimage wrote but did not announce
-    (defensive) are delivered after the batch, in name order.
+    finishes writing it, together with its :class:`PageOrigin` (which
+    acquisition segment produced it, and where within that segment); page
+    files that scanimage wrote but did not announce (defensive) are
+    delivered after the batch, in name order.
 
     Raises:
         DeviceError: If ``scanimage`` fails for a reason other than an empty
@@ -640,16 +643,25 @@ def scan_to_files(
     delivered: list[Path] = []
     seen: set[Path] = set()
 
-    def deliver(path: Path) -> None:
+    def deliver(path: Path, segment: int, segment_start: int) -> None:
+        # The frame index within the segment comes from the file number,
+        # not the delivery count, so an unannounced frame swept after the
+        # batch still lands on the physical sheet it belongs to.
+        number = page_file_number(path)
+        frame = (
+            number - segment_start + 1
+            if number is not None  # unreachable None: names are pre-filtered
+            else len(delivered) + 1
+        )
         delivered.append(path)
         seen.add(path)
-        on_page(path)
+        on_page(path, PageOrigin(segment=segment, frame=frame))
 
-    exit_code, stderr_text = run_scanimage(command, deliver)
+    exit_code, stderr_text = run_scanimage(command, lambda path: deliver(path, 1, 1))
 
     for path in sorted(work_dir.iterdir()):
         if _PAGE_NAME.fullmatch(path.name) and path not in seen:
-            deliver(path)
+            deliver(path, 1, 1)
 
     if exit_code == _NO_DOCS_EXIT and delivered:
         LOGGER.debug("feeder empty (scanimage exit 7) -- normal end of batch")

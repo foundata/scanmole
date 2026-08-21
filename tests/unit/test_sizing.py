@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
+from scanmole.sheetflow import PageOrigin
 from scanmole.sizing import PageContent, choose_crops
 
 _DPI = 300
@@ -136,6 +138,51 @@ def test_duplex_pairs_share_the_sheet_size() -> None:
     decisions = choose_crops(pages, _DPI, flatbed=False, duplex=True)
 
     assert [decision.label for decision in decisions] == ["a4", "a4", "a4", "a4"]
+
+
+def test_duplex_pairing_never_crosses_an_acquisition_segment() -> None:
+    # A collect segment ended after an odd frame count (incomplete sheet),
+    # and the next segment continued the global numbering. Number-based
+    # pairing would marry frame 3 (segment 1) to frame 4 (segment 2); the
+    # segment identity keeps them on separate physical sheets, so the
+    # sparse frame 3 must not adopt frame 4's A4 size decision.
+    pages = [
+        _page(1, (5, 0, 205, 270)),
+        _page(2, (5, 0, 205, 260)),
+        _page(3, (60, 10, 130, 100)),
+        _page(4, (5, 0, 205, 250)),
+        _page(5, (5, 0, 205, 240)),
+    ]
+    origins = [(1, 1), (1, 2), (1, 3), (2, 1), (2, 2)]
+    pages = [
+        replace(page, origin=PageOrigin(segment=segment, frame=frame))
+        for page, (segment, frame) in zip(pages, origins, strict=True)
+    ]
+
+    decisions = choose_crops(pages, _DPI, flatbed=False, duplex=True)
+
+    # Frames 1+2 share a sheet; frame 3 is alone (its sparse content is not
+    # wide enough to adopt the A4 majority); frames 4+5 share the next sheet.
+    assert [decision.label for decision in decisions] == [
+        "a4",
+        "a4",
+        "a6",
+        "a4",
+        "a4",
+    ]
+
+
+def test_duplex_pairing_without_origins_keeps_the_number_pairing() -> None:
+    # --from-images and older callers carry no origin; the historic global
+    # pairing (frames 2k-1 and 2k share a sheet) must keep applying there.
+    pages = [
+        _page(1, (5, 0, 205, 270)),
+        _page(2, (60, 10, 130, 100)),
+    ]
+
+    decisions = choose_crops(pages, _DPI, flatbed=False, duplex=True)
+
+    assert [decision.label for decision in decisions] == ["a4", "a4"]
 
 
 def test_feeder_containment_uses_the_leading_edge_distance() -> None:

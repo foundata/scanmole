@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scanmole.config import PAGE_SIZES, AutoSizePreference
+from scanmole.sheetflow import PageOrigin
 
 SNAP_TOLERANCE_MM = 2.0
 """Robust content may exceed a candidate size by this much (skew, edge
@@ -90,6 +91,9 @@ class PageContent:
     window there. A shortened (resolved) axis carries an observed paper
     extent and is preserved unless a compatible standard size replaces it;
     an unresolved axis is what content sizing is for."""
+    origin: PageOrigin | None = None
+    """The frame's acquisition segment identity. ``None`` (image inputs,
+    older callers) falls back to pairing by the global page number."""
 
 
 @dataclass(frozen=True)
@@ -406,12 +410,18 @@ def choose_crops(
     scale = dpi / 25.4
     units: list[list[PageContent]] = []
     if duplex:
-        # Pair by page number, not list position: a sheet is (2k-1, 2k) in
-        # delivery order, and pairing must survive gaps (frames that did not
-        # qualify for measuring).
-        sheets: dict[int, list[PageContent]] = {}
+        # Pair by sheet identity, not list position: pairing must survive
+        # gaps (frames that did not qualify for measuring), and it must
+        # never cross an acquisition segment, where an odd final frame is
+        # an incomplete sheet. Without an origin (image inputs) a sheet is
+        # (2k-1, 2k) of the global numbering, as before.
+        sheets: dict[tuple[int, int], list[PageContent]] = {}
         for page in pages:
-            sheets.setdefault((page.number + 1) // 2, []).append(page)
+            if page.origin is not None:
+                key = page.origin.sheet_key(duplex=True)
+            else:
+                key = (0, (page.number + 1) // 2)
+            sheets.setdefault(key, []).append(page)
         units = [sheets[sheet] for sheet in sorted(sheets)]
     else:
         units = [[page] for page in pages]
