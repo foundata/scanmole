@@ -561,7 +561,7 @@ class ScanForm:
         )
         self.processing_group.add(self._blank_row)
         self._ocr_row = Adw.SwitchRow(
-            title=_("OCR"),
+            title=_("OCR (Optical Character Recognition)"),
             subtitle=_("Make the PDF text-searchable (PDF/A)"),
             active=True,
         )
