@@ -1024,6 +1024,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._settings = {}
         store_settings(CONFIG_FILE, self._settings)
         self._apply_saved_settings()
+        # The defaults may name choices the connected scanner blocks (the
+        # duplex default on a front-only feeder): negotiate again, exactly
+        # like at startup, so the sole-source adoption can move the
+        # selection off a blocked default. Cached snapshots make this
+        # instant; without a device it is a no-op.
+        self._start_negotiation()
         # Also resize back to the default geometry; without this the close
         # handler would immediately re-persist the current size and the reset
         # would never reach the window.

@@ -434,3 +434,52 @@ def test_scan_exit_starts_a_fresh_negotiation() -> None:
     stale = Window(object())
     stale._on_process_exit(object(), 0)  # type: ignore[misc, arg-type]
     assert calls == []  # a stale exit changes nothing
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_settings_reset_renegotiates_the_connected_device(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # Reset restores the duplex default while a front-only scanner is
+    # connected. At startup the bare probe's arrival runs the sole-source
+    # adoption; after a reset that snapshot is already cached, so the
+    # reset itself must negotiate again or the blocked default stays
+    # selected.
+    from pathlib import Path
+
+    from scanmole_gui.app import MainWindow
+
+    monkeypatch.setattr("scanmole_gui.app.CONFIG_FILE", Path(tmp_path) / "gui.json")
+    order: list[str] = []
+
+    class Window:
+        _on_reset_response = MainWindow._on_reset_response
+
+        def __init__(self) -> None:
+            self._settings: dict[str, object] = {"source": "adf-duplex"}
+            self._settings_dialog = None
+
+        def _apply_saved_settings(self) -> None:
+            order.append("apply")
+
+        def _start_negotiation(self) -> None:
+            order.append("negotiate")
+
+        def is_maximized(self) -> bool:
+            return False
+
+        def unmaximize(self) -> None:
+            pass
+
+        def set_default_size(self, *args: object) -> None:
+            pass
+
+        def _set_result_bar(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    window = Window()
+    window._on_reset_response(None, "reset")  # type: ignore[misc]
+
+    assert order == ["apply", "negotiate"]
