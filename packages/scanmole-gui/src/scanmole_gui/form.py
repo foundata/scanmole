@@ -109,7 +109,9 @@ FLOW_ACTIONS: tuple[tuple[str, SheetFlow], ...] = (
 # What a press of the scanner's own button starts while ScanMole is idle.
 HARDWARE_BUTTON_ACTIONS = (
     (_("Off"), "off"),
-    (_("Same as Scan"), "same"),
+    # The play glyph mirrors the Scan button's icon, so the mapping names
+    # the control it copies instead of just its word.
+    (_('Same as "▶ Scan"'), "same"),
     (_("Scan one sheet"), "single"),
     (_("Collect sheets"), "collect"),
 )
@@ -188,6 +190,7 @@ class ScanForm:
 
         self._build_scanner_group()
         self._build_output_group()
+        self._build_behaviour_group()
         self._build_document_group()
         self._build_processing_group()
         self._equalize_form_rows()
@@ -227,51 +230,6 @@ class ScanForm:
             self._source_changed,
             tooltips=SOURCE_TOOLTIPS,
         )
-        # The persisted sheet-flow choice as two switches. "Scan loaded
-        # stack" (on, the historic behavior) drains the feeder; off scans
-        # a single sheet. It only means something on a feeder source, so
-        # a flatbed grays it out and ignores it. "Collect sheets" merges
-        # scans across reloads until Finish and wins over both.
-        self._stack_row = Adw.SwitchRow(
-            title=_("Scan loaded stack"),
-            subtitle=_("Take every sheet from the feeder; off scans a single sheet"),
-            active=True,
-        )
-        self.scanner_group.add(self._stack_row)
-        self._collect_row = Adw.SwitchRow(
-            title=_("Collect sheets"),
-            subtitle=_(
-                "Merge multiple scans into a document until you press "
-                "Finish in the status bar"
-            ),
-            active=False,
-        )
-        self.scanner_group.add(self._collect_row)
-        self._update_stack_row()
-        # The scanner-trigger preferences belong with the other scanner
-        # options: what the device's own button starts, and whether an
-        # inserted sheet starts a scan by itself. The window persists both
-        # immediately and re-evaluates the idle sensor poller.
-        self._button_row = Adw.ComboRow(
-            title=_("Hardware scan button"),
-            subtitle=_("What a press of the scanner's button starts"),
-        )
-        self._button_row.set_model(
-            Gtk.StringList.new([label for label, _value in HARDWARE_BUTTON_ACTIONS])
-        )
-        self._button_row.connect("notify::selected", self._on_button_pref_changed)
-        self.scanner_group.add(self._button_row)
-        self._insert_row = Adw.SwitchRow(
-            title=_("Start when paper is inserted"),
-            subtitle=_("Begin scanning when a sheet is loaded into the idle scanner"),
-            active=False,
-        )
-        self._insert_row.connect(
-            "notify::active",
-            lambda *_a: self._on_insert_to_scan(bool(self._insert_row.get_active())),
-        )
-        self.scanner_group.add(self._insert_row)
-
         # One primary action: Scan is the only accented control, full width at
         # the bottom of the Scanner group (mockup rule); Cancel swaps in while
         # a scan runs. The buttons are wrapped in list rows because a plain
@@ -311,6 +269,56 @@ class ScanForm:
             child=self._cancel_btn, activatable=False, selectable=False, visible=False
         )
         self.scanner_group.add(self._cancel_row)
+
+    def _build_behaviour_group(self) -> None:
+        """Build the Behaviour group: what a scan covers and what starts it.
+
+        The two sheet-flow switches decide what one scan acquires:
+        combining wins over everything, and the feeder switch (which only
+        means something on a feeder source, so a flatbed grays it out and
+        ignores it) chooses between the whole stack and a single page.
+        The trigger rows below decide what may start a scan without the
+        Scan button; the window persists both immediately and
+        re-evaluates the idle sensor poller.
+        """
+        self.behaviour_group = Adw.PreferencesGroup(title=_("Behaviour"))
+        self._collect_row = Adw.SwitchRow(
+            title=_("Combine scans"),
+            subtitle=_(
+                "Keep adding scans to the same document until you press "
+                "Finish (status bar)"
+            ),
+            active=False,
+        )
+        self.behaviour_group.add(self._collect_row)
+        self._stack_row = Adw.SwitchRow(
+            title=_("Scan all pages in feeder"),
+            subtitle=_(
+                "Scan every page in the document feeder. Turn off to scan one page."
+            ),
+            active=True,
+        )
+        self.behaviour_group.add(self._stack_row)
+        self._update_stack_row()
+        self._insert_row = Adw.SwitchRow(
+            title=_("Auto-start when paper is inserted"),
+            subtitle=_("Begin scanning when a sheet is loaded into the idle scanner"),
+            active=False,
+        )
+        self._insert_row.connect(
+            "notify::active",
+            lambda *_a: self._on_insert_to_scan(bool(self._insert_row.get_active())),
+        )
+        self.behaviour_group.add(self._insert_row)
+        self._button_row = Adw.ComboRow(
+            title=_("Hardware scan button"),
+            subtitle=_("What a press of the scanner's button starts"),
+        )
+        self._button_row.set_model(
+            Gtk.StringList.new([label for label, _value in HARDWARE_BUTTON_ACTIONS])
+        )
+        self._button_row.connect("notify::selected", self._on_button_pref_changed)
+        self.behaviour_group.add(self._button_row)
 
     def _on_button_pref_changed(self, *_args: object) -> None:
         """Forward the button-mapping choice to the window."""
@@ -393,7 +401,8 @@ class ScanForm:
         self._name_row = Adw.ActionRow(title=_("File name"))
         self._name_entry = Gtk.Entry(
             placeholder_text=DEFAULT_OUTPUT_TEMPLATE,
-            width_chars=24,
+            width_chars=32,
+            hexpand=True,
             valign=Gtk.Align.CENTER,
         )
         self._name_entry.connect("changed", self._update_name_preview)
@@ -408,12 +417,8 @@ class ScanForm:
         self._name_row.add_css_class("joined-below")
         self.output_group.add(self._name_row)
 
-        hint_row = Adw.ActionRow()
+        hint_row = Adw.ActionRow(title=_("Placeholders"))
         hint = Gtk.Label(
-            label=_(
-                "Placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} {device}\n"
-                "{N} (auto-no., 0-padded, repeatable)"
-            ),
             xalign=1.0,
             wrap=True,
             justify=Gtk.Justification.RIGHT,
@@ -421,22 +426,28 @@ class ScanForm:
             hexpand=True,
             valign=Gtk.Align.CENTER,
         )
+        # The tokens themselves render monospaced (they are literal input,
+        # not prose); the explanation next to them stays in the body font.
+        hint.set_markup(
+            _(
+                "<tt>{YYYY} {MM} {DD} {hh} {mm} {ss} {device}</tt>\n"
+                "<tt>{N}</tt> (auto-no., 0-padded, repeatable)"
+            )
+        )
         hint.add_css_class("caption")
         hint.add_css_class("dim-label")
         hint_row.add_suffix(hint)
         hint_row.add_css_class("joined-above")
-        hint_row.add_css_class("joined-below")
         self.output_group.add(hint_row)
 
-        preview_row = Adw.ActionRow()
-        self._name_preview = Gtk.Label(
-            xalign=1.0, hexpand=True, valign=Gtk.Align.CENTER
+        preview_row = Adw.ActionRow(
+            title=_("Preview"), subtitle=_("Next file that will be written")
         )
-        self._name_preview.add_css_class("caption")
+        self._name_preview = Gtk.Label(xalign=1.0, valign=Gtk.Align.CENTER)
+        self._name_preview.add_css_class("monospace")
         self._name_preview.add_css_class("dim-label")
         self._name_preview.set_ellipsize(3)  # Pango.EllipsizeMode.END
         preview_row.add_suffix(self._name_preview)
-        preview_row.add_css_class("joined-above")
         self.output_group.add(preview_row)
 
     def _build_document_group(self) -> None:
@@ -582,19 +593,20 @@ class ScanForm:
         self.processing_group.add(self._deskew_row)
 
     def _equalize_form_rows(self) -> None:
-        """Lock Document and Processing to the same height, row by row.
+        """Lock Document and Behaviour to the same height, row by row.
 
-        Both cards have four rows; a vertical size group per cross-column
-        pair makes the sections end flush, with the resolution entry and
-        preset rows together exactly as tall as OCR language plus deskew.
-        The groups must outlive this method (widgets do not reference them).
+        Both cards have four rows and share a grid row in the two-column
+        layout; a vertical size group per cross-column pair makes them end
+        flush, with the resolution entry and preset rows together exactly
+        as tall as the two trigger rows. The groups must outlive this
+        method (widgets do not reference them).
         """
         self._row_size_groups: list[Gtk.SizeGroup] = []
         for left, right in (
-            (self._mode_row.row, self._blank_row),
-            (self._size_row, self._ocr_row),
-            (self._res_row, self._lang_row),
-            (self._chips_row, self._deskew_row),
+            (self._mode_row.row, self._collect_row),
+            (self._size_row, self._stack_row),
+            (self._res_row, self._insert_row),
+            (self._chips_row, self._button_row),
         ):
             size_group = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.VERTICAL)
             size_group.add_widget(left)
@@ -827,7 +839,7 @@ class ScanForm:
             counter=1,
             device=self._device_for_preview() or "device",
         )
-        self._name_preview.set_text(_("Preview: %(name)s") % {"name": example})
+        self._name_preview.set_text(example)
 
     def _current_template(self) -> str:
         """Return the filename template from the form, with .pdf ensured."""
@@ -961,6 +973,7 @@ class ScanForm:
         self._refresh_btn.set_sensitive(not running)
         for group in (
             self.scanner_group,
+            self.behaviour_group,
             self.document_group,
             self.processing_group,
             self.output_group,

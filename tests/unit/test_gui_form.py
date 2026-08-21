@@ -440,3 +440,48 @@ def test_scanner_trigger_rows_fire_and_round_trip() -> None:
     form.apply_settings({"hardware_button": "bogus"})  # tolerant fallback
     assert form.persisted_values()["hardware_button"] == "off"
     assert form.persisted_values()["insert_to_scan"] is False
+
+
+def test_behaviour_group_holds_the_flow_and_trigger_rows_in_order() -> None:
+    events = Events()
+    form = _form(events)
+
+    titles = []
+    child = form.behaviour_group.get_first_child()
+    while child is not None:  # walk into the group's list box
+        titles.extend(_row_titles(child))
+        child = child.get_next_sibling()
+
+    assert titles == [
+        "Combine scans",
+        "Scan all pages in feeder",
+        "Auto-start when paper is inserted",
+        "Hardware scan button",
+    ]
+    # The Scanner group keeps the device, the source and the actions.
+    assert form._scan_row.get_parent() is not None
+
+
+def _row_titles(widget: Any) -> list[str]:
+    titles: list[str] = []
+    if widget.__class__.__name__ in ("SwitchRow", "ComboRow", "ActionRow"):
+        title = widget.get_title()
+        if title:
+            return [title]
+    child = widget.get_first_child()
+    while child is not None:
+        titles.extend(_row_titles(child))
+        child = child.get_next_sibling()
+    return titles
+
+
+def test_the_preview_row_shows_the_bare_next_file_name() -> None:
+    events = Events()
+    form = _form(events, device="epsonds:net:10.0.0.2")
+    form.apply_settings({})
+
+    # The row carries the wording; the value is the file name alone, so
+    # it reads as a monospace value next to its label.
+    assert form._name_preview.get_text().endswith(".pdf")
+    assert "Preview" not in form._name_preview.get_text()
+    assert "monospace" in form._name_preview.get_css_classes()

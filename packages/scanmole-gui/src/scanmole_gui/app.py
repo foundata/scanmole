@@ -400,12 +400,14 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             (self._form.scanner_group, 0, 0, 1),
             (self._form.output_group, 1, 0, 1),
             (self._form.document_group, 0, 1, 1),
-            (self._form.processing_group, 1, 1, 1),
-            (self._log.widget, 0, 2, 2),  # spans both columns
+            (self._form.behaviour_group, 1, 1, 1),
+            (self._form.processing_group, 0, 2, 1),
+            (self._log.widget, 1, 2, 1),
         )
         sections_narrow = (
             self._form.scanner_group,
             self._form.output_group,
+            self._form.behaviour_group,
             self._form.document_group,
             self._form.processing_group,
             self._log.widget,
