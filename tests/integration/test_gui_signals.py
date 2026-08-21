@@ -265,3 +265,106 @@ def test_sigint_kills_a_hung_advisory_discovery_child(tmp_path: Path) -> None:
     assert "PROBE:0" in result.stdout  # the hung advisory child was running
     assert "EXIT:130" in result.stdout
     assert "ORPHAN:1" in result.stdout  # and it did not survive the GUI
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_shutdown_after_a_close_never_persists_again() -> None:
+    # The normal close already persisted against the live window; the
+    # application shutdown signal then reaches the destroyed window via
+    # the app's own reference, where get_width() reads 0. A second
+    # persist there overwrote the just-saved geometry with zeros.
+    from scanmole_gui.advisory import AdvisoryCommands
+    from scanmole_gui.app import MainWindow
+
+    class Runner:
+        def __init__(self) -> None:
+            self.shutdowns = 0
+
+        def shutdown(self) -> None:
+            self.shutdowns += 1
+
+    class Window:
+        _shutdown_now = MainWindow._shutdown_now
+
+        def __init__(self) -> None:
+            self.persisted = 0
+            self._released = True  # the close request already ran
+            self._advisory = AdvisoryCommands()
+            self._runner: Runner | None = Runner()
+
+        def _persist_ui_state(self) -> None:
+            self.persisted += 1
+
+        def _stop_sensor_polling(self) -> None:
+            pass
+
+    window = Window()
+    window._shutdown_now()  # type: ignore[misc]
+
+    assert window.persisted == 0  # the close-time snapshot stays untouched
+    assert window._runner is not None and window._runner.shutdowns == 1
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_persist_skips_geometry_of_a_destroyed_window() -> None:
+    # Defense in depth for any future path: a window reporting a
+    # nonpositive size is gone or unrealized, and neither its size nor
+    # its maximized flag is real state worth storing.
+    from scanmole_gui.app import MainWindow
+
+    class Window:
+        _persist_ui_state = MainWindow._persist_ui_state
+
+        def __init__(self, width: int) -> None:
+            self._settings: dict[str, object] = {"window_width": 900}
+            self.saved = 0
+            self.width = width
+
+        def is_maximized(self) -> bool:
+            return False
+
+        def get_width(self) -> int:
+            return self.width
+
+        def get_height(self) -> int:
+            return 700 if self.width else 0
+
+        def _save_settings(self) -> None:
+            self.saved += 1
+
+    dead = Window(width=0)
+    dead._persist_ui_state()  # type: ignore[misc]
+    assert dead._settings["window_width"] == 900  # zeros never overwrite
+    assert "window_maximized" not in dead._settings
+
+    live = Window(width=1050)
+    live._persist_ui_state()  # type: ignore[misc]
+    assert live._settings["window_width"] == 1050
+    assert live.saved == 1
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_restored_window_size_heals_persisted_zeros() -> None:
+    # Files written by the destroyed-window persist carry zeros; they
+    # must restore the default instead of a zero-sized window.
+    from scanmole_gui.app import DEFAULT_WINDOW_SIZE, restored_window_size
+
+    assert restored_window_size({}) == DEFAULT_WINDOW_SIZE
+    assert (
+        restored_window_size({"window_width": 0, "window_height": 0})
+        == DEFAULT_WINDOW_SIZE
+    )
+    assert (
+        restored_window_size({"window_width": 900, "window_height": 0})
+        == DEFAULT_WINDOW_SIZE
+    )
+    assert restored_window_size({"window_width": 900, "window_height": 700}) == (
+        900,
+        700,
+    )

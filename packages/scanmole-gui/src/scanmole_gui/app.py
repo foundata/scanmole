@@ -186,6 +186,20 @@ def as_int(value: object, fallback: int) -> int:
     return value if isinstance(value, int) else fallback
 
 
+def restored_window_size(settings: dict[str, object]) -> tuple[int, int]:
+    """The window size to restore: the persisted one when sane, else default.
+
+    Settings files written by a persist that raced the window's
+    destruction carry zeros; a nonpositive size must restore the default
+    instead of a zero-sized window.
+    """
+    width = as_int(settings.get("window_width"), DEFAULT_WINDOW_SIZE[0])
+    height = as_int(settings.get("window_height"), DEFAULT_WINDOW_SIZE[1])
+    if width <= 0 or height <= 0:
+        return DEFAULT_WINDOW_SIZE
+    return width, height
+
+
 # PyGObject has no stubs, so the GTK base class is Any; subclassing it is the
 # GTK boundary that cannot be typed.
 class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
@@ -200,10 +214,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._settings = load_settings(CONFIG_FILE)
 
         # Restore the remembered window geometry.
-        self.set_default_size(
-            as_int(self._settings.get("window_width"), DEFAULT_WINDOW_SIZE[0]),
-            as_int(self._settings.get("window_height"), DEFAULT_WINDOW_SIZE[1]),
-        )
+        self.set_default_size(*restored_window_size(self._settings))
         if bool(self._settings.get("window_maximized")):
             self.maximize()
 
@@ -1247,12 +1258,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
         The form is snapshotted here as well as at scan start, so changed
         values (mode, resolution, page size, ...) survive a restart even
-        when no scan ran in between.
+        when no scan ran in between. A window reporting a nonpositive
+        size is destroyed or unrealized; nothing it reports is real
+        state, so its geometry is not stored.
         """
-        self._settings["window_maximized"] = bool(self.is_maximized())
-        if not self.is_maximized():
-            self._settings["window_width"] = int(self.get_width())
-            self._settings["window_height"] = int(self.get_height())
+        if self.get_width() > 0 and self.get_height() > 0:
+            self._settings["window_maximized"] = bool(self.is_maximized())
+            if not self.is_maximized():
+                self._settings["window_width"] = int(self.get_width())
+                self._settings["window_height"] = int(self.get_height())
         self._save_settings()
 
     def _shutdown_now(self) -> None:
@@ -1261,9 +1275,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         The main loop is ending, so GLib sources scheduled from here on
         (the cancel path's KILL escalation and exit polling) may never
         fire. The runner's synchronous barrier TERMs, KILLs and reaps the
-        scan's process group on this thread instead.
+        scan's process group on this thread instead. After a normal close
+        the window is already released and destroyed: the close request
+        persisted against the live widgets, and reading the dead window
+        here would overwrite that snapshot with zeros and defaults.
         """
-        self._persist_ui_state()
+        if not self._released:
+            self._persist_ui_state()
         self._released = True
         self._stop_sensor_polling()
         self._advisory.cancel_pending(close=True)
