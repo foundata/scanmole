@@ -293,3 +293,69 @@ def test_failure_carries_the_last_error_message() -> None:
     assert outcome.exit_code == 3
     assert outcome.error_message == "sane_start failed"
     assert outcome.pages == 1  # falls back to the pages seen
+
+
+def test_waiting_event_marks_the_session_waiting() -> None:
+    state = SessionState(drop_blanks=True)
+
+    state, update = apply_event(
+        state,
+        {
+            "event": "waiting",
+            "sheets": 2,
+            "pages": 4,
+            "idle_seconds": 900,
+            "manual_trigger": True,
+        },
+    )
+
+    assert update is Update.WAITING
+    assert state.waiting
+    assert state.waiting_sheets == 2
+    assert state.waiting_manual is True
+
+
+def test_waiting_fields_parse_defensively() -> None:
+    # Malformed fields must not crash or mislead: the sheet count falls
+    # back to the locally counted pages, and only a real True is manual.
+    state = SessionState(drop_blanks=True, pages=3)
+
+    state, update = apply_event(
+        state,
+        {"event": "waiting", "sheets": "two", "manual_trigger": "yes"},
+    )
+
+    assert update is Update.WAITING
+    assert state.waiting
+    assert state.waiting_sheets == 3
+    assert state.waiting_manual is False
+
+
+def test_the_next_page_clears_the_waiting_state() -> None:
+    state = SessionState(drop_blanks=True, pages=1)
+    state, _ = apply_event(state, {"event": "waiting", "sheets": 1})
+
+    state, update = apply_event(state, {"event": "page", "n": 2, "blank": False})
+
+    assert update is Update.PAGE
+    assert not state.waiting
+
+
+def test_scan_done_clears_the_waiting_state() -> None:
+    state = SessionState(drop_blanks=True, pages=2)
+    state, _ = apply_event(state, {"event": "waiting", "sheets": 2})
+
+    state, _ = apply_event(state, {"event": "scan_done", "total": 2, "kept": 2})
+
+    assert not state.waiting
+
+
+def test_unknown_event_kinds_stay_ignored_around_waiting() -> None:
+    # The tolerance that lets old GUIs survive the new waiting event must
+    # itself keep holding for whatever kind comes next.
+    state = SessionState(drop_blanks=True)
+
+    state, update = apply_event(state, {"event": "totally-new-kind", "x": 1})
+
+    assert update is Update.NONE
+    assert state == SessionState(drop_blanks=True)

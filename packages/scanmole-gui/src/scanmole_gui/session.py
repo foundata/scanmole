@@ -47,6 +47,13 @@ class SessionState:
     result_pages: int | None = None
     error_message: str | None = None
     cancelled: bool = False
+    waiting: bool = False
+    """Whether a collect run is between segments, waiting for a sheet."""
+    waiting_sheets: int = 0
+    """Physical sheets acquired when the wait began (from the event)."""
+    waiting_manual: bool = False
+    """Whether continuing needs an explicit trigger (Next Sheet or the
+    hardware button) rather than feeder paper presence."""
 
 
 class Update(enum.Enum):
@@ -58,6 +65,7 @@ class Update(enum.Enum):
     SCAN_DONE = "scan-done"
     OCR_STARTED = "ocr-started"
     ERROR = "error"
+    WAITING = "waiting"
 
 
 def apply_event(state: SessionState, event: Event) -> tuple[SessionState, Update]:
@@ -86,6 +94,7 @@ def apply_event(state: SessionState, event: Event) -> tuple[SessionState, Update
                 state,
                 pages=number,
                 blanks=state.blanks + (1 if blank else 0),
+                waiting=False,  # a delivered page means the wait ended
             ),
             Update.PAGE,
         )
@@ -93,8 +102,21 @@ def apply_event(state: SessionState, event: Event) -> tuple[SessionState, Update
         total = _count(event.get("total"), state.pages)
         kept = _count(event.get("kept"), max(state.pages - state.blanks, 0))
         return (
-            replace(state, total=total, kept=min(kept, total)),
+            replace(state, total=total, kept=min(kept, total), waiting=False),
             Update.SCAN_DONE,
+        )
+    if kind == "waiting":
+        # A collect run reached an acquisition boundary and actually waits.
+        # Defensive parsing as everywhere: the sheet count falls back to
+        # the locally counted pages, and only a real True means manual.
+        return (
+            replace(
+                state,
+                waiting=True,
+                waiting_sheets=_count(event.get("sheets"), state.pages),
+                waiting_manual=event.get("manual_trigger") is True,
+            ),
+            Update.WAITING,
         )
     if kind == "ocr_start":
         return state, Update.OCR_STARTED

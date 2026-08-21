@@ -85,9 +85,15 @@ class ScanRunner:
         self._proc: subprocess.Popen[bytes] | None = None
         self._watcher: threading.Thread | None = None
         self._cancelling = False
+        self._control_lock = threading.Lock()
+        self._stdin_closed = False
+        self._finished = False
 
     def start(self, argv: list[str], cwd: Path) -> None:
         """Spawn the subprocess and begin supervising it.
+
+        The child gets a stdin pipe as the collect control channel; a run
+        that never reads it (any non-collect flow) is unaffected.
 
         Raises:
             OSError: If spawning fails; no callbacks fire in that case.
@@ -95,12 +101,69 @@ class ScanRunner:
         self._proc = subprocess.Popen(
             argv,
             cwd=str(cwd),
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,  # own process group -> clean killpg
         )
+        self._stdin_closed = False
+        self._finished = False
         self._watcher = threading.Thread(target=self._supervise, daemon=True)
         self._watcher.start()
+
+    def next_sheet(self) -> bool:
+        """Ask a waiting collect run to acquire the next sheet.
+
+        Returns ``False`` (never raises) when the run already finished,
+        exited, or the control channel is closed.
+        """
+        if self._finished:
+            return False
+        return self._write_control("next")
+
+    def finish(self) -> bool:
+        """Ask a collect run to finalize after the current segment.
+
+        Idempotent: only the first successful call writes; later calls
+        (and calls on a dead or closed channel) return ``False``.
+        """
+        if self._finished:
+            return False
+        if not self._write_control("done"):
+            return False
+        self._finished = True
+        return True
+
+    def _write_control(self, command: str) -> bool:
+        """Write and flush exactly one command line; ``False`` on failure."""
+        with self._control_lock:
+            proc = self._proc
+            if (
+                proc is None
+                or proc.stdin is None
+                or proc.poll() is not None
+                or self._stdin_closed
+            ):
+                return False
+            try:
+                proc.stdin.write(f"{command}\n".encode("ascii"))
+                proc.stdin.flush()
+            except (OSError, ValueError):
+                return False
+            return True
+
+    def _close_stdin(self) -> None:
+        """Close the control channel deterministically (repeat-safe)."""
+        with self._control_lock:
+            if self._stdin_closed:
+                return
+            self._stdin_closed = True
+            proc = self._proc
+            if proc is not None and proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except OSError:  # pragma: no cover -- close cannot really fail
+                    pass
 
     def poll(self) -> int | None:
         """The child's exit code, or ``None`` while it is alive."""
@@ -119,6 +182,7 @@ class ScanRunner:
             return False
         self._cancelling = True
         self._signal_group(signal.SIGTERM)
+        self._close_stdin()  # no control command can race the teardown
         self._timer(SIGKILL_GRACE_SECONDS, self._escalate)
         return True
 
@@ -142,6 +206,7 @@ class ScanRunner:
         if proc is None:
             return
         self._cancelling = True  # a later cancel() must not re-arm timers
+        self._close_stdin()
         limit = self._drain_timeout if drain is None else drain
         deadline = time.monotonic() + grace + limit
         if proc.poll() is None:
@@ -214,6 +279,7 @@ class ScanRunner:
                 pump.join(timeout=max(0.0, finish - time.monotonic()))
         os.close(wake_read)
         os.close(wake_write)
+        self._close_stdin()
         self._close_streams(proc)  # deterministic teardown, nothing for the GC
         self._schedule(lambda: self._on_exit(self, exit_code))
 

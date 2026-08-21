@@ -398,3 +398,89 @@ def test_shutdown_after_a_finished_run_is_a_noop(
 
     assert time.monotonic() - started < 2.0  # nothing left to wait for
     assert harness.exits == [0]
+
+
+_ECHO_CONTROL = (
+    "import sys\n"
+    "for line in sys.stdin:\n"
+    "    print('got ' + line.strip(), flush=True)\n"
+    "    if line.strip() == 'done':\n"
+    "        sys.exit(0)\n"
+)
+
+
+def _wait_for_line(harness: _Harness, line: str) -> None:
+    deadline = time.monotonic() + _DEADLINE
+    while time.monotonic() < deadline:
+        with harness.lock:
+            if line in harness.stdout:
+                return
+        time.sleep(0.02)
+    raise AssertionError(f"line {line!r} never arrived")
+
+
+def test_control_commands_reach_the_child_line_by_line(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    harness.runner.start(_argv(_ECHO_CONTROL), tmp_path)
+
+    assert harness.runner.next_sheet()
+    _wait_for_line(harness, "got next")
+    assert harness.runner.finish()
+    assert harness.exited.wait(_DEADLINE)
+    assert harness.exits == [0]
+    assert "got done" in harness.stdout
+
+
+def test_finish_is_idempotent(harness: _Harness, tmp_path: Path) -> None:
+    harness.runner.start(_argv(_ECHO_CONTROL), tmp_path)
+
+    assert harness.runner.finish()
+    assert not harness.runner.finish()  # the duplicate writes nothing
+    assert not harness.runner.next_sheet()  # nothing follows a finish
+    assert harness.exited.wait(_DEADLINE)
+    assert harness.stdout.count("got done") == 1
+
+
+def test_control_writes_after_exit_return_false(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    harness.runner.start(_argv("pass"), tmp_path)
+    assert harness.exited.wait(_DEADLINE)
+
+    assert not harness.runner.next_sheet()
+    assert not harness.runner.finish()
+
+
+def test_cancel_closes_the_control_channel(harness: _Harness, tmp_path: Path) -> None:
+    # After a cancel no control command may race the teardown: the write
+    # is refused instead of hitting a closing pipe.
+    harness.runner.start(_argv("import time\ntime.sleep(30)\n"), tmp_path)
+
+    assert harness.runner.cancel()
+    assert not harness.runner.next_sheet()
+    assert not harness.runner.finish()
+    harness.fire_timers()
+    assert harness.exited.wait(_DEADLINE)
+
+
+def test_a_broken_control_pipe_returns_false_not_raises(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    # The child closes its stdin immediately; once the kernel buffer hits
+    # the closed end, the write must fail soft (False), never raise.
+    code = "import os, time\nos.close(0)\ntime.sleep(30)\n"
+    harness.runner.start(_argv(code), tmp_path)
+    deadline = time.monotonic() + _DEADLINE
+    delivered = True
+    while time.monotonic() < deadline:
+        delivered = harness.runner.next_sheet()
+        if not delivered:
+            break
+        time.sleep(0.02)
+
+    assert delivered is False
+
+    harness.runner.cancel()
+    harness.fire_timers()
+    assert harness.exited.wait(_DEADLINE)
