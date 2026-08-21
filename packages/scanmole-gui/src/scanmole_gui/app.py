@@ -104,6 +104,17 @@ traffic (sane-airscan emits mDNS/WSD queries): cheap at this cadence, so no
 backoff; a suspended (minimized/hidden) window defers instead.
 """
 
+DEVICE_PRESENCE_POLL_SECONDS = 45
+"""Pause between presence checks while a scanner is on the list.
+
+The same passive discovery, run forever: it notices the selected device
+disappearing (standby, unplugged) and additional scanners appearing,
+without ever opening a device (an open would keep it from sleeping).
+Presence changes are rare, so the cadence is slower than the empty-list
+pickup, and an unchanged result is applied quietly: no widget writes,
+no renegotiation, no result-bar repaint.
+"""
+
 SENSOR_POLL_SECONDS = 2.5
 """Pause between completed idle sensor polls.
 
@@ -459,22 +470,30 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     # ----------------------------------------------------------- devices
 
-    def _refresh_devices(self, *_args: object) -> None:
-        """Start an asynchronous ``scanmole --list-devices`` in a worker thread."""
+    def _refresh_devices(self, *_args: object, quiet: bool = False) -> None:
+        """Start an asynchronous ``scanmole --list-devices`` in a worker thread.
+
+        A quiet search (the background presence check) paints nothing at
+        start and applies an unchanged result without touching a widget;
+        only a real change goes through the full apply.
+        """
         if self._runner is not None or self._searching:
             return
         self._searching = True
-        self._form.set_refresh_enabled(False)
-        # No Start during a search: the CLI would only repeat the same
-        # discovery and fail without a scanner.
-        self._update_scan_enabled()
-        self._form.set_device_subtitle(_("Searching for scanners…"))
+        if not quiet:
+            self._form.set_refresh_enabled(False)
+            # No Start during a search: the CLI would only repeat the same
+            # discovery and fail without a scanner.
+            self._update_scan_enabled()
+            self._form.set_device_subtitle(_("Searching for scanners…"))
         prefer = self._selected_device() or str(self._settings.get("device") or "")
         self._advisory.spawn_worker(
-            self._devices_worker, prefer, self._advisory.generation
+            self._devices_worker, prefer, self._advisory.generation, quiet
         )
 
-    def _devices_worker(self, prefer: str, generation: int) -> None:
+    def _devices_worker(
+        self, prefer: str, generation: int, quiet: bool = False
+    ) -> None:
         """Worker thread: query devices and hand results back to the main loop.
 
         The parsing and the compatibility decision live in the GTK-free
@@ -530,7 +549,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                 self._gate.release()
             # Always reaches the main loop, or the refresh button and the
             # "Searching for scanners…" subtitle would stay stuck forever.
-            GLib.idle_add(self._apply_devices, devices, err, prefer, generation)
+            GLib.idle_add(self._apply_devices, devices, err, prefer, generation, quiet)
 
     def _probe_cli_version(
         self, adopt: Callable[[subprocess.Popen[bytes]], None]
@@ -547,9 +566,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         return parse_version(result.stdout)
 
     def _apply_devices(
-        self, devices: list[dict[str, str]], err: str, prefer: str, generation: int
+        self,
+        devices: list[dict[str, str]],
+        err: str,
+        prefer: str,
+        generation: int,
+        quiet: bool = False,
     ) -> None:
-        """Populate the device dropdown on the main loop."""
+        """Populate the device dropdown on the main loop.
+
+        A quiet search whose result matches the current list applies
+        nothing: no model rebuild (which would fire ``notify::selected``
+        and renegotiate), no subtitle, no result-bar repaint. The routine
+        presence check therefore costs no visible churn.
+        """
         if self._released or generation != self._advisory.generation:
             # The search was cancelled underneath this result (a scan took
             # the device, the window is closing): stay quiet, but never
@@ -558,65 +588,97 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             return
         self._searching = False
         self._form.set_refresh_enabled(self._runner is None)
-        if self._cli_blocked and err and not self._version_alert_shown:
-            self._version_alert_shown = True
-            self._alert(_("Incompatible scanmole CLI"), err)
-        self._devices = devices
-        names = [display_name(device, _("Unknown device")) for device in devices]
-        # The row itself must stay sensitive either way: disabling it would
-        # also disable its refresh-button suffix, leaving no way to rescan.
-        if devices:
-            index = next(
-                (i for i, d in enumerate(devices) if d.get("device") == prefer), 0
+        unchanged = (
+            quiet and not err and not self._cli_blocked and devices == self._devices
+        )
+        if not unchanged:
+            if self._cli_blocked and err and not self._version_alert_shown:
+                self._version_alert_shown = True
+                self._alert(_("Incompatible scanmole CLI"), err)
+            # The selected device dropping off the list is worth a word:
+            # standby and unplugging look identical here, and the poll
+            # reselects it silently once it reappears.
+            vanished = (
+                bool(prefer)
+                and any(d.get("device") == prefer for d in self._devices)
+                and not any(d.get("device") == prefer for d in devices)
             )
-            self._form.show_devices(names, index)
-            self._form.set_device_subtitle("")
-            self._form.set_device_tooltip(devices[index].get("device", ""))
-            self._set_result_bar(
-                "idle",
-                ngettext("Found %d scanner.", "Found %d scanners.", len(devices))
-                % len(devices),
-            )
-            self._start_negotiation()
-        else:
-            self._form.show_devices(names, 0)
-            self._form.set_device_tooltip("")
-            self._form.set_device_subtitle(
-                err or _("No scanners found — connect one and press Refresh.")
-            )
-            self._set_result_bar("idle", _("No scanners found."))
-            if err:
-                self._append_log(f"[gui] {err}")
-        # Plug-in-after-start flow: keep looking on our own while nothing was
-        # found, stop the moment something is (issue #7). One-shot chain, so
-        # the pause counts from the end of a search, not its start; every
-        # completed search (auto or manual refresh) restarts the countdown.
-        # Re-evaluated only now: a scan needs an actual selected device,
-        # which the empty result above never provides.
+            self._devices = devices
+            names = [display_name(device, _("Unknown device")) for device in devices]
+            # The row itself must stay sensitive either way: disabling it
+            # would also disable its refresh-button suffix, leaving no way
+            # to rescan.
+            if devices:
+                index = next(
+                    (i for i, d in enumerate(devices) if d.get("device") == prefer), 0
+                )
+                self._form.show_devices(names, index)
+                self._form.set_device_subtitle("")
+                self._form.set_device_tooltip(devices[index].get("device", ""))
+                self._set_result_bar(
+                    "idle",
+                    ngettext("Found %d scanner.", "Found %d scanners.", len(devices))
+                    % len(devices),
+                )
+                self._start_negotiation()
+            else:
+                self._form.show_devices(names, 0)
+                self._form.set_device_tooltip("")
+                self._form.set_device_subtitle(
+                    err
+                    or (
+                        _("Scanner disappeared — in standby or disconnected?")
+                        if vanished
+                        else _("No scanners found — connect one and press Refresh.")
+                    )
+                )
+                self._set_result_bar("idle", _("No scanners found."))
+                if err:
+                    self._append_log(f"[gui] {err}")
+            if vanished:
+                self._append_log(
+                    "[gui] the selected scanner disappeared (standby or disconnected?)"
+                )
+        # Presence polling never stops (issue #7 covered plugging in after
+        # start; the same passive search now also notices standby and new
+        # devices): fast pickup while the list is empty, a slow quiet check
+        # while a device is present. One-shot chain, so the pause counts
+        # from the end of a search, and every completed search (auto or
+        # manual refresh) restarts the countdown. The predicate is
+        # re-evaluated only now: a scan needs an actual selected device.
         self._update_scan_enabled()
         if self._device_poll_id is not None:
             GLib.source_remove(self._device_poll_id)
             self._device_poll_id = None
-        if not devices and not self._cli_blocked:
+        if not self._cli_blocked:
             self._device_poll_id = GLib.timeout_add_seconds(
-                DEVICE_POLL_SECONDS, self._poll_devices
+                DEVICE_POLL_SECONDS if not devices else DEVICE_PRESENCE_POLL_SECONDS,
+                self._poll_devices,
             )
 
     def _poll_devices(self) -> bool:
-        """One automatic re-search attempt; only while the list is empty."""
+        """One automatic quiet re-search: pickup while empty, presence check.
+
+        Discovery stays passive (no device is opened), so this can run
+        forever without keeping a scanner from its standby.
+        """
         self._device_poll_id = None
-        if self._devices or self._cli_blocked:
+        if self._cli_blocked:
             return bool(GLib.SOURCE_REMOVE)
         suspended = self.is_suspended() if hasattr(self, "is_suspended") else False
         if self._runner is not None or self._searching or suspended:
             # Transient: defer a full interval; the next completed search
             # would reschedule anyway, this covers scans and hidden windows.
             self._device_poll_id = GLib.timeout_add_seconds(
-                DEVICE_POLL_SECONDS, self._poll_devices
+                DEVICE_POLL_SECONDS
+                if not self._devices
+                else DEVICE_PRESENCE_POLL_SECONDS,
+                self._poll_devices,
             )
             return bool(GLib.SOURCE_REMOVE)
-        self._append_log("[gui] no scanner yet — searching again")
-        self._refresh_devices()
+        if not self._devices:
+            self._append_log("[gui] no scanner yet — searching again")
+        self._refresh_devices(quiet=True)
         return bool(GLib.SOURCE_REMOVE)  # the search result schedules the next
 
     def _selected_device(self) -> str | None:

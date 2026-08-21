@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -368,3 +369,179 @@ def test_restored_window_size_heals_persisted_zeros() -> None:
         900,
         700,
     )
+
+
+class _FakeGLib:
+    """Records timeout scheduling; sources fire only when told to."""
+
+    SOURCE_REMOVE = False
+    SOURCE_CONTINUE = True
+
+    def __init__(self) -> None:
+        self.timeouts: list[tuple[int, object]] = []
+        self.removed: list[int] = []
+        self._next = 1
+
+    def timeout_add_seconds(self, seconds: int, callback: object) -> int:
+        self.timeouts.append((seconds, callback))
+        self._next += 1
+        return self._next - 1
+
+    def source_remove(self, source: int) -> None:
+        self.removed.append(source)
+
+
+class _PresenceForm:
+    """Records every widget write of the device-apply path."""
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[str, object]] = []
+        self.scan_enabled: bool | None = None
+
+    def set_refresh_enabled(self, enabled: bool) -> None:
+        pass  # idempotent re-enable; not a visible write
+
+    def show_devices(self, names: list[str], index: int) -> None:
+        self.writes.append(("devices", tuple(names)))
+
+    def set_device_subtitle(self, text: str) -> None:
+        self.writes.append(("subtitle", text))
+
+    def set_device_tooltip(self, text: str) -> None:
+        self.writes.append(("tooltip", text))
+
+    def set_scan_enabled(self, enabled: bool) -> None:
+        self.scan_enabled = enabled
+
+
+def _presence_window(
+    monkeypatch: pytest.MonkeyPatch, devices: list[dict[str, str]]
+) -> Any:
+    from scanmole_gui.advisory import AdvisoryCommands
+    from scanmole_gui.app import MainWindow
+
+    fake_glib = _FakeGLib()
+    monkeypatch.setattr("scanmole_gui.app.GLib", fake_glib)
+
+    class Window:
+        _apply_devices = MainWindow._apply_devices
+        _poll_devices = MainWindow._poll_devices
+        _scan_allowed = MainWindow._scan_allowed
+        _update_scan_enabled = MainWindow._update_scan_enabled
+
+        def __init__(self) -> None:
+            self.glib = fake_glib
+            self._released = False
+            self._advisory = AdvisoryCommands()
+            self._searching = True
+            self._runner = None
+            self._cli_blocked = False
+            self._version_alert_shown = False
+            self._selection_block_reason = None
+            self._devices = list(devices)
+            self._device_poll_id: int | None = None
+            self._form = _PresenceForm()
+            self.bars: list[str] = []
+            self.logs: list[str] = []
+            self.negotiations = 0
+            self.refreshes: list[bool] = []
+
+        def _selected_device(self) -> str | None:
+            return self._devices[0]["device"] if self._devices else None
+
+        def _set_result_bar(self, state: str, title: str, detail: str = "") -> None:
+            self.bars.append(title)
+
+        def _append_log(self, text: str) -> None:
+            self.logs.append(text)
+
+        def _start_negotiation(self) -> None:
+            self.negotiations += 1
+
+        def _schedule_sensor_poll(self) -> None:
+            pass
+
+        def _refresh_devices(self, *, quiet: bool = False) -> None:
+            self.refreshes.append(quiet)
+
+        def is_suspended(self) -> bool:
+            return False
+
+    return Window()
+
+
+_IX100 = {"device": "fujitsu:ScanSnap iX100:X", "vendor": "FUJITSU", "model": "iX100"}
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_a_quiet_unchanged_presence_check_touches_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _presence_window(monkeypatch, [_IX100])
+
+    window._apply_devices([dict(_IX100)], "", _IX100["device"], 0, True)
+
+    assert window._form.writes == []  # no model rebuild, no subtitle
+    assert window.bars == []  # no "Found 1 scanner." repaint
+    assert window.negotiations == 0  # no probe churn
+    assert window._searching is False
+    # The next presence check is armed at the slow cadence.
+    assert [seconds for seconds, _cb in window.glib.timeouts] == [45]
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_a_changed_list_still_applies_fully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _presence_window(monkeypatch, [_IX100])
+    second = {"device": "epsonds:net:host", "vendor": "EPSON", "model": "DS"}
+
+    window._apply_devices([dict(_IX100), second], "", _IX100["device"], 0, True)
+
+    assert ("devices", ("FUJITSU iX100", "EPSON DS")) in [
+        (kind, value) for kind, value in window._form.writes
+    ]
+    assert window.negotiations == 1
+    assert len(window._devices) == 2
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_a_vanished_selected_device_is_reported_and_gates_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _presence_window(monkeypatch, [_IX100])
+
+    window._apply_devices([], "", _IX100["device"], 0, True)
+
+    subtitles = [value for kind, value in window._form.writes if kind == "subtitle"]
+    assert subtitles and "disconnected" in str(subtitles[-1])
+    assert any("disappeared" in line for line in window.logs)
+    assert window._form.scan_enabled is False  # no device: Start gated
+    # An empty list polls at the fast pickup cadence again.
+    assert [seconds for seconds, _cb in window.glib.timeouts] == [15]
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_the_poll_keeps_running_while_a_device_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _presence_window(monkeypatch, [_IX100])
+    window._searching = False
+
+    window._poll_devices()
+
+    assert window.refreshes == [True]  # quiet presence check, not a UI search
+
+    blocked = _presence_window(monkeypatch, [_IX100])
+    blocked._searching = False
+    blocked._cli_blocked = True
+    blocked._poll_devices()
+    assert blocked.refreshes == []  # a blocked CLI stops the polling

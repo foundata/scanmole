@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: scanmole\n"
 "Report-Msgid-Bugs-To: office@foundata.com\n"
-"POT-Creation-Date: 2026-08-21 19:42+0200\n"
+"POT-Creation-Date: 2026-08-22 00:42+0200\n"
 "PO-Revision-Date: 2026-07-26 06:15+0200\n"
 "Last-Translator: foundata <office@foundata.com>\n"
 "Language-Team: German\n"
@@ -16,32 +16,32 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: src/scanmole_gui/app.py:262 src/scanmole_gui/dialogs.py:55
+#: src/scanmole_gui/app.py:284 src/scanmole_gui/dialogs.py:55
 msgid "Settings"
 msgstr "Einstellungen"
 
-#: src/scanmole_gui/app.py:263 src/scanmole_gui/dialogs.py:187
+#: src/scanmole_gui/app.py:285 src/scanmole_gui/dialogs.py:187
 msgid "About ScanMole"
 msgstr "Über ScanMole"
 
-#: src/scanmole_gui/app.py:267
+#: src/scanmole_gui/app.py:289
 msgid "Main menu"
 msgstr "Hauptmenü"
 
-#: src/scanmole_gui/app.py:323
+#: src/scanmole_gui/app.py:345
 #, python-format
 msgid "ScanMole %(version)s by <a href=\"%(url)s\">foundata</a>"
 msgstr "ScanMole %(version)s von <a href=\"%(url)s\">foundata</a>"
 
-#: src/scanmole_gui/app.py:329 src/scanmole_gui/dialogs.py:210
+#: src/scanmole_gui/app.py:351 src/scanmole_gui/dialogs.py:210
 msgid "Easy document scanning for Linux"
 msgstr "Einfaches Scannen von Dokumenten unter Linux"
 
-#: src/scanmole_gui/app.py:460 src/scanmole_gui/form.py:196
+#: src/scanmole_gui/app.py:488 src/scanmole_gui/form.py:196
 msgid "Searching for scanners…"
 msgstr "Suche nach Scannern…"
 
-#: src/scanmole_gui/app.py:498
+#: src/scanmole_gui/app.py:526
 #, python-format
 msgid ""
 "Incompatible scanmole CLI: found version %(found)s, but this GUI needs "
@@ -50,71 +50,75 @@ msgstr ""
 "Inkompatibles scanmole-CLI: Version %(found)s gefunden, aber diese "
 "Oberfläche benötigt %(needed)s."
 
-#: src/scanmole_gui/app.py:501 src/scanmole_gui/dialogs.py:218
+#: src/scanmole_gui/app.py:529 src/scanmole_gui/dialogs.py:218
 msgid "unknown"
 msgstr "unbekannt"
 
-#: src/scanmole_gui/app.py:505
+#: src/scanmole_gui/app.py:533
 #, python-format
 msgid "Device search failed (exit %(code)d)."
 msgstr "Gerätesuche fehlgeschlagen (Exit-Code %(code)d)."
 
-#: src/scanmole_gui/app.py:509
+#: src/scanmole_gui/app.py:537
 msgid "scanmole CLI not found — install it or add it to PATH."
 msgstr ""
 "scanmole wurde nicht gefunden – bitte installieren oder zu PATH hinzufügen."
 
-#: src/scanmole_gui/app.py:511
+#: src/scanmole_gui/app.py:539
 msgid "Device search timed out."
 msgstr "Zeitüberschreitung bei der Gerätesuche."
 
-#: src/scanmole_gui/app.py:513
+#: src/scanmole_gui/app.py:541
 #, python-format
 msgid "Device search failed: %(error)s"
 msgstr "Gerätesuche fehlgeschlagen: %(error)s"
 
-#: src/scanmole_gui/app.py:516
+#: src/scanmole_gui/app.py:544
 msgid "Device search failed unexpectedly."
 msgstr "Gerätesuche unerwartet fehlgeschlagen."
 
-#: src/scanmole_gui/app.py:552
+#: src/scanmole_gui/app.py:595
 msgid "Incompatible scanmole CLI"
 msgstr "Inkompatibles scanmole-CLI"
 
-#: src/scanmole_gui/app.py:554
+#: src/scanmole_gui/app.py:605
 msgid "Unknown device"
 msgstr "Unbekanntes Gerät"
 
-#: src/scanmole_gui/app.py:566
+#: src/scanmole_gui/app.py:618
 #, python-format
 msgid "Found %d scanner."
 msgid_plural "Found %d scanners."
 msgstr[0] "%d Scanner gefunden."
 msgstr[1] "%d Scanner gefunden."
 
-#: src/scanmole_gui/app.py:574
+#: src/scanmole_gui/app.py:628
+msgid "Scanner disappeared — in standby or disconnected?"
+msgstr "Scanner verschwunden – im Standby oder getrennt?"
+
+#: src/scanmole_gui/app.py:630
 msgid "No scanners found — connect one and press Refresh."
 msgstr "Keine Scanner gefunden – bitte anschließen und erneut suchen."
 
-#: src/scanmole_gui/app.py:576
+#: src/scanmole_gui/app.py:633
 msgid "No scanners found."
 msgstr "Keine Scanner gefunden."
 
-#: src/scanmole_gui/app.py:717
+#: src/scanmole_gui/app.py:789
 #, python-format
 msgid "Not available on this scanner: %s"
 msgstr "Auf diesem Scanner nicht verfügbar: %s"
 
-#: src/scanmole_gui/app.py:908
+#: src/scanmole_gui/app.py:980
 #, python-format
 msgid "Selected option not available: %s"
 msgstr "Gewählte Option nicht verfügbar: %s"
 
-#: src/scanmole_gui/app.py:1004
+#: src/scanmole_gui/app.py:1076
 msgid "Reset Settings?"
 msgstr "Einstellungen zurücksetzen?"
 
-#: src/scanmole_gui/app.py:1006
+#: src/scanmole_gui/app.py:1078
 msgid ""
 "All GUI options return to their defaults. Scanned files and folders on disk "
 "are not touched."
@@ -122,56 +126,56 @@ msgstr ""
 "Alle GUI-Optionen werden auf ihre Standardwerte zurückgesetzt. Gescannte "
 "Dateien und Ordner auf der Festplatte bleiben unberührt."
 
-#: src/scanmole_gui/app.py:1010 src/scanmole_gui/dialogs.py:283
+#: src/scanmole_gui/app.py:1082 src/scanmole_gui/dialogs.py:283
 #: src/scanmole_gui/form.py:266
 msgid "Cancel"
 msgstr "Abbrechen"
 
-#: src/scanmole_gui/app.py:1011
+#: src/scanmole_gui/app.py:1083
 msgid "Reset"
 msgstr "Zurücksetzen"
 
-#: src/scanmole_gui/app.py:1037
+#: src/scanmole_gui/app.py:1115
 msgid "Settings reset to defaults."
 msgstr "Einstellungen auf Standardwerte zurückgesetzt."
 
-#: src/scanmole_gui/app.py:1062
+#: src/scanmole_gui/app.py:1140
 msgid "Cannot Create Output Folder"
 msgstr "Ausgabeordner kann nicht erstellt werden"
 
-#: src/scanmole_gui/app.py:1114
+#: src/scanmole_gui/app.py:1192
 msgid "Could Not Start scanmole"
 msgstr "scanmole konnte nicht gestartet werden"
 
-#: src/scanmole_gui/app.py:1115
+#: src/scanmole_gui/app.py:1193
 msgid "Install the scanmole CLI somewhere in PATH."
 msgstr "Installieren Sie das scanmole-Kommandozeilenprogramm in PATH."
 
-#: src/scanmole_gui/app.py:1119
+#: src/scanmole_gui/app.py:1197
 msgid "Starting scanmole…"
 msgstr "scanmole wird gestartet…"
 
-#: src/scanmole_gui/app.py:1178
+#: src/scanmole_gui/app.py:1256
 msgid "Finishing…"
 msgstr "Wird abgeschlossen…"
 
-#: src/scanmole_gui/app.py:1205
+#: src/scanmole_gui/app.py:1283
 msgid "Scan cancelled."
 msgstr "Scan abgebrochen."
 
-#: src/scanmole_gui/app.py:1216
+#: src/scanmole_gui/app.py:1294
 msgid "Finished."
 msgstr "Fertig."
 
-#: src/scanmole_gui/app.py:1231
+#: src/scanmole_gui/app.py:1309
 msgid "Cancelling…"
 msgstr "Wird abgebrochen…"
 
-#: src/scanmole_gui/app.py:1306
+#: src/scanmole_gui/app.py:1391
 msgid "OK"
 msgstr "OK"
 
-#: src/scanmole_gui/app.py:1311
+#: src/scanmole_gui/app.py:1396
 msgid "Choose Output Folder"
 msgstr "Ausgabeordner wählen"
 
