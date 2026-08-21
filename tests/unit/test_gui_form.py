@@ -318,11 +318,15 @@ def test_menu_overrides_are_one_shot_and_leave_the_form_alone() -> None:
     form = _form(events)
     popover = form._scan_btn.get_popover()
     box = popover.get_child()
-    buttons = []
+    children = []
     child = box.get_first_child()
     while child is not None:
-        buttons.append(child)
+        children.append(child)
         child = child.get_next_sibling()
+    # A dim caption marks every action below as one-shot, GNOME-style.
+    assert children[0].__class__.__name__ == "Label"
+    assert children[0].get_text() == "For this scan only"
+    buttons = [c for c in children if c.__class__.__name__ == "Button"]
     assert len(buttons) == len(FLOW_ACTIONS)
 
     for button in buttons:

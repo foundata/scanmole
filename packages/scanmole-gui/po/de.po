@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: scanmole\n"
 "Report-Msgid-Bugs-To: office@foundata.com\n"
-"POT-Creation-Date: 2026-08-21 06:24+0200\n"
+"POT-Creation-Date: 2026-08-21 18:37+0200\n"
 "PO-Revision-Date: 2026-07-26 06:15+0200\n"
 "Last-Translator: foundata <office@foundata.com>\n"
 "Language-Team: German\n"
@@ -139,39 +139,39 @@ msgstr "Einstellungen auf Standardwerte zurückgesetzt."
 msgid "Cannot Create Output Folder"
 msgstr "Ausgabeordner kann nicht erstellt werden"
 
-#: src/scanmole_gui/app.py:1105
+#: src/scanmole_gui/app.py:1114
 msgid "Could Not Start scanmole"
 msgstr "scanmole konnte nicht gestartet werden"
 
-#: src/scanmole_gui/app.py:1106
+#: src/scanmole_gui/app.py:1115
 msgid "Install the scanmole CLI somewhere in PATH."
 msgstr "Installieren Sie das scanmole-Kommandozeilenprogramm in PATH."
 
-#: src/scanmole_gui/app.py:1110
+#: src/scanmole_gui/app.py:1119
 msgid "Starting scanmole…"
 msgstr "scanmole wird gestartet…"
 
-#: src/scanmole_gui/app.py:1169
+#: src/scanmole_gui/app.py:1178
 msgid "Finishing…"
 msgstr "Wird abgeschlossen…"
 
-#: src/scanmole_gui/app.py:1196
+#: src/scanmole_gui/app.py:1205
 msgid "Scan cancelled."
 msgstr "Scan abgebrochen."
 
-#: src/scanmole_gui/app.py:1207
+#: src/scanmole_gui/app.py:1216
 msgid "Finished."
 msgstr "Fertig."
 
-#: src/scanmole_gui/app.py:1222
+#: src/scanmole_gui/app.py:1231
 msgid "Cancelling…"
 msgstr "Wird abgebrochen…"
 
-#: src/scanmole_gui/app.py:1297
+#: src/scanmole_gui/app.py:1306
 msgid "OK"
 msgstr "OK"
 
-#: src/scanmole_gui/app.py:1302
+#: src/scanmole_gui/app.py:1311
 msgid "Choose Output Folder"
 msgstr "Ausgabeordner wählen"
 
@@ -221,7 +221,8 @@ msgstr "Beim Einlegen von Papier starten"
 
 #: src/scanmole_gui/dialogs.py:76
 msgid "Begin scanning when a sheet is loaded into the idle scanner"
-msgstr "Startet einen Scan, sobald ein Blatt in den wartenden Scanner eingelegt wird"
+msgstr ""
+"Startet einen Scan, sobald ein Blatt in den wartenden Scanner eingelegt wird"
 
 #: src/scanmole_gui/dialogs.py:87
 msgid "Color scheme"
@@ -460,30 +461,34 @@ msgid "Wait for more sheets"
 msgstr "Auf weitere Blätter warten"
 
 #: src/scanmole_gui/form.py:223
-msgid "Keep collecting until you press Finish"
-msgstr "Sammelt Blätter, bis Sie auf Abschließen drücken"
+msgid "Makes Scan collect sheets until you press Finish"
+msgstr "Scannen sammelt dann Blätter, bis Sie auf Abschließen drücken"
 
 #: src/scanmole_gui/form.py:239
 msgid "Scan"
 msgstr "Scannen"
 
 #: src/scanmole_gui/form.py:247
-msgid "Scan with a different sheet flow"
-msgstr "Scan mit anderem Ablauf starten"
+msgid "Scan once with a different sheet flow"
+msgstr "Einmalig mit anderem Ablauf scannen"
 
-#: src/scanmole_gui/form.py:297
+#: src/scanmole_gui/form.py:281
+msgid "For this scan only"
+msgstr "Nur für diesen Scan"
+
+#: src/scanmole_gui/form.py:310
 msgid "Output"
 msgstr "Ausgabe"
 
-#: src/scanmole_gui/form.py:298
+#: src/scanmole_gui/form.py:311
 msgid "Folder"
 msgstr "Ordner"
 
-#: src/scanmole_gui/form.py:322
+#: src/scanmole_gui/form.py:335
 msgid "File name"
 msgstr "Dateiname"
 
-#: src/scanmole_gui/form.py:349
+#: src/scanmole_gui/form.py:362
 #, python-brace-format
 msgid ""
 "Placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} {device}\n"
@@ -492,81 +497,81 @@ msgstr ""
 "Platzhalter: {YYYY} {MM} {DD} {hh} {mm} {ss} {device}\n"
 "{N} (Auto-Nr., 0-padded, wiederholbar)"
 
-#: src/scanmole_gui/form.py:373
+#: src/scanmole_gui/form.py:386
 msgid "Document"
 msgstr "Dokument"
 
-#: src/scanmole_gui/form.py:376
+#: src/scanmole_gui/form.py:389
 msgid "Color mode"
 msgstr "Farbmodus"
 
-#: src/scanmole_gui/form.py:384
+#: src/scanmole_gui/form.py:397
 msgid "Page size"
 msgstr "Seitengröße"
 
-#: src/scanmole_gui/form.py:402
+#: src/scanmole_gui/form.py:415
 msgid "Resolves ambiguous automatic page sizes (A4 and Letter often both fit)."
 msgstr ""
 "Löst mehrdeutige automatische Seitengrößen auf (oft passen A4 und Letter "
 "beide)."
 
-#: src/scanmole_gui/form.py:405
+#: src/scanmole_gui/form.py:418
 msgid "Automatic size preference"
 msgstr "Präferenz für automatische Seitengröße"
 
-#: src/scanmole_gui/form.py:417
+#: src/scanmole_gui/form.py:430
 msgid "Resolution"
 msgstr "Auflösung"
 
-#: src/scanmole_gui/form.py:485
+#: src/scanmole_gui/form.py:498
 msgid "Processing"
 msgstr "Verarbeitung"
 
-#: src/scanmole_gui/form.py:487
+#: src/scanmole_gui/form.py:500
 msgid "Skip blank pages"
 msgstr "Leere Seiten überspringen"
 
-#: src/scanmole_gui/form.py:488
+#: src/scanmole_gui/form.py:501
 msgid "Removes pages detected as empty"
 msgstr "Als leer erkannte Seiten entfernen"
 
-#: src/scanmole_gui/form.py:493
+#: src/scanmole_gui/form.py:506
 msgid "OCR"
 msgstr "Texterkennung (OCR)"
 
-#: src/scanmole_gui/form.py:494
+#: src/scanmole_gui/form.py:507
 msgid "Make the PDF text-searchable (PDF/A)"
 msgstr "Durchsuchbare PDF erzeugen (PDF/A)"
 
-#: src/scanmole_gui/form.py:499
+#: src/scanmole_gui/form.py:512
 msgid "OCR Language"
 msgstr "OCR-Sprache"
 
-#: src/scanmole_gui/form.py:507
+#: src/scanmole_gui/form.py:520
 msgid "Deskew"
 msgstr "Begradigen"
 
-#: src/scanmole_gui/form.py:508
+#: src/scanmole_gui/form.py:521
 msgid "Correct skewed scanned pages"
 msgstr "Korrigiert die Ausrichtung schief gescannter Seiten."
 
-#: src/scanmole_gui/form.py:605
+#: src/scanmole_gui/form.py:618
 msgid "Add more…"
 msgstr "Weitere hinzufügen…"
 
-#: src/scanmole_gui/form.py:727
+#: src/scanmole_gui/form.py:740
 #, python-format
 msgid ""
 "%(dpi)d dpi · scans at %(effective)d dpi · approx. %(size).1f MB per page"
 msgstr ""
 "%(dpi)d dpi · scannt mit %(effective)d dpi · ca. %(size).1f MB pro Seite"
 
-#: src/scanmole_gui/form.py:739
+#: src/scanmole_gui/form.py:752
 #, python-format
 msgid "%(dpi)d dpi · approx. %(size).1f MB per page"
 msgstr "%(dpi)d dpi · ca. %(size).1f MB pro Seite"
 
-#: src/scanmole_gui/form.py:758
+#: src/scanmole_gui/form.py:771
 #, python-format
 msgid "Preview: %(name)s"
 msgstr "Vorschau: %(name)s"

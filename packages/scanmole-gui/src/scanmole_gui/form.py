@@ -220,7 +220,7 @@ class ScanForm:
         # until Finish. Applies to feeders and flatbeds alike.
         self._collect_row = Adw.SwitchRow(
             title=_("Wait for more sheets"),
-            subtitle=_("Keep collecting until you press Finish"),
+            subtitle=_("Makes Scan collect sheets until you press Finish"),
             active=False,
         )
         self.scanner_group.add(self._collect_row)
@@ -244,7 +244,7 @@ class ScanForm:
         self._scan_btn.connect(
             "clicked", lambda *_a: self._on_scan(self.sheet_flow_value())
         )
-        self._scan_btn.set_dropdown_tooltip(_("Scan with a different sheet flow"))
+        self._scan_btn.set_dropdown_tooltip(_("Scan once with a different sheet flow"))
         self._scan_btn.set_popover(self._build_flow_popover())
         self._scan_row = Gtk.ListBoxRow(
             child=self._scan_btn, activatable=False, selectable=False
@@ -274,6 +274,19 @@ class ScanForm:
             margin_bottom=4,
         )
         popover = Gtk.Popover(child=box)
+        # A section caption, GNOME-style: one dim line says that every
+        # action below applies to a single run, instead of decorating
+        # each label with the same suffix.
+        caption = Gtk.Label(
+            label=_("For this scan only"),
+            xalign=0.0,
+            margin_start=10,
+            margin_end=10,
+            margin_bottom=2,
+        )
+        caption.add_css_class("caption")
+        caption.add_css_class("dim-label")
+        box.append(caption)
         for label, value in FLOW_ACTIONS:
             button = Gtk.Button(label=label)
             button.add_css_class("flat")

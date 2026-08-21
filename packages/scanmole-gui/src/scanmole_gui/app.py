@@ -1080,6 +1080,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._flow.reset()
         self._save_settings()
 
+        persisted_flow = self._form.sheet_flow_value()
+        if flow != persisted_flow:
+            # A one-shot override (menu action or a mapped hardware
+            # button): say so at the moment a user might wonder whether
+            # they just changed a setting.
+            self._append_log(
+                f"[gui] one-time sheet flow for this run: {flow} "
+                f"(the saved setting stays {persisted_flow})"
+            )
         request = self._form.scan_request(
             self._selected_device(), folder, sheet_flow=flow
         )

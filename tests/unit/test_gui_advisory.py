@@ -174,6 +174,9 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
         def folder(self) -> str:
             return "/tmp"
 
+        def sheet_flow_value(self) -> str:
+            return "stack"
+
         def scan_request(
             self, device: object, folder: object, sheet_flow: str = "stack"
         ) -> Any:
@@ -273,6 +276,9 @@ def test_no_advisory_child_survives_into_the_runner(
     class Form:
         def folder(self) -> str:
             return "/tmp"
+
+        def sheet_flow_value(self) -> str:
+            return "stack"
 
         def scan_request(
             self, device: object, folder: object, sheet_flow: str = "stack"
