@@ -185,6 +185,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="scan mode (default: %(default)s)",
     )
     parser.add_argument(
+        "--sheet-flow",
+        choices=["single", "stack", "collect"],
+        default="stack",
+        help=(
+            "how many physical sheets this run acquires: 'single' scans one "
+            "sheet, 'stack' drains the loaded feeder once, 'collect' keeps "
+            "the run open across scanner reloads until 'done' arrives on "
+            "standard input (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "-r",
         "--resolution",
         type=_positive_int,
@@ -438,6 +449,10 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         raise InputError(
             "--from-images does not scan; do not combine it with -d/--device"
         )
+    if args.from_images is not None and args.sheet_flow != "stack":
+        raise InputError(
+            "--from-images performs no acquisition; --sheet-flow does not apply"
+        )
     if args.output and args.outbase:
         raise InputError("give either -o/--output or a positional OUTBASE, not both")
     if args.lineart_threshold != "auto" and not 0 <= args.lineart_threshold < 1:
@@ -489,6 +504,7 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         keep_images=keep_images,
         output=_resolve_output(args, device),
         lineart_threshold=args.lineart_threshold,
+        sheet_flow=args.sheet_flow,
     )
 
 

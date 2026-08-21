@@ -13,6 +13,13 @@ LineartThreshold = float | Literal["auto"]
 AutoSizePreference = Literal["iso", "north-american"]
 """Paper family that wins content-only near-ties in automatic page sizing."""
 
+SheetFlow = Literal["single", "stack", "collect"]
+"""How many physical sheets one run acquires.
+
+``single`` scans one sheet, ``stack`` (the default) drains the loaded
+feeder once, ``collect`` keeps one run open across multiple scanner
+invocations until the collection is explicitly finished."""
+
 PAGE_SIZES: dict[str, tuple[float, float]] = {
     # name -> (width_mm, height_mm)
     "a4": (210.0, 297.0),
@@ -56,3 +63,5 @@ class ScanConfig:
     auto_size_preference: AutoSizePreference = "iso"
     """Tie-break family for ambiguous automatic page sizes (never a
     restriction: either family stays selectable by the evidence)."""
+    sheet_flow: SheetFlow = "stack"
+    """How many physical sheets this run acquires (see :data:`SheetFlow`)."""

@@ -512,6 +512,54 @@ def test_argument_errors_precede_the_dependency_check(
     assert main(["-o", str(tmp_path / "a.pdf"), "positional-base"]) == 2
 
 
+def test_sheet_flow_defaults_to_stack(tmp_path: Path) -> None:
+    config = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+
+    assert config.sheet_flow == "stack"
+
+
+@pytest.mark.parametrize("flow", ["single", "stack", "collect"])
+def test_sheet_flow_accepts_each_value(tmp_path: Path, flow: str) -> None:
+    config = _build_config(
+        _parse(["--sheet-flow", flow, "-o", str(tmp_path / "a.pdf")])
+    )
+
+    assert config.sheet_flow == flow
+
+
+def test_sheet_flow_rejects_unknown_values(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        _parse(["--sheet-flow", "batch"])
+
+    assert "--sheet-flow" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flow", ["single", "collect"])
+def test_from_images_rejects_a_non_default_sheet_flow(
+    tmp_path: Path, flow: str
+) -> None:
+    # --from-images performs no acquisition, so a sheet flow can never apply;
+    # a usage error beats silently ignoring the request.
+    args = _parse(
+        ["--from-images", "a.png", "--sheet-flow", flow, "-o", str(tmp_path / "a.pdf")]
+    )
+
+    with pytest.raises(InputError, match="--sheet-flow"):
+        _build_config(args)
+
+
+def test_from_images_sheet_flow_conflict_never_reaches_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _never_discover(monkeypatch)
+
+    exit_code = main(
+        ["--from-images", "a.png", "--sheet-flow", "collect", "-o", str(tmp_path / "a")]
+    )
+
+    assert exit_code == 2
+
+
 def test_from_images_never_discovers_a_scanner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
