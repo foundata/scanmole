@@ -35,6 +35,7 @@ from gi.repository import (  # noqa: E402  # after require_version
 
 # The GUI holds no pipeline logic; the pure naming helper is imported only so
 # the live filename preview matches what the CLI will produce.
+from scanmole.config import SheetFlow  # noqa: E402  # a pure type alias
 from scanmole.external import run_command  # noqa: E402  # supervised capture
 from scanmole.negotiation import (  # noqa: E402
     ADVISORY_PROBE_TIMEOUT_SECONDS,
@@ -324,7 +325,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         self._log = LogView()
         self._status = ResultBar(
-            on_show=self._show_in_folder, on_open=self._open_output
+            on_show=self._show_in_folder,
+            on_open=self._open_output,
+            on_next_sheet=self._on_next_sheet,
+            on_finish=self._on_finish_collect,
         )
 
         toolbar.add_bottom_bar(self._status.widget)
@@ -670,22 +674,29 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """A visible-but-unavailable choice was clicked: explain, keep state."""
         self._set_result_bar("idle", _("Not available on this scanner: %s") % reason)
 
-    def _update_scan_enabled(self) -> None:
+    def _scan_allowed(self) -> bool:
         """The one Start predicate.
 
         A scan needs an idle runner, a driveable CLI, an available saved
         selection and an actually selected device outside a running
         search; anything else launches work that can only fail. Advisory
         probes stay out of the predicate on purpose: Start cancels and
-        joins them itself, so they never gate the button.
+        joins them itself, so they never gate the button. Every trigger
+        (the primary click, a menu override, a hardware button, an
+        insert-to-scan edge) must consult this predicate, never widget
+        sensitivity.
         """
-        self._form.set_scan_enabled(
+        return (
             self._runner is None
             and not self._cli_blocked
             and self._selection_block_reason is None
             and not self._searching
             and self._selected_device() is not None
         )
+
+    def _update_scan_enabled(self) -> None:
+        """Mirror the Start predicate onto the primary action."""
+        self._form.set_scan_enabled(self._scan_allowed())
 
     def _update_selection_block(self) -> None:
         """Disable Start while the active saved choice is unavailable.
@@ -823,8 +834,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     # ----------------------------------------------------------- scanning
 
-    def _on_scan_clicked(self, *_args: object) -> None:
-        """Validate the output folder and launch the scan subprocess."""
+    def _on_scan_clicked(self, flow: SheetFlow = "stack") -> None:
+        """Validate the output folder and launch the scan subprocess.
+
+        ``flow`` is the sheet flow of this one run: the primary click
+        passes the form's persisted choice, a menu override its one-shot
+        value. Neither touches the form state.
+        """
         if self._runner is not None:
             return
         folder = Path(self._form.folder()).expanduser()
@@ -848,7 +864,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._flow.reset()
         self._save_settings()
 
-        request = self._form.scan_request(self._selected_device(), folder)
+        request = self._form.scan_request(
+            self._selected_device(), folder, sheet_flow=flow
+        )
         self._session = SessionState(drop_blanks=request.drop_blanks)
         self._run_folder = folder
         self._last_output = None
@@ -914,7 +932,26 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             update,
             lambda title: self._set_result_bar("running", title),
             self._append_log,
+            set_waiting_bar=self._set_waiting_bar,
         )
+
+    def _set_waiting_bar(self, title: str, manual: bool) -> None:
+        """Show the collect wait: spinner text plus Finish (and Next Sheet)."""
+        self._set_result_bar("running", title)
+        self._status.show_wait_actions(next_sheet=manual)
+
+    def _on_next_sheet(self) -> None:
+        """The Next Sheet action: one control line to the collect run."""
+        runner = self._runner
+        if runner is None or not runner.next_sheet():
+            self._append_log("[gui] next-sheet request had no waiting scan")
+
+    def _on_finish_collect(self) -> None:
+        """The Finish action: finalize the collect run after this segment."""
+        runner = self._runner
+        if runner is not None and runner.finish():
+            self._set_result_bar("running", _("Finishing…"))
+            self._append_log("[gui] finish requested")
 
     def _on_stderr_line(self, runner: ScanRunner, line: str) -> None:
         """Append a raw stderr line to the log view."""

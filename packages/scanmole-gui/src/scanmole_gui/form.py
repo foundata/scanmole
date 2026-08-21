@@ -25,6 +25,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402  # after require_ver
 
 # The GUI holds no pipeline logic; the pure naming helper is imported only so
 # the live filename preview matches what the CLI will produce.
+from scanmole.config import SheetFlow  # noqa: E402  # a pure type alias
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
 from scanmole_gui.i18n import _  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES  # noqa: E402
@@ -97,6 +98,14 @@ LANGUAGES = (
     (_("German + English (deu+eng)"), "deu+eng"),
 )
 
+# The split-button menu's one-shot sheet flows: each starts a scan with
+# exactly this flow without touching the persisted form state.
+FLOW_ACTIONS: tuple[tuple[str, SheetFlow], ...] = (
+    (_("Scan one sheet"), "single"),
+    (_("Scan loaded stack"), "stack"),
+    (_("Collect sheets"), "collect"),
+)
+
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
 _SIZE_BASE_MB = {"lineart": 0.1, "lineart-auto": 0.1, "gray": 0.3, "color": 0.5}
@@ -132,7 +141,7 @@ class ScanForm:
         on_device_selected: Callable[[], None],
         on_source_changed: Callable[[bool], None],
         on_refresh: Callable[[], None],
-        on_scan: Callable[[], None],
+        on_scan: Callable[[SheetFlow], None],
         on_cancel: Callable[[], None],
         on_pick_folder: Callable[[], None],
         on_more_languages: Callable[[], None],
@@ -206,13 +215,23 @@ class ScanForm:
             self._source_changed,
             tooltips=SOURCE_TOOLTIPS,
         )
+        # The persisted sheet-flow choice: off scans the loaded stack (the
+        # historic behavior), on keeps collecting sheets across reloads
+        # until Finish. Applies to feeders and flatbeds alike.
+        self._collect_row = Adw.SwitchRow(
+            title=_("Wait for more sheets"),
+            subtitle=_("Keep collecting until you press Finish"),
+            active=False,
+        )
+        self.scanner_group.add(self._collect_row)
 
         # One primary action: Scan is the only accented control, full width at
         # the bottom of the Scanner group (mockup rule); Cancel swaps in while
         # a scan runs. The buttons are wrapped in list rows because a plain
         # widget given to PreferencesGroup.add() lands below the card, not in
-        # it.
-        self._scan_btn = Gtk.Button(
+        # it. A split button keeps that single accent while its menu offers
+        # the one-shot sheet-flow overrides.
+        self._scan_btn = Adw.SplitButton(
             margin_top=8, margin_bottom=8, margin_start=8, margin_end=8
         )
         self._scan_btn.set_child(
@@ -222,7 +241,11 @@ class ScanForm:
         )
         self._scan_btn.add_css_class("suggested-action")
         self._scan_btn.add_css_class("pill")
-        self._scan_btn.connect("clicked", lambda *_a: self._on_scan())
+        self._scan_btn.connect(
+            "clicked", lambda *_a: self._on_scan(self.sheet_flow_value())
+        )
+        self._scan_btn.set_dropdown_tooltip(_("Scan with a different sheet flow"))
+        self._scan_btn.set_popover(self._build_flow_popover())
         self._scan_row = Gtk.ListBoxRow(
             child=self._scan_btn, activatable=False, selectable=False
         )
@@ -241,6 +264,33 @@ class ScanForm:
             child=self._cancel_btn, activatable=False, selectable=False, visible=False
         )
         self.scanner_group.add(self._cancel_row)
+
+    def _build_flow_popover(self) -> Gtk.Popover:
+        """The split-button menu with the one-shot sheet-flow actions."""
+        box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=2,
+            margin_top=4,
+            margin_bottom=4,
+        )
+        popover = Gtk.Popover(child=box)
+        for label, value in FLOW_ACTIONS:
+            button = Gtk.Button(label=label)
+            button.add_css_class("flat")
+            button.connect("clicked", self._on_flow_override, value, popover)
+            box.append(button)
+        return popover
+
+    def _on_flow_override(
+        self, _button: Gtk.Button, value: SheetFlow, popover: Gtk.Popover
+    ) -> None:
+        """Start one scan with an explicit flow; persisted state untouched."""
+        popover.popdown()
+        self._on_scan(value)
+
+    def sheet_flow_value(self) -> SheetFlow:
+        """The persisted sheet flow a primary Scan click uses."""
+        return "collect" if self._collect_row.get_active() else "stack"
 
     def _build_output_group(self) -> None:
         """Build the Output group (folder, filename template)."""
@@ -755,6 +805,7 @@ class ScanForm:
         self.select_language(str(settings.get("lang", "deu+eng")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
+        self._collect_row.set_active(bool(settings.get("wait_for_more_sheets", False)))
         template = str(settings.get("filename_template") or "")
         self._name_entry.set_text(
             "" if template in ("", DEFAULT_OUTPUT_TEMPLATE) else template
@@ -780,12 +831,23 @@ class ScanForm:
             "deskew": self._deskew_row.get_active(),
             "lang": self.selected_language(),
             "skip_blanks": self._blank_row.get_active(),
+            "wait_for_more_sheets": self._collect_row.get_active(),
             "filename_template": self._current_template(),
             "folder": self._folder,
         }
 
-    def scan_request(self, device: str | None, folder: Path) -> ScanRequest:
-        """Snapshot the form into an immutable scan request."""
+    def scan_request(
+        self,
+        device: str | None,
+        folder: Path,
+        sheet_flow: SheetFlow = "stack",
+    ) -> ScanRequest:
+        """Snapshot the form into an immutable scan request.
+
+        ``sheet_flow`` comes from the trigger (the primary click's
+        persisted choice or a one-shot menu override), never from the
+        widgets, so an override can never mutate the form.
+        """
         return ScanRequest(
             device=device,
             source=self._source_row.value(),
@@ -798,6 +860,7 @@ class ScanForm:
                 == "north-american"
                 else "iso"
             ),
+            sheet_flow=sheet_flow,
             ocr=bool(self._ocr_row.get_active()),
             lang=self.selected_language(),
             deskew=bool(self._deskew_row.get_active()),

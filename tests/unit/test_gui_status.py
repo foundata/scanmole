@@ -118,3 +118,81 @@ def test_exit_failure_texts_and_success_summary() -> None:
 
     assert success_summary(1, 0) == "1 page saved"
     assert success_summary(4, 2) == "4 pages saved · 2 blanks skipped"
+
+
+def test_waiting_texts_use_sheet_singular_and_plural() -> None:
+    _init_adw()
+    from scanmole_gui.status import waiting_text
+
+    assert waiting_text(0, manual=False) == "Insert the first sheet."
+    assert waiting_text(1, manual=False) == "1 sheet scanned. Insert the next sheet."
+    assert waiting_text(3, manual=False) == "3 sheets scanned. Insert the next sheet."
+    assert (
+        waiting_text(1, manual=True)
+        == "1 sheet scanned. Place the next sheet, then press Next Sheet."
+    )
+    assert (
+        waiting_text(0, manual=True) == "Place the first sheet, then press Next Sheet."
+    )
+
+
+def test_render_waiting_routes_to_the_waiting_bar() -> None:
+    _init_adw()
+    from scanmole_gui.session import SessionState, Update
+    from scanmole_gui.status import render_session_update
+
+    waits: list[tuple[str, bool]] = []
+    state = SessionState(
+        drop_blanks=True, waiting=True, waiting_sheets=2, waiting_manual=True
+    )
+
+    render_session_update(
+        state,
+        Update.WAITING,
+        lambda title: None,
+        lambda text: None,
+        set_waiting_bar=lambda title, manual: waits.append((title, manual)),
+    )
+
+    assert waits == [
+        ("2 sheets scanned. Place the next sheet, then press Next Sheet.", True)
+    ]
+
+
+def test_wait_actions_show_disable_on_click_and_clear_on_state() -> None:
+    _init_adw()
+    from scanmole_gui.status import ResultBar
+
+    clicks: list[str] = []
+    bar = ResultBar(
+        on_show=lambda: None,
+        on_open=lambda: None,
+        on_next_sheet=lambda: clicks.append("next"),
+        on_finish=lambda: clicks.append("finish"),
+    )
+
+    bar.set_state("running", "waiting")
+    bar.show_wait_actions(next_sheet=True)
+    assert bar._next_btn.get_visible() and bar._finish_btn.get_visible()
+
+    bar._next_btn.emit("clicked")
+    assert clicks == ["next"]
+    assert bar._next_btn.get_sensitive() is False  # locked until the next update
+
+    bar.show_wait_actions(next_sheet=True)  # the next waiting event re-arms
+    assert bar._next_btn.get_sensitive() is True
+
+    bar._finish_btn.emit("clicked")
+    assert clicks == ["next", "finish"]
+    assert bar._finish_btn.get_sensitive() is False
+    assert bar._next_btn.get_sensitive() is False
+
+    bar.set_state("idle", "Ready.")  # any state change clears the actions
+    assert bar._next_btn.get_visible() is False
+    assert bar._finish_btn.get_visible() is False
+
+    # An automatic feeder wait shows Finish only.
+    bar.set_state("running", "waiting")
+    bar.show_wait_actions(next_sheet=False)
+    assert bar._next_btn.get_visible() is False
+    assert bar._finish_btn.get_visible() is True

@@ -359,3 +359,18 @@ def test_unknown_event_kinds_stay_ignored_around_waiting() -> None:
 
     assert update is Update.NONE
     assert state == SessionState(drop_blanks=True)
+
+
+def test_argv_omits_the_default_sheet_flow() -> None:
+    # The stack default keeps the historic command line byte for byte.
+    argv = request_argv(_request(), "scanmole")
+
+    assert "--sheet-flow" not in argv
+
+
+def test_argv_carries_a_non_default_sheet_flow() -> None:
+    single = request_argv(_request(sheet_flow="single"), "scanmole")
+    collect = request_argv(_request(sheet_flow="collect"), "scanmole")
+
+    assert single[single.index("--sheet-flow") + 1] == "single"
+    assert collect[collect.index("--sheet-flow") + 1] == "collect"

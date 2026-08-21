@@ -293,3 +293,61 @@ def test_folder_updates_the_button_label() -> None:
 
     form.set_folder(f"{home}/Scans")
     assert form.folder() == f"{home}/Scans"
+
+
+def test_primary_scan_uses_the_persisted_sheet_flow() -> None:
+    events = Events()
+    form = _form(events)
+
+    form._scan_btn.emit("clicked")
+    form._collect_row.set_active(True)
+    form._scan_btn.emit("clicked")
+
+    assert events.calls == [("scan", ("stack",)), ("scan", ("collect",))]
+
+
+def test_menu_overrides_are_one_shot_and_leave_the_form_alone() -> None:
+    from scanmole_gui.form import FLOW_ACTIONS
+
+    events = Events()
+    form = _form(events)
+    popover = form._scan_btn.get_popover()
+    box = popover.get_child()
+    buttons = []
+    child = box.get_first_child()
+    while child is not None:
+        buttons.append(child)
+        child = child.get_next_sibling()
+    assert len(buttons) == len(FLOW_ACTIONS)
+
+    for button in buttons:
+        button.emit("clicked")
+
+    flows = [args[0] for name, args in events.calls if name == "scan"]
+    assert flows == ["single", "stack", "collect"]
+    # The overrides never touched the persisted choice.
+    assert form._collect_row.get_active() is False
+    assert form.sheet_flow_value() == "stack"
+
+
+def test_collect_toggle_round_trips_through_settings() -> None:
+    events = Events()
+    form = _form(events)
+
+    form.apply_settings({"wait_for_more_sheets": True})
+    assert form.persisted_values()["wait_for_more_sheets"] is True
+    assert form.sheet_flow_value() == "collect"
+
+    form.apply_settings({})  # tolerant default
+    assert form.persisted_values()["wait_for_more_sheets"] is False
+
+
+def test_scan_request_takes_the_flow_from_the_trigger_not_the_widgets() -> None:
+    events = Events()
+    form = _form(events)
+    form._collect_row.set_active(True)  # the persisted choice says collect
+
+    request = form.scan_request("sane:0", Path("/tmp/out"), sheet_flow="single")
+
+    assert request.sheet_flow == "single"
+    assert form._collect_row.get_active() is True

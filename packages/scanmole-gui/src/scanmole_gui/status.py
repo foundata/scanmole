@@ -81,13 +81,42 @@ def success_summary(pages: int, blanks: int) -> str:
     return summary
 
 
+def waiting_text(sheets: int, manual: bool) -> str:
+    """The result-bar text for a collect run waiting between sheets.
+
+    Always phrased in physical sheets (the engine counts them with duplex
+    grouping); a duplex side count must never be presented as sheets.
+    """
+    if manual:
+        if not sheets:
+            return _("Place the first sheet, then press Next Sheet.")
+        return ngettext(
+            "%(count)d sheet scanned. Place the next sheet, then press Next Sheet.",
+            "%(count)d sheets scanned. Place the next sheet, then press Next Sheet.",
+            sheets,
+        ) % {"count": sheets}
+    if not sheets:
+        return _("Insert the first sheet.")
+    return ngettext(
+        "%(count)d sheet scanned. Insert the next sheet.",
+        "%(count)d sheets scanned. Insert the next sheet.",
+        sheets,
+    ) % {"count": sheets}
+
+
 def render_session_update(
     state: SessionState,
     update: Update,
     set_running_bar: Callable[[str], None],
     append_log: Callable[[str], None],
+    set_waiting_bar: Callable[[str, bool], None] | None = None,
 ) -> None:
-    """Render one session update into translated running-state text."""
+    """Render one session update into translated running-state text.
+
+    ``set_waiting_bar`` receives the waiting text plus whether continuing
+    needs a manual trigger (which shows the Next Sheet action); without
+    it the waiting text goes through ``set_running_bar``.
+    """
     if update is Update.STARTED:
         set_running_bar(_("Scanning\u2026"))
     elif update is Update.PAGE:
@@ -109,6 +138,12 @@ def render_session_update(
             )
             % {"kept": kept, "total": total}
         )
+    elif update is Update.WAITING:
+        text = waiting_text(state.waiting_sheets, state.waiting_manual)
+        if set_waiting_bar is not None:
+            set_waiting_bar(text, state.waiting_manual)
+        else:
+            set_running_bar(text)
     elif update is Update.OCR_STARTED:
         set_running_bar(_("Running OCR\u2026"))
     elif update is Update.ERROR:
@@ -176,9 +211,16 @@ class ResultBar:
     """The persistent bottom bar showing progress and the result."""
 
     def __init__(
-        self, on_show: Callable[[], None], on_open: Callable[[], None]
+        self,
+        on_show: Callable[[], None],
+        on_open: Callable[[], None],
+        on_next_sheet: Callable[[], None] = lambda: None,
+        on_finish: Callable[[], None] = lambda: None,
     ) -> None:
-        """Build the bar; ``on_show``/``on_open`` act on the finished PDF."""
+        """Build the bar; ``on_show``/``on_open`` act on the finished PDF,
+        ``on_next_sheet``/``on_finish`` drive a waiting collect run."""
+        self._on_next_sheet = on_next_sheet
+        self._on_finish = on_finish
         # Centered as a whole: with mixed icon, two-line text and buttons a
         # left-aligned bar never lines up optically with the groups above.
         self.widget = Gtk.Box(
@@ -218,6 +260,39 @@ class ResultBar:
         )
         self._open_btn.connect("clicked", lambda *_a: on_open())
         self.widget.append(self._open_btn)
+        # Collect-wait actions; hidden unless show_wait_actions() puts them
+        # up, and every set_state() clears them again.
+        self._next_btn = Gtk.Button(visible=False)
+        self._next_btn.set_child(
+            Adw.ButtonContent(icon_name="go-next-symbolic", label=_("Next Sheet"))
+        )
+        self._next_btn.connect("clicked", self._on_next_clicked)
+        self.widget.append(self._next_btn)
+        self._finish_btn = Gtk.Button(visible=False)
+        self._finish_btn.set_child(
+            Adw.ButtonContent(icon_name="object-select-symbolic", label=_("Finish"))
+        )
+        self._finish_btn.add_css_class("suggested-action")
+        self._finish_btn.connect("clicked", self._on_finish_clicked)
+        self.widget.append(self._finish_btn)
+
+    def _on_next_clicked(self, *_args: object) -> None:
+        """Request the next sheet; disabled until the next state update."""
+        self._next_btn.set_sensitive(False)
+        self._on_next_sheet()
+
+    def _on_finish_clicked(self, *_args: object) -> None:
+        """Request the finish; both actions lock until the run reacts."""
+        self._next_btn.set_sensitive(False)
+        self._finish_btn.set_sensitive(False)
+        self._on_finish()
+
+    def show_wait_actions(self, *, next_sheet: bool) -> None:
+        """Show Finish (plus Next Sheet for manual flows), re-enabled."""
+        self._next_btn.set_visible(next_sheet)
+        self._next_btn.set_sensitive(True)
+        self._finish_btn.set_visible(True)
+        self._finish_btn.set_sensitive(True)
 
     def set_state(
         self, state: str, title: str, detail: str = "", *, actions: bool = False
@@ -246,3 +321,5 @@ class ResultBar:
             self._icon.remove_css_class("success")
         self._show_btn.set_visible(actions)
         self._open_btn.set_visible(actions)
+        self._next_btn.set_visible(False)
+        self._finish_btn.set_visible(False)

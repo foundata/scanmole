@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from scanmole.config import AutoSizePreference
+from scanmole.config import AutoSizePreference, SheetFlow
 from scanmole_gui.modes import mode_argv
 
 
@@ -37,6 +37,9 @@ class ScanRequest:
     auto_size_preference: AutoSizePreference = "iso"
     """Family that wins ambiguous automatic sizes; irrelevant (and not
     emitted) for a fixed page size."""
+    sheet_flow: SheetFlow = "stack"
+    """How many physical sheets the run acquires. The default keeps the
+    historic command line and is not emitted."""
 
 
 def request_argv(request: ScanRequest, scanmole: str) -> list[str]:
@@ -46,6 +49,8 @@ def request_argv(request: ScanRequest, scanmole: str) -> list[str]:
         argv += ["-d", request.device]
     argv += ["--source", request.source]
     argv += mode_argv(request.mode)
+    if request.sheet_flow != "stack":
+        argv += ["--sheet-flow", request.sheet_flow]
     argv += ["-r", str(request.resolution), "--page-size", request.page_size]
     if request.page_size == "auto":
         argv += ["--auto-size-preference", request.auto_size_preference]

@@ -174,7 +174,9 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
         def folder(self) -> str:
             return "/tmp"
 
-        def scan_request(self, device: object, folder: object) -> Any:
+        def scan_request(
+            self, device: object, folder: object, sheet_flow: str = "stack"
+        ) -> Any:
             from scanmole_gui.request import ScanRequest
 
             return ScanRequest(
@@ -262,7 +264,9 @@ def test_no_advisory_child_survives_into_the_runner(
         def folder(self) -> str:
             return "/tmp"
 
-        def scan_request(self, device: object, folder: object) -> Any:
+        def scan_request(
+            self, device: object, folder: object, sheet_flow: str = "stack"
+        ) -> Any:
             return ScanRequest(
                 device=None,
                 source="adf-duplex",
