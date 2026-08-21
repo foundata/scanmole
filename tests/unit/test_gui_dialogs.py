@@ -40,6 +40,8 @@ class Recorder:
         self.pending = False
         self.install_ok = install_ok
         self.remove_ok = remove_ok
+        self.buttons: list[str] = []
+        self.inserts: list[bool] = []
 
     def dialog(self, *, installed: bool = False) -> Any:
         from scanmole_gui.dialogs import build_settings_dialog
@@ -48,8 +50,12 @@ class Recorder:
             current_scheme="",
             current_ui_language="",
             desktop_installed=installed,
+            current_hardware_button="off",
+            current_insert_to_scan=False,
             on_scheme_selected=self.schemes.append,
             on_ui_language_selected=self.ui_languages.append,
+            on_hardware_button_selected=self.buttons.append,
+            on_insert_to_scan_toggled=self.inserts.append,
             restart_pending=lambda: self.pending,
             on_restart=lambda: setattr(self, "restarts", self.restarts + 1),
             on_reset=lambda: setattr(self, "resets", self.resets + 1),
@@ -155,3 +161,23 @@ def test_more_languages_dialog_uses_the_entered_code() -> None:
     entry.set_text("ignored")
     dialog.emit("response", "cancel")
     assert used == ["spa+fra"]  # cancel never adopts
+
+
+def test_settings_dialog_scanner_trigger_preferences() -> None:
+    _init_adw()
+    from scanmole_gui.dialogs import HARDWARE_BUTTON_ACTIONS
+    from scanmole_gui.widgets import combo_select
+
+    recorder = Recorder()
+    dialog = recorder.dialog()
+    rows = _rows(dialog)
+
+    for value in ("same", "single", "collect", "off"):
+        combo_select(rows["Hardware scan button"], HARDWARE_BUTTON_ACTIONS, value)
+    assert recorder.buttons == ["same", "single", "collect", "off"]
+
+    insert_row = rows["Start when paper is inserted"]
+    assert insert_row.get_active() is False  # the documented default
+    insert_row.set_active(True)
+    insert_row.set_active(False)
+    assert recorder.inserts == [True, False]

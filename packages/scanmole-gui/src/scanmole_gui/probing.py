@@ -103,6 +103,10 @@ class ProbeCoordinator:
             return True, self._cache[request.key]
         return False, None
 
+    def busy(self) -> bool:
+        """Whether a probe is running or queued right now."""
+        return self._running is not None or self._queued is not None
+
     def forget(self, device: str) -> None:
         """Drop cached snapshots of one device (e.g. after a scan)."""
         self._cache = {
@@ -168,6 +172,11 @@ class CapabilityFlow:
         self.last_caps: dict[str, Capability] | None = None
         """The most recently applied snapshot (source-applied when the
         follow-up ran); feeds the window's resolution hint."""
+
+    @property
+    def probe_active(self) -> bool:
+        """Whether an advisory probe is running or queued (poller gating)."""
+        return self._coordinator.busy()
 
     def reset(self) -> None:
         """Forget every probe in flight, queued or cached.

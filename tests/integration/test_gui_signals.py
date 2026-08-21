@@ -125,6 +125,9 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
         def _persist_ui_state(self) -> None:
             self.persisted += 1
 
+        def _stop_sensor_polling(self) -> None:
+            pass
+
     window = Window()
     window._shutdown_now()  # type: ignore[misc]
     assert window.persisted == 1
@@ -153,6 +156,7 @@ def test_start_predicate_requires_a_device_outside_a_search() -> None:
 
     class Window:
         _update_scan_enabled = MainWindow._update_scan_enabled
+        _scan_allowed = MainWindow._scan_allowed
 
         def __init__(self) -> None:
             self._form = Form()
@@ -164,6 +168,9 @@ def test_start_predicate_requires_a_device_outside_a_search() -> None:
 
         def _selected_device(self) -> str | None:
             return self.device
+
+        def _schedule_sensor_poll(self) -> None:
+            pass
 
     window = Window()
     window._update_scan_enabled()  # type: ignore[misc]

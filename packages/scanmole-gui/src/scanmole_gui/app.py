@@ -43,6 +43,11 @@ from scanmole.negotiation import (  # noqa: E402
     assess_resolution,
     probe_snapshot,
 )
+from scanmole.sensors import (  # noqa: E402
+    SENSOR_PROBE_TIMEOUT_SECONDS,
+    SensorSnapshot,
+    assess_sensors,
+)
 from scanmole_gui import __version__, desktop  # noqa: E402
 from scanmole_gui.advisory import AdvisoryCommands  # noqa: E402
 from scanmole_gui.dialogs import (  # noqa: E402
@@ -65,6 +70,7 @@ from scanmole_gui.probing import (  # noqa: E402
 from scanmole_gui.protocol import RawLine, decode_stdout  # noqa: E402
 from scanmole_gui.request import request_argv  # noqa: E402
 from scanmole_gui.runner import SIGKILL_GRACE_SECONDS, ScanRunner  # noqa: E402
+from scanmole_gui.sensorwatch import AdvisoryGate, SensorArbiter  # noqa: E402
 from scanmole_gui.session import (  # noqa: E402
     SessionState,
     Update,
@@ -96,6 +102,15 @@ Counted from the end of the previous search, so slow probes never shrink
 the quiet gap. A probe costs a second or two of backend I/O plus discovery
 traffic (sane-airscan emits mDNS/WSD queries): cheap at this cadence, so no
 backoff; a suspended (minimized/hidden) window defers instead.
+"""
+
+SENSOR_POLL_SECONDS = 2.5
+"""Pause between completed idle sensor polls.
+
+A read costs well under a second on measured hardware and a button
+press latches until read there, so this cadence sees single presses
+without churning the device; the engine's own collect wait polls
+faster because a sheet is imminently expected there.
 """
 
 DEFAULT_WINDOW_SIZE = (645, 840)  # starts in the single-column layout
@@ -204,6 +219,14 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # results must no longer touch the widgets.
         self._released = False
         self._flow = CapabilityFlow()
+        # Idle hardware-sensor watching: the gate serializes advisory
+        # device access (discovery and probes have priority, sensor polls
+        # skip their tick), the arbiter turns reads into one trigger per
+        # fresh edge.
+        self._gate = AdvisoryGate()
+        self._sensor_arbiter = SensorArbiter()
+        self._sensor_poll_id: int | None = None
+        self._sensor_poll_busy = False
         self._selection_block_reason: str | None = None
         self._devices: list[dict[str, str]] = []
         self._run_folder = Path(default_folder())
@@ -450,6 +473,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         typed outcome for the user.
         """
         adopt = self._advisory.adopter(generation)
+        # Priority access: an in-flight sensor poll finishes first, so the
+        # discovery command never races it on the device.
+        held = self._gate.acquire("discovery")
         if self._cli_version is None:
             self._cli_version = self._probe_cli_version(adopt)
         devices: list[dict[str, str]] = []
@@ -489,6 +515,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             LOGGER.debug("device search failed unexpectedly", exc_info=True)
             err = _("Device search failed unexpectedly.")
         finally:
+            if held:
+                self._gate.release()
             # Always reaches the main loop, or the refresh button and the
             # "Searching for scanners…" subtitle would stay stuck forever.
             GLib.idle_add(self._apply_devices, devices, err, prefer, generation)
@@ -590,6 +618,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_device_selected(self) -> None:
         """A device was picked: expose its id and probe its capabilities."""
         self._form.set_device_tooltip(self._selected_device() or "")
+        # Another device's latches are meaningless here: the next
+        # observation of the new device is a baseline.
+        self._sensor_arbiter.reset()
         self._start_negotiation()
 
     # -------------------------------------------- capability negotiation
@@ -626,12 +657,17 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._render_capability_update(update)
 
     def _probe_worker(self, token: int, request: ProbeRequest, generation: int) -> None:
-        snapshot = probe_snapshot(
-            request.device,
-            request.settings,
-            ADVISORY_PROBE_TIMEOUT_SECONDS,
-            on_spawn=self._advisory.adopter(generation),
-        )
+        held = self._gate.acquire("probe")
+        try:
+            snapshot = probe_snapshot(
+                request.device,
+                request.settings,
+                ADVISORY_PROBE_TIMEOUT_SECONDS,
+                on_spawn=self._advisory.adopter(generation),
+            )
+        finally:
+            if held:
+                self._gate.release()
         GLib.idle_add(self._on_probe_done, token, request, snapshot, generation)
 
     def _on_probe_done(
@@ -639,6 +675,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     ) -> None:
         if self._released or generation != self._advisory.generation:
             return  # cancelled underneath: the result must not render
+        if isinstance(snapshot, dict) and request.device == self._selected_device():
+            # A live probe read the device and consumed any sensor latch;
+            # feed it to the arbiter before caching or rendering, so the
+            # event is observed exactly once. Cached snapshots never come
+            # through here and never count as fresh sensor evidence.
+            self._observe_sensors(assess_sensors(snapshot), defer_trigger=True)
         update = self._flow.probe_completed(
             token, request, snapshot, self._selected_device(), self._form.source_value()
         )
@@ -697,6 +739,160 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _update_scan_enabled(self) -> None:
         """Mirror the Start predicate onto the primary action."""
         self._form.set_scan_enabled(self._scan_allowed())
+        # Every predicate transition is also a chance for the idle sensor
+        # poller to start or stop; the schedule attempt checks everything.
+        self._schedule_sensor_poll()
+
+    # ------------------------------------------------ idle sensor polling
+
+    def _sensor_prefs(self) -> tuple[str, bool]:
+        """The persisted trigger preferences: (button mapping, insert)."""
+        mapping = str(self._settings.get("hardware_button") or "off")
+        if mapping not in ("off", "same", "single", "collect"):
+            mapping = "off"
+        return mapping, bool(self._settings.get("insert_to_scan"))
+
+    def _sensor_polling_wanted(self) -> bool:
+        """Whether an idle sensor poll should run right now.
+
+        Capability-driven and preference-gated: some trigger must be
+        enabled, the window alive and visible, Start currently allowed
+        (which covers the running scan, an active search, a blocked CLI
+        and the selected device), no capability probe active, and the
+        device's last advisory listing must actually carry usable
+        sensors. Never a device list.
+        """
+        mapping, insert = self._sensor_prefs()
+        if mapping == "off" and not insert:
+            return False
+        if self._released or self._closing:
+            return False
+        if not self._scan_allowed():
+            return False
+        if self._flow.probe_active:
+            return False
+        caps = self._flow.last_caps
+        return caps is not None and assess_sensors(caps).usable
+
+    def _schedule_sensor_poll(self) -> None:
+        """Arm the next idle poll if wanted and none is armed or running."""
+        if self._sensor_poll_id is not None or self._sensor_poll_busy:
+            return
+        if not self._sensor_polling_wanted():
+            return
+        self._sensor_poll_id = GLib.timeout_add(
+            round(SENSOR_POLL_SECONDS * 1000), self._sensor_poll_tick
+        )
+
+    def _sensor_poll_tick(self) -> bool:
+        """One poll attempt; the completion callback schedules the next."""
+        self._sensor_poll_id = None
+        if not self._sensor_polling_wanted():
+            return bool(GLib.SOURCE_REMOVE)
+        suspended = self.is_suspended() if hasattr(self, "is_suspended") else False
+        if suspended or not self._gate.try_acquire("sensor"):
+            # Transient (hidden window, discovery or a probe owns the
+            # device): skip this tick, try again a full interval later.
+            self._schedule_sensor_poll()
+            return bool(GLib.SOURCE_REMOVE)
+        device = self._selected_device()
+        if device is None:  # pragma: no cover -- the predicate guards this
+            self._gate.release()
+            return bool(GLib.SOURCE_REMOVE)
+        self._sensor_poll_busy = True
+        self._advisory.spawn_worker(
+            self._sensor_worker, device, self._advisory.generation
+        )
+        return bool(GLib.SOURCE_REMOVE)
+
+    def _sensor_worker(self, device: str, generation: int) -> None:
+        """Worker thread: one gated sensor read, result to the main loop."""
+        try:
+            caps = probe_snapshot(
+                device,
+                (),
+                SENSOR_PROBE_TIMEOUT_SECONDS,
+                on_spawn=self._advisory.adopter(generation),
+            )
+        finally:
+            self._gate.release()
+        snapshot = assess_sensors(caps) if caps is not None else None
+        GLib.idle_add(self._on_sensor_poll_done, snapshot, generation)
+
+    def _on_sensor_poll_done(
+        self, snapshot: SensorSnapshot | None, generation: int
+    ) -> None:
+        """Fold one poll result on the main loop and arm the next poll."""
+        self._sensor_poll_busy = False
+        if self._released or generation != self._advisory.generation:
+            return  # cancelled underneath (scan takeover, window close)
+        if snapshot is None:
+            # A device-open failure: stop watching, let ordinary discovery
+            # take over; the arbiter keeps the outage to one log line.
+            if self._sensor_arbiter.mark_offline():
+                self._append_log(
+                    "[gui] scanner stopped answering sensor reads; "
+                    "searching for devices"
+                )
+            if self._runner is None and not self._searching:
+                self._refresh_devices()
+            return
+        self._observe_sensors(snapshot)
+        self._schedule_sensor_poll()
+
+    def _observe_sensors(
+        self, snapshot: SensorSnapshot, *, defer_trigger: bool = False
+    ) -> None:
+        """Run one observation through the arbiter and map its triggers.
+
+        ``defer_trigger`` starts a resulting scan from an idle callback
+        instead of inline: a live capability probe's evidence arrives in
+        the middle of flow bookkeeping that must finish first.
+        """
+        observation = self._sensor_arbiter.observe(snapshot)
+        mapping, insert = self._sensor_prefs()
+        flow: SheetFlow | None = None
+        reason = ""
+        # An explicit button mapping wins over an insertion seen in the
+        # same observation; either trigger is consumed here, and a
+        # blocked Start ignores it without queueing anything.
+        if observation.button and mapping != "off":
+            flow = {
+                "same": self._form.sheet_flow_value(),
+                "single": "single",
+                "collect": "collect",
+            }[mapping]
+            reason = "hardware button"
+        elif observation.insert and insert:
+            flow = self._form.sheet_flow_value()
+            reason = "paper inserted"
+        if flow is None:
+            return
+        if not self._scan_allowed():
+            return  # consumed and ignored, never queued
+        self._append_log(f"[gui] {reason}: starting a scan")
+        if defer_trigger:
+            chosen = flow
+            GLib.idle_add(lambda: self._trigger_sensor_scan(chosen))
+        else:
+            self._trigger_sensor_scan(flow)
+
+    def _trigger_sensor_scan(self, flow: SheetFlow) -> bool:
+        """Start a sensor-triggered scan; re-checks the Start predicate."""
+        if not self._released and self._scan_allowed():
+            self._on_scan_clicked(flow)
+        return bool(GLib.SOURCE_REMOVE)
+
+    def _stop_sensor_polling(self) -> None:
+        """Disarm the poller and forget the arming state.
+
+        Whatever latches while polling is stopped (a press during a
+        scan) is baseline state when polling resumes, never a trigger.
+        """
+        if self._sensor_poll_id is not None:
+            GLib.source_remove(self._sensor_poll_id)
+            self._sensor_poll_id = None
+        self._sensor_arbiter.reset()
 
     def _update_selection_block(self) -> None:
         """Disable Start while the active saved choice is unavailable.
@@ -745,15 +941,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         store_settings(CONFIG_FILE, self._settings)
 
     def _on_settings_action(self, *_args: object) -> None:
-        """Open the settings dialog (color scheme, language, reset)."""
+        """Open the settings dialog (look, scanner triggers, reset)."""
+        mapping, insert = self._sensor_prefs()
         dialog = build_settings_dialog(
             current_scheme=str(self._settings.get("color_scheme") or ""),
             current_ui_language=str(self._settings.get("ui_language") or ""),
             desktop_installed=desktop_entry_path().is_file(),
+            current_hardware_button=mapping,
+            current_insert_to_scan=insert,
             on_scheme_selected=self._on_scheme_selected,
             on_ui_language_selected=lambda value: self._store_pref(
                 "ui_language", value
             ),
+            on_hardware_button_selected=self._on_hardware_button_selected,
+            on_insert_to_scan_toggled=self._on_insert_to_scan_toggled,
             restart_pending=lambda: (
                 str(self._settings.get("ui_language") or "")
                 != self._startup_ui_language
@@ -771,6 +972,17 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """Apply and persist a color-scheme choice from the dialog."""
         self._apply_color_scheme(value)
         self._store_pref("color_scheme", value)
+
+    def _on_hardware_button_selected(self, value: str) -> None:
+        """Persist the button mapping and re-evaluate the idle poller."""
+        self._store_pref("hardware_button", value)
+        self._schedule_sensor_poll()
+
+    def _on_insert_to_scan_toggled(self, value: bool) -> None:
+        """Persist insert-to-scan and re-evaluate the idle poller."""
+        self._settings["insert_to_scan"] = value
+        store_settings(CONFIG_FILE, self._settings)
+        self._schedule_sensor_poll()
 
     def _on_restart_clicked(self, *_args: object) -> None:
         """Quit and re-execute the application (see ``main``)."""
@@ -849,6 +1061,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         except OSError as exc:
             self._alert(_("Cannot Create Output Folder"), f"{folder}\n\n{exc}")
             return
+        # The idle sensor poller stops first: the scan owns the device
+        # from here, and a press latched during the run must resume as
+        # baseline state, never as a trigger.
+        self._stop_sensor_polling()
         # Acquisition probes the device authoritatively at scan start; a
         # still-running advisory probe would race it on the same scanner
         # (DEVICE_BUSY on some backends), so stop the advisory children
@@ -1034,6 +1250,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """
         self._persist_ui_state()
         self._released = True
+        self._stop_sensor_polling()
         self._advisory.cancel_pending(close=True)
         runner = self._runner
         if runner is not None:
@@ -1045,6 +1262,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # No advisory child may outlive the window, and no late advisory
         # result may touch it while it is closing.
         self._released = True
+        self._stop_sensor_polling()
         self._advisory.cancel_pending(close=True)
         runner = self._runner
         if runner is not None and runner.is_running():

@@ -25,23 +25,63 @@ from scanmole_gui.widgets import combo_select, combo_value  # noqa: E402
 UI_LANGUAGES = ((_("System default"), ""), ("English", "en"), ("Deutsch", "de"))
 COLOR_SCHEMES = ((_("System default"), ""), (_("Light"), "light"), (_("Dark"), "dark"))
 
+# What a press of the scanner's own button starts while ScanMole is idle.
+HARDWARE_BUTTON_ACTIONS = (
+    (_("Off"), "off"),
+    (_("Same as Scan"), "same"),
+    (_("Scan one sheet"), "single"),
+    (_("Collect sheets"), "collect"),
+)
+
 
 def build_settings_dialog(
     *,
     current_scheme: str,
     current_ui_language: str,
     desktop_installed: bool,
+    current_hardware_button: str,
+    current_insert_to_scan: bool,
     on_scheme_selected: Callable[[str], None],
     on_ui_language_selected: Callable[[str], None],
+    on_hardware_button_selected: Callable[[str], None],
+    on_insert_to_scan_toggled: Callable[[bool], None],
     restart_pending: Callable[[], bool],
     on_restart: Callable[[], None],
     on_reset: Callable[[], None],
     on_install_desktop: Callable[[], bool],
     on_remove_desktop: Callable[[], bool],
 ) -> Adw.PreferencesDialog:
-    """Build the settings dialog (color scheme, language, reset)."""
+    """Build the settings dialog (look, scanner triggers, reset)."""
     dialog = Adw.PreferencesDialog(title=_("Settings"))
     page = Adw.PreferencesPage()
+    scanner_group = Adw.PreferencesGroup(title=_("Scanner triggers"))
+
+    button_row = Adw.ComboRow(
+        title=_("Hardware scan button"),
+        subtitle=_("What a press of the scanner's button starts"),
+    )
+    button_row.set_model(
+        Gtk.StringList.new([label for label, _value in HARDWARE_BUTTON_ACTIONS])
+    )
+    combo_select(button_row, HARDWARE_BUTTON_ACTIONS, current_hardware_button)
+
+    def button_changed(*_a: object) -> None:
+        on_hardware_button_selected(combo_value(button_row, HARDWARE_BUTTON_ACTIONS))
+
+    button_row.connect("notify::selected", button_changed)
+    scanner_group.add(button_row)
+
+    insert_row = Adw.SwitchRow(
+        title=_("Start when paper is inserted"),
+        subtitle=_("Begin scanning when a sheet is loaded into the idle scanner"),
+        active=current_insert_to_scan,
+    )
+    insert_row.connect(
+        "notify::active",
+        lambda *_a: on_insert_to_scan_toggled(bool(insert_row.get_active())),
+    )
+    scanner_group.add(insert_row)
+
     group = Adw.PreferencesGroup()
 
     scheme_row = Adw.ComboRow(title=_("Color scheme"))
@@ -135,6 +175,7 @@ def build_settings_dialog(
     update_restart_row()
 
     page.add(group)
+    page.add(scanner_group)
     dialog.add(page)
     return dialog
 

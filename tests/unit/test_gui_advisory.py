@@ -206,6 +206,9 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
 
+        def _stop_sensor_polling(self) -> None:
+            order.append("stop-poller")
+
         def __init__(self) -> None:
             self._runner = None
             self._advisory = Advisory()
@@ -239,7 +242,14 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
     monkeypatch.setattr("scanmole_gui.app.ScanRunner", Runner)
     window._on_scan_clicked()  # type: ignore[misc]
 
-    assert order.index("cancel") < order.index("reset") < order.index("start")
+    # The idle sensor poller stops before the scan takeover cancels the
+    # advisory children, which happens before the runner starts.
+    assert (
+        order.index("stop-poller")
+        < order.index("cancel")
+        < order.index("reset")
+        < order.index("start")
+    )
     assert window._searching is False  # a cancelled search cannot stay latched
 
 
@@ -293,6 +303,9 @@ def test_no_advisory_child_survives_into_the_runner(
 
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
+
+        def _stop_sensor_polling(self) -> None:
+            pass
 
         def __init__(self) -> None:
             self._runner = None
