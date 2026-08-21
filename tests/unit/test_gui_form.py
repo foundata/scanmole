@@ -278,9 +278,14 @@ def test_availability_passes_through_with_the_blocked_callback() -> None:
     _click_choice(form._mode_row, 1)  # the user moves to Gray
     assert form.mode_value() == "gray"
     assert form.selection_blocked_reason() is None
-    _click_choice(form._mode_row, 3)  # and clicks back onto faint
-    assert form.mode_value() == "gray"  # reverted, never adopted
-    assert ("blocked", ("lineart-auto", "plain 1-bit only")) in events.calls
+    if form._mode_row._toggles is not None:
+        # The abandoned blocked choice lost its active-toggle exemption:
+        # it renders disabled, so there is nothing to click back onto.
+        assert form._mode_row._toggles.get_toggle(3).get_enabled() is False
+    else:
+        _click_choice(form._mode_row, 3)  # clicking back onto faint reverts
+        assert form.mode_value() == "gray"  # never adopted
+        assert ("blocked", ("lineart-auto", "plain 1-bit only")) in events.calls
 
     form.set_source_availability({"adf-duplex": "no duplex"})
     assert form.selection_blocked_reason() == "no duplex"  # saved source blocked

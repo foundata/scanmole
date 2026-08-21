@@ -118,9 +118,10 @@ def test_choice_row_keeps_a_blocked_active_selection(
 def test_choice_row_click_back_onto_a_blocked_value_reverts(
     adw: Any, choice_backend: str
 ) -> None:
-    # The active-but-blocked toggle stays clickable; returning to it
-    # after choosing an available value reverts and reports the reason,
-    # exactly like the ComboRow fallback.
+    # The active-but-blocked value stays selected until the user leaves
+    # it; afterwards the toggle backend disables it outright, while the
+    # ComboRow fallback (which cannot gray single items) reverts a
+    # click back onto it and reports the reason.
     changes: list[str] = []
     blocked_calls: list[tuple[str, str]] = []
     row: Any = _choice_row(adw, on_change=lambda: changes.append(row.value()))
@@ -136,13 +137,20 @@ def test_choice_row_click_back_onto_a_blocked_value_reverts(
     assert changes == ["third"]
 
     changes.clear()
-    _click_choice(row, 1)  # and clicks back onto the blocked value
+    if row._toggles is not None:
+        # Leaving the blocked value revoked its active-toggle exemption:
+        # the toggle is disabled now, so there is nothing to click back
+        # onto (activating it programmatically would clear the group).
+        assert row._toggles.get_toggle(1).get_enabled() is False
+        assert row.value() == "third"
+    else:
+        _click_choice(row, 1)  # and clicks back onto the blocked value
 
-    assert row.value() == "third"  # reverted, never adopted
-    assert blocked_calls == [("second", "unavailable")]
-    # Adw.ToggleGroup delivers the revert's notify deferred, so a single
-    # echo of the KEPT value may fire; the blocked value never does.
-    assert changes in ([], ["third"])
+        assert row.value() == "third"  # reverted, never adopted
+        assert blocked_calls == [("second", "unavailable")]
+        # The revert's notify may echo once with the KEPT value; the
+        # blocked value never fires.
+        assert changes in ([], ["third"])
 
 
 def test_combo_helpers_round_trip_values(adw: Any) -> None:
@@ -187,3 +195,63 @@ def test_pure_helpers() -> None:
     assert abbreviate_home(f"{home}/scans") == "~/scans"
     assert abbreviate_home(f"{home}rest") == f"{home}rest"  # no separator
     assert abbreviate_home("/tmp/scans") == "/tmp/scans"
+
+
+def test_a_blocked_toggle_disables_once_the_selection_moves_away(
+    adw: Any, choice_backend: str
+) -> None:
+    # The startup order with the scanner already connected: the persisted
+    # choice ("second") is active when the blocks render (so it keeps the
+    # active-toggle exemption), then the sole-source reconciliation
+    # selects an available value. The exemption must move with the
+    # selection, or the blocked value keeps rendering as clickable.
+    row = _choice_row(adw)
+    row.select("second")
+    row.set_availability({"second": "unavailable", "third": "missing"})
+
+    row.select("first")  # the reconciliation (sole available source)
+
+    if row._toggles is not None:
+        assert row._toggles.get_toggle(1).get_enabled() is False
+        assert row._toggles.get_toggle(2).get_enabled() is False
+        assert row._toggles.get_toggle(0).get_enabled() is True
+    # Both backends still enforce the block behaviorally.
+    _click_choice(row, 1)
+    assert row.value() == "first"
+
+
+def test_a_user_choice_also_moves_the_active_toggle_exemption(
+    adw: Any, choice_backend: str
+) -> None:
+    # Same exemption, moved by a user click instead of a reconciliation:
+    # picking the available "third" while "second" is blocked-but-active
+    # must disable the "second" toggle it leaves behind.
+    row = _choice_row(adw)
+    row.select("second")
+    row.set_availability({"second": "unavailable"})
+
+    _click_choice(row, 2)
+
+    assert row.value() == "third"
+    if row._toggles is not None:
+        assert row._toggles.get_toggle(1).get_enabled() is False
+
+
+def test_programmatic_select_of_a_blocked_value_keeps_it_selected(
+    adw: Any, choice_backend: str
+) -> None:
+    # A settings reset can restore a value the probed scanner blocks; the
+    # select must land on it (enabling the target first: activating a
+    # disabled toggle would clear the whole group to the first item) so
+    # the blocked-reason gate can disable Start.
+    blocked_calls: list[str] = []
+    row = _choice_row(adw)
+    row.select("first")
+    row.set_availability(
+        {"second": "unavailable"}, lambda value, _reason: blocked_calls.append(value)
+    )
+
+    row.select("second")
+
+    assert row.value() == "second"  # kept, never silently cleared to "first"
+    assert row.blocked_reason() == "unavailable"

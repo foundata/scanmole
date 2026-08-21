@@ -117,6 +117,10 @@ class ChoiceRow:
                 self._on_blocked(value, self._blocked[value])
             return
         self._current = value
+        # The active-toggle exemption travels with the selection: a
+        # blocked value the user just left must not keep rendering as
+        # clickable.
+        self._render_enabled()
         if self._on_change is not None:
             self._on_change()
 
@@ -133,18 +137,27 @@ class ChoiceRow:
         """
         self._blocked = blocked
         self._on_blocked = on_blocked
-        if self._toggles is not None and hasattr(self._toggles, "get_toggle"):
-            current = self.value()
-            for index, (_label, value) in enumerate(self._items):
-                toggle = self._toggles.get_toggle(index)
-                if toggle is not None and hasattr(toggle, "set_enabled"):
-                    # Never disable the active toggle: Adw.ToggleGroup
-                    # clears a disabled active toggle, which would
-                    # silently change the selection to the first item.
-                    # The blocked current choice stays visible and the
-                    # revert path enforces the block, exactly like the
-                    # ComboRow fallback.
-                    toggle.set_enabled(value not in blocked or value == current)
+        self._render_enabled()
+
+    def _render_enabled(self) -> None:
+        """Render the block state onto the toggles for the current selection.
+
+        Never disables the active toggle: Adw.ToggleGroup clears a
+        disabled active toggle, which would silently change the selection
+        to the first item. The blocked current choice stays visible and
+        the revert path enforces the block, exactly like the ComboRow
+        fallback. Re-run whenever the selection moves, so the exemption
+        follows the active toggle instead of sticking to a value the
+        selection has left (a reconciled-away saved choice would
+        otherwise keep rendering as clickable).
+        """
+        if self._toggles is None or not hasattr(self._toggles, "get_toggle"):
+            return
+        current = self.value()
+        for index, (_label, value) in enumerate(self._items):
+            toggle = self._toggles.get_toggle(index)
+            if toggle is not None and hasattr(toggle, "set_enabled"):
+                toggle.set_enabled(value not in self._blocked or value == current)
 
     def blocked_reason(self) -> str | None:
         """The reason the current selection is unavailable, if it is."""
@@ -169,8 +182,18 @@ class ChoiceRow:
             if item_value == value:
                 self._current = value
                 if self._toggles is not None:
+                    if hasattr(self._toggles, "get_toggle"):
+                        toggle = self._toggles.get_toggle(index)
+                        if toggle is not None and hasattr(toggle, "set_enabled"):
+                            # The target's exemption applies before the
+                            # move: activating a disabled toggle would
+                            # clear the group instead of selecting it.
+                            toggle.set_enabled(True)
                     self._toggles.set_active(index)
                 else:
                     assert self._combo is not None
                     self._combo.set_selected(index)
+                # After the move, so the newly active toggle keeps its
+                # exemption and the one left behind loses it.
+                self._render_enabled()
                 return
