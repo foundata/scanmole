@@ -215,15 +215,27 @@ class ScanForm:
             self._source_changed,
             tooltips=SOURCE_TOOLTIPS,
         )
-        # The persisted sheet-flow choice: off scans the loaded stack (the
-        # historic behavior), on keeps collecting sheets across reloads
-        # until Finish. Applies to feeders and flatbeds alike.
+        # The persisted sheet-flow choice as two switches. "Scan loaded
+        # stack" (on, the historic behavior) drains the feeder; off scans
+        # a single sheet. It only means something on a feeder source, so
+        # a flatbed grays it out and ignores it. "Collect sheets" merges
+        # scans across reloads until Finish and wins over both.
+        self._stack_row = Adw.SwitchRow(
+            title=_("Scan loaded stack"),
+            subtitle=_("Take every sheet from the feeder; off scans a single sheet"),
+            active=True,
+        )
+        self.scanner_group.add(self._stack_row)
         self._collect_row = Adw.SwitchRow(
-            title=_("Wait for more sheets"),
-            subtitle=_("Makes Scan collect sheets until you press Finish"),
+            title=_("Collect sheets"),
+            subtitle=_(
+                "Merge multiple scans into a document until you press "
+                "Finish in the status bar"
+            ),
             active=False,
         )
         self.scanner_group.add(self._collect_row)
+        self._update_stack_row()
 
         # One primary action: Scan is the only accented control, full width at
         # the bottom of the Scanner group (mockup rule); Cancel swaps in while
@@ -276,10 +288,9 @@ class ScanForm:
         popover = Gtk.Popover(child=box)
         # A section caption, GNOME-style: one dim line says that every
         # action below applies to a single run, instead of decorating
-        # each label with the same suffix.
+        # each label with the same suffix. Centered like the actions.
         caption = Gtk.Label(
             label=_("For this scan only"),
-            xalign=0.0,
             margin_start=10,
             margin_end=10,
             margin_bottom=2,
@@ -303,7 +314,20 @@ class ScanForm:
 
     def sheet_flow_value(self) -> SheetFlow:
         """The persisted sheet flow a primary Scan click uses."""
-        return "collect" if self._collect_row.get_active() else "stack"
+        if self._collect_row.get_active():
+            return "collect"
+        if self._stack_row.get_active() or self._source_row.value() == "flatbed":
+            # The stack switch only means something on a feeder; a
+            # flatbed delivers one frame per pass either way, so its
+            # grayed-out state never turns a scan into single.
+            return "stack"
+        return "single"
+
+    def _update_stack_row(self) -> None:
+        """Gate the stack switch: only feeder sources have a loaded stack."""
+        if not hasattr(self, "_stack_row"):
+            return  # the source row's construction fires before the switch exists
+        self._stack_row.set_sensitive(self._source_row.value() != "flatbed")
 
     def _build_output_group(self) -> None:
         """Build the Output group (folder, filename template)."""
@@ -320,34 +344,16 @@ class ScanForm:
         self._folder_row.set_activatable_widget(self._folder_btn)
         self.output_group.add(self._folder_row)
 
-        # Deliberately about twice a default row: entry, placeholder helper
-        # and preview stack so the Output group lines up with the Scanner
-        # group's Device/Source/Scan rows in the two-column grid. A custom
-        # row (not Adw.ActionRow) so the title can align with the entry at
-        # the top instead of centering over the whole stack.
-        name_row_box = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            spacing=17,
-            margin_start=12,
-            margin_end=12,
-        )
-        name_title = Gtk.Label(
-            label=_("File name"),
-            xalign=0.0,
-            valign=Gtk.Align.START,
-            margin_top=18,
-        )
-        name_row_box.append(name_title)
-        name_box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=4,
-            valign=Gtk.Align.CENTER,
-            hexpand=True,
-            margin_top=10,
-            margin_bottom=10,
-        )
+        # The filename template as three standard-height rows joined into
+        # one optical block, the same border trick as the Resolution row
+        # and its preset chips: the entry, the placeholder help and the
+        # live preview read as one setting while every row keeps the
+        # common field height.
+        self._name_row = Adw.ActionRow(title=_("File name"))
         self._name_entry = Gtk.Entry(
-            placeholder_text=DEFAULT_OUTPUT_TEMPLATE, width_chars=34, hexpand=True
+            placeholder_text=DEFAULT_OUTPUT_TEMPLATE,
+            width_chars=24,
+            valign=Gtk.Align.CENTER,
         )
         self._name_entry.connect("changed", self._update_name_preview)
         # Focusing the empty field materializes the default template so it
@@ -356,7 +362,12 @@ class ScanForm:
         name_focus = Gtk.EventControllerFocus()
         name_focus.connect("enter", self._on_name_entry_focus)
         self._name_entry.add_controller(name_focus)
-        name_box.append(self._name_entry)
+        self._name_row.add_suffix(self._name_entry)
+        self._name_row.set_activatable_widget(self._name_entry)
+        self._name_row.add_css_class("joined-below")
+        self.output_group.add(self._name_row)
+
+        hint_row = Adw.ActionRow()
         hint = Gtk.Label(
             label=_(
                 "Placeholders: {YYYY} {MM} {DD} {hh} {mm} {ss} {device}\n"
@@ -366,20 +377,26 @@ class ScanForm:
             wrap=True,
             justify=Gtk.Justification.RIGHT,
             max_width_chars=44,
+            hexpand=True,
+            valign=Gtk.Align.CENTER,
         )
         hint.add_css_class("caption")
         hint.add_css_class("dim-label")
-        name_box.append(hint)
-        self._name_preview = Gtk.Label(xalign=1.0)
+        hint_row.add_suffix(hint)
+        hint_row.add_css_class("joined-above")
+        hint_row.add_css_class("joined-below")
+        self.output_group.add(hint_row)
+
+        preview_row = Adw.ActionRow()
+        self._name_preview = Gtk.Label(
+            xalign=1.0, hexpand=True, valign=Gtk.Align.CENTER
+        )
         self._name_preview.add_css_class("caption")
         self._name_preview.add_css_class("dim-label")
         self._name_preview.set_ellipsize(3)  # Pango.EllipsizeMode.END
-        name_box.append(self._name_preview)
-        name_row_box.append(name_box)
-        self._name_row = Gtk.ListBoxRow(
-            child=name_row_box, activatable=False, selectable=False
-        )
-        self.output_group.add(self._name_row)
+        preview_row.add_suffix(self._name_preview)
+        preview_row.add_css_class("joined-above")
+        self.output_group.add(preview_row)
 
     def _build_document_group(self) -> None:
         """Build the Document group (color mode, page size, resolution)."""
@@ -580,6 +597,7 @@ class ScanForm:
         reconciliation select) is widget-callback context only the form
         has; the GTK-free flow owns everything else.
         """
+        self._update_stack_row()
         self._on_source_changed(not self._reconciling_source)
 
     def source_value(self) -> str:
@@ -818,6 +836,7 @@ class ScanForm:
         self.select_language(str(settings.get("lang", "deu+eng")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
+        self._stack_row.set_active(bool(settings.get("scan_loaded_stack", True)))
         self._collect_row.set_active(bool(settings.get("wait_for_more_sheets", False)))
         template = str(settings.get("filename_template") or "")
         self._name_entry.set_text(
@@ -844,6 +863,7 @@ class ScanForm:
             "deskew": self._deskew_row.get_active(),
             "lang": self.selected_language(),
             "skip_blanks": self._blank_row.get_active(),
+            "scan_loaded_stack": self._stack_row.get_active(),
             "wait_for_more_sheets": self._collect_row.get_active(),
             "filename_template": self._current_template(),
             "folder": self._folder,

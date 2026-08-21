@@ -360,3 +360,59 @@ def test_scan_request_takes_the_flow_from_the_trigger_not_the_widgets() -> None:
 
     assert request.sheet_flow == "single"
     assert form._collect_row.get_active() is True
+
+
+def test_stack_switch_selects_single_on_a_feeder() -> None:
+    events = Events()
+    form = _form(events)
+    form._source_row.select("adf")
+
+    assert form.sheet_flow_value() == "stack"  # on by default
+
+    form._stack_row.set_active(False)
+    assert form.sheet_flow_value() == "single"
+
+    form._collect_row.set_active(True)
+    assert form.sheet_flow_value() == "collect"  # collect wins over both
+
+
+def test_stack_switch_is_gated_and_ignored_on_the_flatbed() -> None:
+    events = Events()
+    form = _form(events)
+    form._source_row.select("adf")
+    form._stack_row.set_active(False)
+    assert form._stack_row.get_sensitive() is True
+
+    form._source_row.select("flatbed")
+
+    # A flatbed has no loaded stack: the switch grays out and its off
+    # state never turns the scan into single.
+    assert form._stack_row.get_sensitive() is False
+    assert form.sheet_flow_value() == "stack"
+
+    form._source_row.select("adf-duplex")
+    assert form._stack_row.get_sensitive() is True
+    assert form.sheet_flow_value() == "single"  # the off state was kept
+
+
+def test_stack_switch_round_trips_through_settings() -> None:
+    events = Events()
+    form = _form(events)
+
+    form.apply_settings({"scan_loaded_stack": False, "source": "adf"})
+    assert form.persisted_values()["scan_loaded_stack"] is False
+
+    form.apply_settings({})  # tolerant default: on
+    assert form.persisted_values()["scan_loaded_stack"] is True
+
+
+def test_primary_scan_uses_the_single_flow_when_stack_is_off() -> None:
+    events = Events()
+    form = _form(events)
+    form._source_row.select("adf")
+    form._stack_row.set_active(False)
+    events.calls.clear()
+
+    form._scan_btn.emit("clicked")
+
+    assert events.calls == [("scan", ("single",))]
