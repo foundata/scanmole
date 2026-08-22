@@ -104,6 +104,41 @@ def waiting_text(sheets: int, manual: bool) -> str:
     ) % {"count": sheets}
 
 
+def close_confirmation_text(state: SessionState) -> tuple[str, str]:
+    """The heading and body for closing on top of captured pages.
+
+    Counted in sheets while a collect run waits (the engine grouped them
+    for us) and in pages otherwise, so the number always matches what the
+    result bar was showing a moment ago. The body names the action that
+    saves the work rather than only stating that it would be lost, and
+    only offers Finish where that button actually exists.
+    """
+    if state.waiting:
+        heading = (
+            ngettext(
+                "Close and discard %d scanned sheet?",
+                "Close and discard %d scanned sheets?",
+                state.waiting_sheets,
+            )
+            % state.waiting_sheets
+        )
+        body = _(
+            "No PDF has been created yet. Press Finish in the status bar "
+            "to save them first."
+        )
+    else:
+        heading = (
+            ngettext(
+                "Close and discard %d scanned page?",
+                "Close and discard %d scanned pages?",
+                state.pages,
+            )
+            % state.pages
+        )
+        body = _("The scan is still running and no PDF has been created yet.")
+    return heading, body
+
+
 def render_session_update(
     state: SessionState,
     update: Update,

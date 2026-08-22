@@ -90,6 +90,7 @@ from scanmole_gui.settings import (  # noqa: E402
 from scanmole_gui.status import (  # noqa: E402
     LogView,
     ResultBar,
+    close_confirmation_text,
     exit_failure_texts,
     render_session_update,
     success_summary,
@@ -244,6 +245,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._runner: ScanRunner | None = None
         self._session = SessionState(drop_blanks=True)
         self._closing = False
+        self._close_confirmed = False
+        """Set once a discard prompt was answered with "Close Anyway", so
+        the close it triggers is not questioned a second time."""
+        self._echo_log = False
+        """Whether log lines also go to stderr (a confirmed discard)."""
         self._close_patience = 0
         self._searching = False
         self._device_poll_id: int | None = None
@@ -469,8 +475,15 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
 
     def _append_log(self, text: str) -> None:
-        """Append a line to the log pane."""
+        """Append a line to the log pane, and to stderr while closing.
+
+        A confirmed discard hides the window but keeps the engine alive
+        until it finished preserving; the recovery command it prints then
+        would otherwise land in a log pane nobody can read again.
+        """
         self._log.append(text)
+        if self._echo_log:
+            print(text, file=sys.stderr, flush=True)
 
     # ------------------------------------------------------- settings I/O
 
@@ -1424,8 +1437,53 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if runner is not None:
             runner.shutdown()
 
+    def _close_discards_pages(self) -> bool:
+        """Whether closing now would throw away captured pages.
+
+        Only a live run that already produced something qualifies. A scan
+        that has not delivered a page yet loses nothing worth a prompt,
+        and neither does an idle window, so the question is never asked
+        for the sake of asking.
+        """
+        runner = self._runner
+        return (
+            runner is not None
+            and runner.is_running()
+            and self._session.pages > 0
+            and not self._closing
+            and not self._close_confirmed
+        )
+
+    def _confirm_close(self) -> None:
+        """Ask before discarding a run that already captured pages."""
+        heading, body = close_confirmation_text(self._session)
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("keep", _("Keep Scanning"))
+        dialog.add_response("close", _("Close Anyway"))
+        dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("keep")
+        dialog.set_close_response("keep")
+        dialog.connect("response", self._on_close_confirm_response)
+        dialog.present(self)
+
+    def _on_close_confirm_response(self, _dialog: object, response: str) -> None:
+        """Close for real when the discard was confirmed."""
+        if response != "close":
+            return
+        self._close_confirmed = True
+        # The engine preserves the pages and logs the recovery command,
+        # but the log pane dies with this window: echo what still arrives
+        # to the terminal, or the only path to those pages is lost.
+        self._echo_log = True
+        self.close()
+
     def _on_close_request(self, *_args: object) -> bool:
         """Persist the form and window geometry, stop any running scan."""
+        if self._close_discards_pages():
+            # Nothing is torn down yet: the answer may well be "keep
+            # scanning", and a half-released window cannot resume.
+            self._confirm_close()
+            return True  # inhibit until the user decides
         self._persist_ui_state()
         # No advisory child may outlive the window, and no late advisory
         # result may touch it while it is closing.

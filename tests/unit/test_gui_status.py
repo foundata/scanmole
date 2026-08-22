@@ -136,6 +136,30 @@ def test_waiting_texts_use_sheet_singular_and_plural() -> None:
     )
 
 
+def test_close_confirmation_counts_sheets_while_waiting_and_pages_otherwise() -> None:
+    _init_adw()
+    from scanmole_gui.session import SessionState
+    from scanmole_gui.status import close_confirmation_text
+
+    # A waiting collect run counts the sheets the engine grouped, so the
+    # number matches the result bar the user was just looking at.
+    heading, body = close_confirmation_text(
+        SessionState(drop_blanks=True, pages=6, waiting=True, waiting_sheets=3)
+    )
+    assert heading == "Close and discard 3 scanned sheets?"
+    assert "Press Finish" in body
+
+    one, _body = close_confirmation_text(
+        SessionState(drop_blanks=True, pages=2, waiting=True, waiting_sheets=1)
+    )
+    assert one == "Close and discard 1 scanned sheet?"
+
+    # Mid-batch there is no Finish button, so the body must not name one.
+    heading, body = close_confirmation_text(SessionState(drop_blanks=True, pages=2))
+    assert heading == "Close and discard 2 scanned pages?"
+    assert "Finish" not in body
+
+
 def test_render_waiting_routes_to_the_waiting_bar() -> None:
     _init_adw()
     from scanmole_gui.session import SessionState, Update
