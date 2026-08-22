@@ -138,6 +138,8 @@ def _duck_window(
     class Window:
         _observe_sensors = MainWindow._observe_sensors
         _sensor_prefs = MainWindow._sensor_prefs
+        _sensor_trigger_allowed = MainWindow._sensor_trigger_allowed
+        _window_suspended = MainWindow._window_suspended
         _trigger_sensor_scan = MainWindow._trigger_sensor_scan
         _on_sensor_poll_done = MainWindow._on_sensor_poll_done
 
@@ -286,16 +288,17 @@ def test_a_stale_or_released_poll_result_is_dropped() -> None:
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_live_probe_evidence_feeds_the_arbiter_before_the_flow() -> None:
-    # A live capability probe read the device and consumed any latch; its
-    # snapshot is observed exactly once. Failed probes and probes of a
-    # different device are never sensor evidence, and cached snapshots
-    # bypass this path entirely.
-    from scanmole.options import Capability
+def test_only_flow_accepted_probe_evidence_feeds_the_arbiter() -> None:
+    # A live capability probe read the device and consumed any latch, but
+    # only the flow knows whether that read still describes the current
+    # selection. A result it rejects (another device, a source the user
+    # has left) must not arm anything, and a cached snapshot never
+    # reaches this path at all.
     from scanmole_gui.app import MainWindow
-    from scanmole_gui.probing import ProbeRequest
+    from scanmole_gui.probing import CapabilityUpdate, ProbeRequest
 
     order: list[str] = []
+    outcome: list[CapabilityUpdate] = []
 
     class Window:
         _on_probe_done = MainWindow._on_probe_done
@@ -309,7 +312,7 @@ def test_live_probe_evidence_feeds_the_arbiter_before_the_flow() -> None:
                 @staticmethod
                 def probe_completed(*args: object) -> object:
                     order.append("flow")
-                    return None
+                    return outcome[0]
 
             self._flow = Flow()
 
@@ -330,17 +333,41 @@ def test_live_probe_evidence_feeds_the_arbiter_before_the_flow() -> None:
             self.observed.append((snapshot, defer_trigger))
 
         def _render_capability_update(self, update: object) -> None:
-            pass
+            order.append("render")
 
     window: Any = Window()
-    live = {"scan": Capability(kind="bool", current="yes")}
-    window._on_probe_done(1, ProbeRequest("sane:0", ()), live, 0)
-    assert order == ["observe", "flow"]  # fed before caching or rendering
+    outcome.append(CapabilityUpdate())  # the flow rejected the result
+    window._on_probe_done(1, ProbeRequest("sane:0", ()), {}, 0)
+    assert window.observed == []
+    assert order == ["flow", "render"]
+
+    order.clear()
+    outcome[0] = CapabilityUpdate(sensor_caps={})
+    window._on_probe_done(1, ProbeRequest("sane:0", ()), {}, 0)
+    assert order == ["flow", "observe", "render"]  # accepted, before rendering
     assert window.observed[0][1] is True  # the trigger is deferred
 
-    window._on_probe_done(1, ProbeRequest("sane:0", ()), None, 0)  # failed probe
-    window._on_probe_done(1, ProbeRequest("other:1", ()), live, 0)  # other device
-    assert len(window.observed) == 1  # neither counted as sensor evidence
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_a_hidden_window_consumes_a_trigger_instead_of_scanning() -> None:
+    # Polls skip their tick while the window is hidden, so a read already
+    # in flight when it went away must not start a scan either. The edge
+    # is consumed, which is what keeps it from firing on return.
+    window = _duck_window(mapping="same")
+    window.is_suspended = lambda: True
+    window._observe_sensors(_IDLE)
+
+    window._observe_sensors(_BUTTON)
+    assert window.started == []
+
+    window.is_suspended = lambda: False
+    window._observe_sensors(_BUTTON)  # still latched: no new edge
+    assert window.started == []
+    window._observe_sensors(_IDLE)
+    window._observe_sensors(_BUTTON)
+    assert window.started == ["collect"]
 
 
 @_NEEDS_GI

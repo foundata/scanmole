@@ -142,6 +142,15 @@ class CapabilityUpdate:
     """
 
     start_probe: tuple[int, ProbeRequest] | None = None
+    sensor_caps: dict[str, Capability] | None = None
+    """A live listing accepted for the current selection, once.
+
+    Sensor evidence must not outlive the selection it was read under: a
+    result the flow rejects as stale (another device, a source the user
+    has left) describes state that is no longer the one a trigger would
+    act on. Only what survives every staleness check is offered here,
+    and cached snapshots never are.
+    """
     source_blocked: dict[str, str] | None = None
     mode_blocked: dict[str, str] | None = None
     select_source: str | None = None
@@ -268,11 +277,27 @@ class CapabilityFlow:
             # availability (until the current source's own queued probe
             # lands, or forever when none is running).
             return update
+        if isinstance(snapshot, dict):
+            # A live read of the currently selected state: it consumed
+            # whatever sensor latch the device held, so the window folds
+            # it into the arbiter exactly once.
+            update.sensor_caps = snapshot
         follow = self._apply(update, request, snapshot, current_source)
         if update.select_source is not None:
             current_source = update.select_source
         self._launch(update, follow, device, current_source)
         return update
+
+    def sensor_settings(self, device: str | None, current_source: str) -> Settings:
+        """The applied settings an idle sensor read must use.
+
+        The same state a refinement of the current source would probe, so
+        polls read the sensors of the selected source rather than of the
+        device's default one, and the engine's own sensor reads (taken
+        with the acquisition settings applied) stay comparable. Empty
+        when nothing is derivable yet.
+        """
+        return self._settings_for(device, current_source) or ()
 
     def _settings_for(self, device: str | None, current_source: str) -> Settings | None:
         """The applied settings a refinement of the current source uses.

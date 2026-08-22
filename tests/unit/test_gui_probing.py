@@ -492,6 +492,57 @@ def test_flow_obsolete_source_result_cannot_block_a_valid_choice() -> None:
     assert current.mode_blocked == {}  # everything the flatbed offers
 
 
+def test_an_obsolete_source_result_is_not_sensor_evidence() -> None:
+    # Same race, seen from the sensor side: an ADF paper level arriving
+    # after the user picked the flatbed would arm an insertion the
+    # flatbed knows nothing about, and Start would run a flatbed scan.
+    flow, adf_token, adf_request = _flow_with_pending_adf_refinement()
+    flow.change_source("dev-a", False, "flatbed", True)
+
+    stale = flow.probe_completed(
+        adf_token, adf_request, _caps("ADF Duplex", "Flatbed"), "dev-a", "flatbed"
+    )
+    assert stale.sensor_caps is None
+
+    flat_token, flat_request = stale.start_probe or (0, ProbeRequest("dev-a"))
+    current = flow.probe_completed(
+        flat_token, flat_request, _caps("ADF Duplex", "Flatbed"), "dev-a", "flatbed"
+    )
+    assert current.sensor_caps is not None  # the selected source's own read
+
+
+def test_a_cached_snapshot_is_never_fresh_sensor_evidence() -> None:
+    # Returning to a source renders from the cache without touching the
+    # device, so nothing was read and no latch was consumed.
+    flow, adf_token, adf_request = _flow_with_pending_adf_refinement()
+    flow.probe_completed(
+        adf_token, adf_request, _caps("ADF Duplex", "Flatbed"), "dev-a", "adf-duplex"
+    )
+
+    back = flow.change_source("dev-a", False, "adf-duplex", True)
+
+    assert back.start_probe is None  # served from the cache
+    assert back.sensor_caps is None
+
+
+def test_sensor_settings_apply_the_selected_source() -> None:
+    # Idle polls must read the sensors of the source the user picked,
+    # the same state the engine applies for its own sensor reads.
+    flow = CapabilityFlow(preferred_source="adf-duplex")
+    assert flow.sensor_settings("dev-a", "adf-duplex") == ()  # nothing probed yet
+
+    started = flow.select_device("dev-a", False, "adf-duplex")
+    assert started.start_probe is not None
+    token, request = started.start_probe
+    flow.probe_completed(
+        token, request, _caps("ADF Duplex", "Flatbed"), "dev-a", "adf-duplex"
+    )
+
+    assert flow.sensor_settings("dev-a", "adf-duplex") == (("--source", "ADF Duplex"),)
+    assert flow.sensor_settings("dev-a", "flatbed") == (("--source", "Flatbed"),)
+    assert flow.sensor_settings("dev-b", "adf-duplex") == ()  # another device
+
+
 def test_flow_reset_clears_a_cancelled_running_probe() -> None:
     # The scan takeover cancels the advisory worker, so the running
     # probe's completion never arrives. Without the reset every later

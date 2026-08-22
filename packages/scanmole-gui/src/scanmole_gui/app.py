@@ -729,6 +729,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         reconciliation select) is widget-callback context only the form
         has; the GTK-free flow owns everything else.
         """
+        # Sensor evidence is source-dependent state: what the previous
+        # source latched says nothing about this one, so the next
+        # observation is a baseline again.
+        self._sensor_arbiter.reset()
         update = self._flow.change_source(
             self._selected_device(),
             self._runner is not None,
@@ -772,15 +776,18 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     ) -> None:
         if self._released or generation != self._advisory.generation:
             return  # cancelled underneath: the result must not render
-        if isinstance(snapshot, dict) and request.device == self._selected_device():
-            # A live probe read the device and consumed any sensor latch;
-            # feed it to the arbiter before caching or rendering, so the
-            # event is observed exactly once. Cached snapshots never come
-            # through here and never count as fresh sensor evidence.
-            self._observe_sensors(assess_sensors(snapshot), defer_trigger=True)
         update = self._flow.probe_completed(
             token, request, snapshot, self._selected_device(), self._form.source_value()
         )
+        if update.sensor_caps is not None:
+            # A live probe read the device and consumed any sensor latch,
+            # and the flow accepted it for the current selection: fold it
+            # into the arbiter exactly once. A rejected result describes
+            # another device or a source the user has left, and a cached
+            # snapshot is not fresh evidence at all.
+            self._observe_sensors(
+                assess_sensors(update.sensor_caps), defer_trigger=True
+            )
         self._render_capability_update(update)
 
     def _render_capability_update(self, update: CapabilityUpdate) -> None:
@@ -886,8 +893,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._sensor_poll_id = None
         if not self._sensor_polling_wanted():
             return bool(GLib.SOURCE_REMOVE)
-        suspended = self.is_suspended() if hasattr(self, "is_suspended") else False
-        if suspended or not self._gate.try_acquire("sensor"):
+        if self._window_suspended() or not self._gate.try_acquire("sensor"):
             # Transient (hidden window, discovery or a probe owns the
             # device): skip this tick, try again a full interval later.
             self._schedule_sensor_poll()
@@ -898,16 +904,34 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             return bool(GLib.SOURCE_REMOVE)
         self._sensor_poll_busy = True
         self._advisory.spawn_worker(
-            self._sensor_worker, device, self._advisory.generation
+            self._sensor_worker,
+            device,
+            self._flow.sensor_settings(device, self._form.source_value()),
+            self._advisory.generation,
         )
         return bool(GLib.SOURCE_REMOVE)
 
-    def _sensor_worker(self, device: str, generation: int) -> None:
-        """Worker thread: one gated sensor read, result to the main loop."""
+    def _window_suspended(self) -> bool:
+        """Whether the window is currently hidden from the user.
+
+        ``is_suspended`` needs GTK 4.12; older runtimes simply never
+        report suspension.
+        """
+        return bool(self.is_suspended()) if hasattr(self, "is_suspended") else False
+
+    def _sensor_worker(
+        self, device: str, settings: tuple[tuple[str, str], ...], generation: int
+    ) -> None:
+        """Worker thread: one gated sensor read, result to the main loop.
+
+        ``settings`` applies the selected source, exactly as the engine's
+        own sensor reads do: a paper level read from the device's default
+        source would answer a question nobody asked.
+        """
         try:
             caps = probe_snapshot(
                 device,
-                (),
+                settings,
                 SENSOR_PROBE_TIMEOUT_SECONDS,
                 on_spawn=self._advisory.adopter(generation),
             )
@@ -965,7 +989,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             reason = "paper inserted"
         if flow is None:
             return
-        if not self._scan_allowed():
+        if not self._sensor_trigger_allowed():
             return  # consumed and ignored, never queued
         self._append_log(f"[gui] {reason}: starting a scan")
         if defer_trigger:
@@ -974,9 +998,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         else:
             self._trigger_sensor_scan(flow)
 
+    def _sensor_trigger_allowed(self) -> bool:
+        """Whether a sensor edge may start a scan right now.
+
+        The Start predicate plus window visibility: a poll skips its tick
+        while the window is hidden, so a read that was already in flight
+        when it went away must not start a scan either. The edge is
+        consumed rather than remembered, which is also what keeps a latch
+        from firing once the window comes back.
+        """
+        return self._scan_allowed() and not self._window_suspended()
+
     def _trigger_sensor_scan(self, flow: SheetFlow) -> bool:
         """Start a sensor-triggered scan; re-checks the Start predicate."""
-        if not self._released and self._scan_allowed():
+        if not self._released and self._sensor_trigger_allowed():
             self._on_scan_clicked(flow)
         return bool(GLib.SOURCE_REMOVE)
 
