@@ -556,3 +556,95 @@ def test_flow_reset_clears_a_cancelled_running_probe() -> None:
 
     assert fresh.start_probe is not None  # starts at once, nothing queued
     assert fresh.start_probe[1] == ProbeRequest("dev-a")  # bare comes first
+
+
+def _sensing_caps(*sources: str, page_loaded: str):  # type: ignore[no-untyped-def]
+    caps = _caps(*sources)
+    caps["page-loaded"] = Capability(kind="bool", current=page_loaded)
+    return caps
+
+
+def test_a_bare_default_source_listing_is_not_sensor_evidence() -> None:
+    # The bare probe reads the backend's default source, which need not be
+    # the selected one. On a flatbed-default device with paper already in
+    # the ADF that pair reads no, then yes: a synthetic insertion edge
+    # that would auto-start a scan on paper nobody just inserted.
+    flow = CapabilityFlow(preferred_source="adf-duplex")
+    started = flow.select_device("dev-a", False, "adf-duplex")
+    assert started.start_probe is not None
+    token, request = started.start_probe
+
+    bare = flow.probe_completed(
+        token,
+        request,
+        _sensing_caps("ADF Duplex", "Flatbed", page_loaded="no"),
+        "dev-a",
+        "adf-duplex",
+    )
+    assert bare.sensor_caps is None  # the default source answered, not ours
+
+    assert bare.start_probe is not None
+    adf_token, adf_request = bare.start_probe
+    applied = flow.probe_completed(
+        adf_token,
+        adf_request,
+        _sensing_caps("ADF Duplex", "Flatbed", page_loaded="yes"),
+        "dev-a",
+        "adf-duplex",
+    )
+    # The selected source's own read is the first evidence, so it becomes
+    # the arbiter's baseline instead of the far end of a false edge.
+    assert applied.sensor_caps is not None
+    assert applied.sensor_caps["page-loaded"].current == "yes"
+
+
+def test_a_source_less_device_still_offers_bare_sensor_evidence() -> None:
+    # Nothing better exists on a device without a source option, and the
+    # bare listing is then exactly the state a scan would run in.
+    flow = CapabilityFlow()
+    started = flow.select_device("dev-a", False, "adf-duplex")
+    assert started.start_probe is not None
+    token, request = started.start_probe
+
+    bare = flow.probe_completed(
+        token,
+        request,
+        {"page-loaded": Capability(kind="bool", current="yes")},
+        "dev-a",
+        "adf-duplex",
+    )
+
+    assert bare.sensor_caps is not None
+    assert bare.start_probe is None  # no source to refine with
+
+
+def test_sole_source_adoption_still_yields_its_own_sensor_evidence() -> None:
+    # The reconciliation moves the selection while the bare result is
+    # being applied, so the match has to be made against the source that
+    # ends up selected, not the one the window came in with.
+    flow = CapabilityFlow(preferred_source="adf-duplex")
+    started = flow.select_device("dev-a", False, "adf-duplex")
+    assert started.start_probe is not None
+    token, request = started.start_probe
+
+    bare = flow.probe_completed(
+        token,
+        request,
+        _sensing_caps("ADF Front", page_loaded="no"),
+        "dev-a",
+        "adf-duplex",
+    )
+
+    assert bare.adopted_sole_source == "adf"
+    assert bare.sensor_caps is None
+    assert bare.start_probe is not None
+    adf_token, adf_request = bare.start_probe
+    assert adf_request.settings == (("--source", "ADF Front"),)
+    applied = flow.probe_completed(
+        adf_token,
+        adf_request,
+        _sensing_caps("ADF Front", page_loaded="no"),
+        "dev-a",
+        "adf",
+    )
+    assert applied.sensor_caps is not None

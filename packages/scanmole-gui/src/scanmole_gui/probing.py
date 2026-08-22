@@ -143,13 +143,16 @@ class CapabilityUpdate:
 
     start_probe: tuple[int, ProbeRequest] | None = None
     sensor_caps: dict[str, Capability] | None = None
-    """A live listing accepted for the current selection, once.
+    """A live listing read under the selected source, offered once.
 
-    Sensor evidence must not outlive the selection it was read under: a
+    Sensor evidence must describe the source a trigger would act on. A
     result the flow rejects as stale (another device, a source the user
-    has left) describes state that is no longer the one a trigger would
-    act on. Only what survives every staleness check is offered here,
-    and cached snapshots never are.
+    has left) describes state nobody selected, and a bare listing
+    describes whatever source the backend defaults to, which pairs with
+    the source-applied listing into a no-to-yes edge nobody caused. Only
+    a listing matching the settings the effective current source implies
+    is offered here (bare only where none can be derived), and cached
+    snapshots never are.
     """
     source_blocked: dict[str, str] | None = None
     mode_blocked: dict[str, str] | None = None
@@ -277,14 +280,20 @@ class CapabilityFlow:
             # availability (until the current source's own queued probe
             # lands, or forever when none is running).
             return update
-        if isinstance(snapshot, dict):
-            # A live read of the currently selected state: it consumed
-            # whatever sensor latch the device held, so the window folds
-            # it into the arbiter exactly once.
-            update.sensor_caps = snapshot
         follow = self._apply(update, request, snapshot, current_source)
         if update.select_source is not None:
             current_source = update.select_source
+        if isinstance(snapshot, dict) and request.settings == (
+            self._settings_for(device, current_source) or ()
+        ):
+            # A live read of the state the selected source implies: it
+            # consumed whatever latch the device held, so the window folds
+            # it into the arbiter exactly once. Matched after the apply
+            # because a sole-source adoption moves the selection while
+            # this very snapshot is being applied. A bare listing answers
+            # for the backend's default source and only counts where no
+            # source-applied state exists to prefer.
+            update.sensor_caps = snapshot
         self._launch(update, follow, device, current_source)
         return update
 

@@ -528,3 +528,49 @@ def test_a_confirmed_discard_closes_and_echoes_the_log_to_stderr(
 
     assert "recover with" in capsys.readouterr().err
     assert window._log.lines[-1].startswith("kept in")  # still in the pane
+
+
+def test_probe_evidence_feeds_the_arbiter_without_a_synthetic_edge() -> None:
+    # The whole chain, GTK-free: capability flow to arbiter. Device
+    # selection probes bare and then source-applied; with paper already
+    # loaded those two listings disagree only because they describe
+    # different sources. Nothing may trigger from that, while a genuine
+    # transition seen later by the idle poller still must.
+    from scanmole.options import Capability
+    from scanmole.sensors import assess_sensors
+    from scanmole_gui.probing import CapabilityFlow
+
+    def caps(page_loaded: str) -> dict[str, Capability]:
+        return {
+            "source": Capability(kind="enum", choices=["ADF Duplex", "Flatbed"]),
+            "page-loaded": Capability(kind="bool", current=page_loaded),
+        }
+
+    flow = CapabilityFlow(preferred_source="adf-duplex")
+    arbiter = SensorArbiter()
+    observed: list[Observation] = []
+
+    def feed(update: Any) -> None:
+        if update.sensor_caps is not None:
+            observed.append(arbiter.observe(assess_sensors(update.sensor_caps)))
+
+    started = flow.select_device("dev-a", False, "adf-duplex")
+    assert started.start_probe is not None
+    token, request = started.start_probe
+    bare = flow.probe_completed(token, request, caps("no"), "dev-a", "adf-duplex")
+    feed(bare)
+    assert bare.start_probe is not None
+    adf_token, adf_request = bare.start_probe
+    applied = flow.probe_completed(
+        adf_token, adf_request, caps("yes"), "dev-a", "adf-duplex"
+    )
+    feed(applied)
+
+    # One observation only (the selected source's), and a baseline never
+    # triggers, so the loaded sheet stays state rather than a request.
+    assert observed == [Observation()]
+
+    # A genuine transition afterwards still arms exactly once.
+    assert arbiter.observe(_IDLE) == Observation()
+    assert arbiter.observe(_PAPER) == Observation(insert=True)
+    assert arbiter.observe(_PAPER) == Observation()
