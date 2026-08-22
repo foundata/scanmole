@@ -191,9 +191,9 @@ def test_page_size_gates_the_family_preference() -> None:
     form = _form(events)
     form.apply_settings({})
 
-    assert form._size_pref_dropdown.get_sensitive() is True  # Automatic
+    assert form._size_pref_row.get_sensitive() is True  # Automatic
     form.apply_settings({"page_size": "a4"})
-    assert form._size_pref_dropdown.get_sensitive() is False
+    assert form._size_pref_row.get_sensitive() is False
     # The disabled dropdown keeps its value.
     assert form.persisted_values()["auto_size_preference"] == "iso"
 
@@ -242,14 +242,18 @@ def test_running_state_toggles_the_form() -> None:
     # The Scan card hosts Cancel, so it stays sensitive while every one
     # of its settings rows locks individually.
     assert form.scan_group.get_sensitive() is True
-    assert [row.get_sensitive() for row in form._scan_setting_rows] == [False] * 6
+    assert [row.get_sensitive() for row in form._scan_setting_rows] == [False] * len(
+        form._scan_setting_rows
+    )
     assert form.behaviour_group.get_sensitive() is False
     assert form.processing_group.get_sensitive() is False
 
     form.set_running(False)
     assert form._scan_row.get_visible() is True
     assert form._cancel_row.get_visible() is False
-    assert [row.get_sensitive() for row in form._scan_setting_rows] == [True] * 6
+    assert [row.get_sensitive() for row in form._scan_setting_rows] == [True] * len(
+        form._scan_setting_rows
+    )
     assert form.behaviour_group.get_sensitive() is True
 
 
@@ -259,13 +263,18 @@ def test_source_changes_carry_the_manual_context() -> None:
     form.apply_settings({})
     events.calls.clear()
 
-    form._source_row.select("adf")  # what a user click goes through
+    # The default is the duplex feeder, so a click onto the flatbed is a
+    # real change on the paper-path row.
+    form._path_row.select("flatbed")  # what a user click goes through
     assert ("source", (True,)) in events.calls
+    assert form.source_value() == "flatbed"
 
     events.calls.clear()
-    form.select_source("flatbed")  # a flow reconciliation
+    form.select_source("adf-back")  # a flow reconciliation
     assert ("source", (False,)) in events.calls
-    assert form.source_value() == "flatbed"
+    assert form.source_value() == "adf-back"
+    # One report per composite update, not one per row that moved.
+    assert events.names().count("source") == 1
 
 
 def test_availability_passes_through_with_the_blocked_callback() -> None:
@@ -369,7 +378,7 @@ def test_scan_request_takes_the_flow_from_the_trigger_not_the_widgets() -> None:
 def test_stack_switch_selects_single_on_a_feeder() -> None:
     events = Events()
     form = _form(events)
-    form._source_row.select("adf")
+    form._apply_source("adf")
 
     assert form.sheet_flow_value() == "stack"  # on by default
 
@@ -383,18 +392,18 @@ def test_stack_switch_selects_single_on_a_feeder() -> None:
 def test_stack_switch_is_gated_and_ignored_on_the_flatbed() -> None:
     events = Events()
     form = _form(events)
-    form._source_row.select("adf")
+    form._apply_source("adf")
     form._stack_row.set_active(False)
     assert form._stack_row.get_sensitive() is True
 
-    form._source_row.select("flatbed")
+    form._apply_source("flatbed")
 
     # A flatbed has no loaded stack: the switch grays out and its off
     # state never turns the scan into single.
     assert form._stack_row.get_sensitive() is False
     assert form.sheet_flow_value() == "stack"
 
-    form._source_row.select("adf-duplex")
+    form._apply_source("adf-duplex")
     assert form._stack_row.get_sensitive() is True
     assert form.sheet_flow_value() == "single"  # the off state was kept
 
@@ -413,7 +422,7 @@ def test_stack_switch_round_trips_through_settings() -> None:
 def test_primary_scan_uses_the_single_flow_when_stack_is_off() -> None:
     events = Events()
     form = _form(events)
-    form._source_row.select("adf")
+    form._apply_source("adf")
     form._stack_row.set_active(False)
     events.calls.clear()
 
@@ -459,6 +468,7 @@ def test_behaviour_group_holds_the_flow_and_trigger_rows_in_order() -> None:
         "Scan all pages in feeder",
         "Auto-start when paper is inserted",
         "Hardware scan button",
+        "Preferred paper sizes",
     ]
     # The Scanner group keeps the device, the source and the actions.
     assert form._scan_row.get_parent() is not None
@@ -504,3 +514,78 @@ def test_archival_toggle_round_trips_and_follows_ocr() -> None:
     form.apply_settings({"pdfa": False})
     assert form.persisted_values()["pdfa"] is False
     assert form.scan_request("sane:0", Path("/tmp")).pdfa is False
+
+
+def test_the_two_source_rows_compose_the_engine_value() -> None:
+    events = Events()
+    form = _form(events)
+
+    for source, path, side in (
+        ("adf", "feeder", "front"),
+        ("adf-back", "feeder", "back"),
+        ("adf-duplex", "feeder", "both"),
+        ("flatbed", "flatbed", None),
+    ):
+        form._apply_source(source)
+        assert form._path_row.value() == path, source
+        if side is not None:
+            assert form._sides_row.value() == side, source
+        assert form.source_value() == source
+
+    # The flatbed has no side to choose, so the row is inert and its
+    # value cannot leak into the composed source.
+    form._apply_source("flatbed")
+    assert form._sides_row.row.get_sensitive() is False
+    form._sides_row.select("back")
+    assert form.source_value() == "flatbed"
+
+
+def test_source_availability_splits_across_the_two_rows() -> None:
+    events = Events()
+    form = _form(events)
+
+    # The iX100: one simplex feeder, nothing else. The feeder itself
+    # stays available because one of its sides is.
+    form.set_source_availability(
+        {
+            "flatbed": "no flatbed",
+            "adf-duplex": "no duplex",
+            "adf-back": "no back side",
+        }
+    )
+    assert form._path_row._blocked == {"flatbed": "no flatbed"}
+    assert form._sides_row._blocked == {"both": "no duplex", "back": "no back side"}
+
+    # A flatbed-only device: every feeder side is out, so the feeder is too.
+    form.set_source_availability(
+        {"adf": "no feeder", "adf-duplex": "no feeder", "adf-back": "no feeder"}
+    )
+    assert form._path_row._blocked == {"feeder": "no feeder"}
+    assert set(form._sides_row._blocked) == {"front", "back", "both"}
+
+
+def test_a_blocked_saved_side_keeps_start_disabled() -> None:
+    # The saved choice is applied before the probe lands, exactly as at
+    # startup; the arriving block must not change it, only explain it.
+    events = Events()
+    form = _form(events)
+    form._apply_source("adf-duplex")
+
+    form.set_source_availability({"adf-duplex": "no duplex"})
+
+    assert form.source_value() == "adf-duplex"  # never silently changed
+    assert form.selection_blocked_reason() == "no duplex"
+
+
+def test_a_blocked_side_is_ignored_while_the_flatbed_is_selected() -> None:
+    events = Events()
+    form = _form(events)
+    form.set_source_availability({"adf-duplex": "no duplex"})
+    form._apply_source("adf-duplex")
+    assert form.selection_blocked_reason() == "no duplex"
+
+    form._path_row.select("flatbed")
+
+    # The sides row is inert on the flatbed, so its blocked value must
+    # not keep Start disabled.
+    assert form.selection_blocked_reason() is None

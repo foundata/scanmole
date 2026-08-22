@@ -59,7 +59,9 @@ class ChoiceRow:
     Renders the options as an inline ``Adw.ToggleGroup`` (all choices visible,
     per the design) when libadwaita provides it (>= 1.7); older platforms
     (e.g. Ubuntu 24.04) fall back to a plain ``Adw.ComboRow`` so the full
-    option set stays available everywhere.
+    option set stays available everywhere. ``dropdown=True`` picks the
+    combo row deliberately, for choices whose labels are too long to read
+    as inline toggles; the blocking semantics are identical either way.
     """
 
     def __init__(
@@ -69,11 +71,12 @@ class ChoiceRow:
         items: tuple[tuple[str, str], ...],
         on_change: Callable[[], None] | None = None,
         tooltips: tuple[str, ...] | None = None,
+        dropdown: bool = False,
     ) -> None:
         """Build the row inside ``group``.
 
         ``tooltips`` explains the items one by one (empty string = none);
-        the dropdown fallback has no per-item tooltips.
+        the dropdown rendering has no per-item tooltips.
         """
         self._items = items
         self._on_change = on_change
@@ -81,7 +84,7 @@ class ChoiceRow:
         self._on_blocked: Callable[[str, str], None] | None = None
         self._reverting = False
         self._current = items[0][1]
-        if hasattr(Adw, "ToggleGroup"):
+        if hasattr(Adw, "ToggleGroup") and not dropdown:
             self.row: Adw.ActionRow = Adw.ActionRow(title=title)
             self._toggles = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
             for index, (label, _value) in enumerate(items):
@@ -95,6 +98,9 @@ class ChoiceRow:
         else:
             self._toggles = None
             self._combo = Adw.ComboRow(title=title)
+            # The default factory caps labels near 20 characters, which
+            # would ellipsize long choices such as the feeder's full name.
+            self._combo.set_factory(plain_string_factory())
             self._combo.set_model(Gtk.StringList.new([label for label, _v in items]))
             self._combo.connect("notify::selected", self._changed)
             self.row = self._combo

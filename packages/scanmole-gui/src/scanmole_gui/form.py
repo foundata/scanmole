@@ -38,18 +38,28 @@ from scanmole_gui.widgets import (  # noqa: E402
     plain_string_factory,
 )
 
-SOURCES = (
+# The engine takes one four-valued --source; the form splits it into the
+# two independent things it really is: which paper path the sheets travel,
+# and which of their sides get scanned. PAPER_PATHS is a dropdown because
+# the feeder's full name is far too long to read as an inline toggle.
+PAPER_PATHS = (
     (_("Flatbed"), "flatbed"),
-    (_("ADF"), "adf"),
-    (_("ADF Duplex"), "adf-duplex"),
-    (_("ADF Back"), "adf-back"),
+    (_("Automatic Document Feeder (ADF)"), "feeder"),
 )
-SOURCE_TOOLTIPS = (
-    _("Single page from the flatbed glass"),
-    _("Automatic Document Feeder — front sides only"),
-    _("Automatic Document Feeder — both sides of every sheet"),
-    _("Automatic Document Feeder — back sides only"),
+SIDES = (
+    (_("Front"), "front"),
+    (_("Back"), "back"),
+    (_("Both"), "both"),
 )
+SIDE_TOOLTIPS = (
+    _("Front sides only"),
+    _("Back sides only"),
+    _("Both sides of every sheet"),
+)
+# Composition of the two rows onto the engine's source values. A flatbed
+# has no sides to choose, so it maps whatever the sides row says.
+_FEEDER_SOURCES = {"front": "adf", "back": "adf-back", "both": "adf-duplex"}
+_SIDE_FOR_SOURCE = {value: side for side, value in _FEEDER_SOURCES.items()}
 # Literal labels: xgettext only extracts literal _() calls, so building
 # this from SCAN_MODES would silently drop the labels from the catalog.
 MODES = (
@@ -62,9 +72,9 @@ if tuple(value for _label, value in MODES) != tuple(
     value for _label, value in SCAN_MODES
 ):  # pragma: no cover -- import-time consistency guard
     raise RuntimeError("MODES and scanmole_gui.modes.SCAN_MODES diverged")
-if tuple(value for _label, value in SOURCES) != SOURCE_VALUES:
+if sorted(["flatbed", *_FEEDER_SOURCES.values()]) != sorted(SOURCE_VALUES):
     # pragma: no cover -- import-time consistency guard
-    raise RuntimeError("SOURCES and scanmole_gui.probing.SOURCE_VALUES diverged")
+    raise RuntimeError("the composed sources and SOURCE_VALUES diverged")
 MODE_TOOLTIPS = (
     _("Black and white (1-bit)"),
     "",
@@ -192,6 +202,7 @@ class ScanForm:
         self._languages: list[tuple[str, str]] = list(LANGUAGES)
         self._current_language = "deu+eng"
         self._reconciling_source = False
+        self._updating_source = False
         self._res_syncing = False
         self._res_value = 300
 
@@ -220,7 +231,8 @@ class ScanForm:
         # runs so the Cancel action inside the same card stays usable.
         self._scan_setting_rows = (
             self._device_row,
-            self._source_row.row,
+            self._path_row.row,
+            self._sides_row.row,
             self._mode_row.row,
             self._size_row,
             self._res_row,
@@ -249,13 +261,21 @@ class ScanForm:
         self._refresh_btn.connect("clicked", lambda *_a: self._on_refresh())
         self._device_row.add_suffix(self._refresh_btn)
         self.scan_group.add(self._device_row)
-        self._source_row = ChoiceRow(
+        self._path_row = ChoiceRow(
             self.scan_group,
             _("Source"),
-            SOURCES,
+            PAPER_PATHS,
             self._source_changed,
-            tooltips=SOURCE_TOOLTIPS,
+            dropdown=True,
         )
+        self._sides_row = ChoiceRow(
+            self.scan_group,
+            _("Sides"),
+            SIDES,
+            self._source_changed,
+            tooltips=SIDE_TOOLTIPS,
+        )
+        self._update_sides_row()
 
     def _add_scan_actions(self) -> None:
         """Add the primary Scan action and its Cancel counterpart.
@@ -350,6 +370,18 @@ class ScanForm:
         )
         self._button_row.connect("notify::selected", self._on_button_pref_changed)
         self.behaviour_group.add(self._button_row)
+        # Only automatic page sizes can be ambiguous, so the row grays out
+        # for a fixed size and says as much in its own words.
+        self._size_pref_row = Adw.ComboRow(
+            title=_("Preferred paper sizes"),
+            subtitle=_("Resolves automatic sizes that fit both A4 and Letter"),
+        )
+        self._size_pref_row.set_factory(plain_string_factory())
+        self._size_pref_row.set_model(
+            Gtk.StringList.new([label for label, _value in AUTO_SIZE_PREFERENCES])
+        )
+        self._size_pref_row.connect("notify::selected", self._on_document_changed)
+        self.behaviour_group.add(self._size_pref_row)
 
     def _on_button_pref_changed(self, *_args: object) -> None:
         """Forward the button-mapping choice to the window."""
@@ -396,7 +428,7 @@ class ScanForm:
         """The persisted sheet flow a primary Scan click uses."""
         if self._collect_row.get_active():
             return "collect"
-        if self._stack_row.get_active() or self._source_row.value() == "flatbed":
+        if self._stack_row.get_active() or self.source_value() == "flatbed":
             # The stack switch only means something on a feeder; a
             # flatbed delivers one frame per pass either way, so its
             # grayed-out state never turns a scan into single.
@@ -407,7 +439,7 @@ class ScanForm:
         """Gate the stack switch: only feeder sources have a loaded stack."""
         if not hasattr(self, "_stack_row"):
             return  # the source row's construction fires before the switch exists
-        self._stack_row.set_sensitive(self._source_row.value() != "flatbed")
+        self._stack_row.set_sensitive(self._path_row.value() != "flatbed")
 
     def _build_output_group(self) -> None:
         """Build the Output group (folder, filename template)."""
@@ -493,35 +525,15 @@ class ScanForm:
             self._on_document_changed,
             tooltips=MODE_TOOLTIPS,
         )
-        # Page size plus the automatic-size family preference in one row:
-        # the second dropdown only matters (and is only sensitive) while
-        # the first says Automatic; it keeps its value while disabled.
-        self._size_row = Adw.ActionRow(title=_("Page size"))
-        size_box = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            spacing=6,
-            halign=Gtk.Align.END,
-            valign=Gtk.Align.CENTER,
+        # The size itself is a plain choice; which paper family resolves an
+        # ambiguous automatic size is a rarely touched default and lives
+        # with the other seldom-changed options in Behaviour.
+        self._size_row = Adw.ComboRow(title=_("Page size"))
+        self._size_row.set_factory(plain_string_factory())
+        self._size_row.set_model(
+            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
         )
-        self._size_dropdown = Gtk.DropDown(
-            model=Gtk.StringList.new([label for label, _value in PAGE_SIZES])
-        )
-        self._size_dropdown.set_factory(plain_string_factory())
-        self._size_dropdown.connect("notify::selected", self._on_page_size_changed)
-        size_box.append(self._size_dropdown)
-        self._size_pref_dropdown = Gtk.DropDown(
-            model=Gtk.StringList.new([label for label, _value in AUTO_SIZE_PREFERENCES])
-        )
-        self._size_pref_dropdown.set_factory(plain_string_factory())
-        self._size_pref_dropdown.set_tooltip_text(
-            _("Resolves ambiguous automatic page sizes (A4 and Letter often both fit).")
-        )
-        self._size_pref_dropdown.update_property(
-            [Gtk.AccessibleProperty.LABEL], [_("Automatic size preference")]
-        )
-        self._size_pref_dropdown.connect("notify::selected", self._on_document_changed)
-        size_box.append(self._size_pref_dropdown)
-        self._size_row.add_suffix(size_box)
+        self._size_row.connect("notify::selected", self._on_page_size_changed)
         self.scan_group.add(self._size_row)
 
         # Hybrid resolution control, composed as entry / unit / stepper so
@@ -668,38 +680,89 @@ class ScanForm:
 
         Whether the change is manual (a preference) or programmatic (a
         reconciliation select) is widget-callback context only the form
-        has; the GTK-free flow owns everything else.
+        has; the GTK-free flow owns everything else. A composite update
+        (both rows moving for one engine value) reports once, at its end.
         """
+        if self._updating_source:
+            return
+        self._update_sides_row()
         self._update_stack_row()
         self._on_source_changed(not self._reconciling_source)
 
     def source_value(self) -> str:
-        """The CLI value of the selected source."""
-        return self._source_row.value()
+        """The engine source value composed from the two rows."""
+        if self._path_row.value() == "flatbed":
+            return "flatbed"  # a flatbed has no sides to choose
+        return _FEEDER_SOURCES[self._sides_row.value()]
 
     def select_source(self, value: str) -> None:
         """Select a source programmatically (a flow reconciliation)."""
         self._reconciling_source = True
         try:
-            self._source_row.select(value)
+            self._apply_source(value)
         finally:
             self._reconciling_source = False
+
+    def _apply_source(self, value: str) -> None:
+        """Decompose an engine source value onto both rows, reporting once."""
+        self._updating_source = True
+        try:
+            self._path_row.select("flatbed" if value == "flatbed" else "feeder")
+            side = _SIDE_FOR_SOURCE.get(value)
+            if side is not None:
+                self._sides_row.select(side)
+        finally:
+            self._updating_source = False
+        self._source_changed()
+
+    def _update_sides_row(self) -> None:
+        """Gate the sides row: only a feeder scans a chosen side."""
+        if not hasattr(self, "_sides_row"):
+            return  # the paper-path row's construction precedes it
+        self._sides_row.row.set_sensitive(self._path_row.value() != "flatbed")
 
     def mode_value(self) -> str:
         """The CLI value of the selected color mode."""
         return self._mode_row.value()
 
     def set_source_availability(self, blocked: dict[str, str]) -> None:
-        """Render which sources are selectable (value -> blocking reason)."""
-        self._source_row.set_availability(blocked, self._on_choice_blocked)
+        """Render which sources are selectable (value -> blocking reason).
+
+        The engine blocks whole source values; each row shows the part it
+        owns. The feeder itself is unavailable only when every one of its
+        sides is, and a side carries the reason of the source it composes.
+        """
+        path_blocked: dict[str, str] = {}
+        if "flatbed" in blocked:
+            path_blocked["flatbed"] = blocked["flatbed"]
+        feeder_reasons = [
+            blocked[value] for value in _FEEDER_SOURCES.values() if value in blocked
+        ]
+        if len(feeder_reasons) == len(_FEEDER_SOURCES):
+            path_blocked["feeder"] = feeder_reasons[0]
+        self._path_row.set_availability(path_blocked, self._on_choice_blocked)
+        sides_blocked = {
+            side: blocked[value]
+            for side, value in _FEEDER_SOURCES.items()
+            if value in blocked
+        }
+        self._sides_row.set_availability(sides_blocked, self._on_choice_blocked)
+        self._update_sides_row()
 
     def set_mode_availability(self, blocked: dict[str, str]) -> None:
         """Render which modes are selectable (value -> blocking reason)."""
         self._mode_row.set_availability(blocked, self._on_choice_blocked)
 
     def selection_blocked_reason(self) -> str | None:
-        """Why the current source or mode selection is unavailable, if so."""
-        return self._source_row.blocked_reason() or self._mode_row.blocked_reason()
+        """Why the current source or mode selection is unavailable, if so.
+
+        A blocked side only counts while the feeder is selected; on the
+        flatbed the sides row is inert.
+        """
+        reason = self._path_row.blocked_reason()
+        if reason is None and self._path_row.value() != "flatbed":
+            reason = self._sides_row.blocked_reason()
+        return reason or self._mode_row.blocked_reason()
 
     # ---------------------------------------------------------- languages
 
@@ -813,8 +876,11 @@ class ScanForm:
 
     def _on_page_size_changed(self, *_args: object) -> None:
         """Gate the family preference: it only applies in automatic mode."""
-        automatic = combo_value(self._size_dropdown, PAGE_SIZES) == "auto"
-        self._size_pref_dropdown.set_sensitive(automatic)
+        automatic = combo_value(self._size_row, PAGE_SIZES) == "auto"
+        if hasattr(self, "_size_pref_row"):
+            # The Scan group is built before Behaviour, so an early
+            # selection change can precede the row it gates.
+            self._size_pref_row.set_sensitive(automatic)
         self._on_document_changed()
 
     def refresh_document_hints(self) -> None:
@@ -889,19 +955,17 @@ class ScanForm:
 
     def apply_settings(self, settings: dict[str, object]) -> None:
         """Restore the form widgets from the persisted settings."""
-        self._source_row.select(str(settings.get("source", "adf-duplex")))
+        self._apply_source(str(settings.get("source", "adf-duplex")))
         self._mode_row.select(str(settings.get("mode", "lineart")))
         try:
             resolution = int(str(settings.get("resolution", "300")))
         except ValueError:
             resolution = 300
         self._set_resolution(resolution)
-        combo_select(
-            self._size_dropdown, PAGE_SIZES, str(settings.get("page_size", "auto"))
-        )
+        combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
         # A missing or unknown saved value keeps the default (index 0: ISO).
         combo_select(
-            self._size_pref_dropdown,
+            self._size_pref_row,
             AUTO_SIZE_PREFERENCES,
             str(settings.get("auto_size_preference", "iso")),
         )
@@ -936,9 +1000,9 @@ class ScanForm:
         return {
             "mode": self._mode_row.value(),
             "resolution": str(self.resolution()),
-            "page_size": combo_value(self._size_dropdown, PAGE_SIZES),
+            "page_size": combo_value(self._size_row, PAGE_SIZES),
             "auto_size_preference": combo_value(
-                self._size_pref_dropdown, AUTO_SIZE_PREFERENCES
+                self._size_pref_row, AUTO_SIZE_PREFERENCES
             ),
             "ocr": self._ocr_row.get_active(),
             "pdfa": self._pdfa_row.get_active(),
@@ -967,13 +1031,13 @@ class ScanForm:
         """
         return ScanRequest(
             device=device,
-            source=self._source_row.value(),
+            source=self.source_value(),
             mode=self._mode_row.value(),
             resolution=self.resolution(),
-            page_size=combo_value(self._size_dropdown, PAGE_SIZES),
+            page_size=combo_value(self._size_row, PAGE_SIZES),
             auto_size_preference=(
                 "north-american"
-                if combo_value(self._size_pref_dropdown, AUTO_SIZE_PREFERENCES)
+                if combo_value(self._size_pref_row, AUTO_SIZE_PREFERENCES)
                 == "north-american"
                 else "iso"
             ),
