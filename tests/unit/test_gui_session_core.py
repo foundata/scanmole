@@ -61,6 +61,7 @@ def test_argv_matches_the_cli_contract_exactly() -> None:
         "-l",
         "deu+eng",
         "--deskew",
+        "--pdfa",
         "-o",
         "/data/scan.pdf",
     ]
@@ -374,3 +375,13 @@ def test_argv_carries_a_non_default_sheet_flow() -> None:
 
     assert single[single.index("--sheet-flow") + 1] == "single"
     assert collect[collect.index("--sheet-flow") + 1] == "collect"
+
+
+def test_argv_carries_the_archival_choice() -> None:
+    # PDF/A is produced by the OCR stage, so the flag travels with every
+    # run and the engine ignores it when OCR is off.
+    archival = request_argv(_request(), "scanmole")
+    plain = request_argv(_request(pdfa=False), "scanmole")
+
+    assert "--pdfa" in archival and "--no-pdfa" not in archival
+    assert "--no-pdfa" in plain and "--pdfa" not in plain

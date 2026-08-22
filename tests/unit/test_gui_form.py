@@ -487,3 +487,20 @@ def test_the_preview_row_shows_the_bare_next_file_name() -> None:
     assert form._name_preview.get_text().endswith(".pdf")
     assert "Preview" not in form._name_preview.get_text()
     assert "monospace" in form._name_preview.get_css_classes()
+
+
+def test_archival_toggle_round_trips_and_follows_ocr() -> None:
+    events = Events()
+    form = _form(events)
+    form.apply_settings({})
+
+    assert form.persisted_values()["pdfa"] is True  # the CLI's own default
+    assert form._pdfa_row.get_sensitive() is True
+
+    form._ocr_row.set_active(False)  # PDF/A comes from the OCR stage
+    assert form._pdfa_row.get_sensitive() is False
+    assert form._lang_row.get_sensitive() is False
+
+    form.apply_settings({"pdfa": False})
+    assert form.persisted_values()["pdfa"] is False
+    assert form.scan_request("sane:0", Path("/tmp")).pdfa is False

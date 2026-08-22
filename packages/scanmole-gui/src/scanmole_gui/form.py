@@ -606,7 +606,7 @@ class ScanForm:
         self.processing_group.add(self._blank_row)
         self._ocr_row = Adw.SwitchRow(
             title=_("OCR (Optical Character Recognition)"),
-            subtitle=_("Make the PDF text-searchable (PDF/A)"),
+            subtitle=_("Make the PDF text-searchable"),
             active=True,
         )
         self._ocr_row.connect("notify::active", self._on_ocr_toggled)
@@ -618,6 +618,14 @@ class ScanForm:
         self._set_language_model()
         self._lang_row.connect("notify::selected", self._on_language_selected)
         self.processing_group.add(self._lang_row)
+        # Archival output is produced by the OCR stage, so like the
+        # language it only means something while OCR runs.
+        self._pdfa_row = Adw.SwitchRow(
+            title=_("Archival PDF/A"),
+            subtitle=_("Long-term preservation format; needs OCR"),
+            active=True,
+        )
+        self.processing_group.add(self._pdfa_row)
         self._deskew_row = Adw.SwitchRow(
             title=_("Deskew"),
             subtitle=_("Correct skewed scanned pages"),
@@ -731,8 +739,10 @@ class ScanForm:
         return self._current_language  # "Add more…" is never a language
 
     def _on_ocr_toggled(self, *_args: object) -> None:
-        """Enable the language selection only while OCR is on."""
-        self._lang_row.set_sensitive(self._ocr_row.get_active())
+        """Enable the OCR-dependent rows only while OCR is on."""
+        enabled = bool(self._ocr_row.get_active())
+        self._lang_row.set_sensitive(enabled)
+        self._pdfa_row.set_sensitive(enabled)
 
     # ---------------------------------------------------------- resolution
 
@@ -897,6 +907,7 @@ class ScanForm:
         )
         self._on_page_size_changed()
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
+        self._pdfa_row.set_active(bool(settings.get("pdfa", True)))
         self._deskew_row.set_active(bool(settings.get("deskew", True)))
         self.select_language(str(settings.get("lang", "deu+eng")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())
@@ -930,6 +941,7 @@ class ScanForm:
                 self._size_pref_dropdown, AUTO_SIZE_PREFERENCES
             ),
             "ocr": self._ocr_row.get_active(),
+            "pdfa": self._pdfa_row.get_active(),
             "deskew": self._deskew_row.get_active(),
             "lang": self.selected_language(),
             "skip_blanks": self._blank_row.get_active(),
@@ -967,6 +979,7 @@ class ScanForm:
             ),
             sheet_flow=sheet_flow,
             ocr=bool(self._ocr_row.get_active()),
+            pdfa=bool(self._pdfa_row.get_active()),
             lang=self.selected_language(),
             deskew=bool(self._deskew_row.get_active()),
             drop_blanks=bool(self._blank_row.get_active()),

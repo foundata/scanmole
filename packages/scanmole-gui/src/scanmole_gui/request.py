@@ -40,6 +40,9 @@ class ScanRequest:
     sheet_flow: SheetFlow = "stack"
     """How many physical sheets the run acquires. The default keeps the
     historic command line and is not emitted."""
+    pdfa: bool = True
+    """Archival PDF/A output. Produced by the OCR stage, so it only
+    takes effect while ``ocr`` is on."""
 
 
 def request_argv(request: ScanRequest, scanmole: str) -> list[str]:
@@ -60,6 +63,7 @@ def request_argv(request: ScanRequest, scanmole: str) -> list[str]:
     else:
         argv.append("--no-ocr")
     argv.append("--deskew" if request.deskew else "--no-deskew")
+    argv.append("--pdfa" if request.pdfa else "--no-pdfa")
     if not request.drop_blanks:
         argv.append("--keep-blanks")
     argv += ["-o", request.output]
