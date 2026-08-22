@@ -336,8 +336,7 @@ class ScanForm:
         self._collect_row = Adw.SwitchRow(
             title=_("Combine scans"),
             subtitle=_(
-                "Keep adding scans to the same document until you press "
-                "Finish (status bar)"
+                "Add scans to the same document until you press Finish (status bar)"
             ),
             active=False,
         )
@@ -353,7 +352,7 @@ class ScanForm:
         self._update_stack_row()
         self._insert_row = Adw.SwitchRow(
             title=_("Auto-start when paper is inserted"),
-            subtitle=_("Begin scanning when a sheet is loaded into the idle scanner"),
+            subtitle=_("Scan when a sheet is loaded into the idle scanner"),
             active=False,
         )
         self._insert_row.connect(
@@ -616,6 +615,12 @@ class ScanForm:
             active=True,
         )
         self.processing_group.add(self._blank_row)
+        self._deskew_row = Adw.SwitchRow(
+            title=_("Deskew"),
+            subtitle=_("Correct skewed scanned pages"),
+            active=True,
+        )
+        self.processing_group.add(self._deskew_row)
         self._ocr_row = Adw.SwitchRow(
             title=_("OCR (Optical Character Recognition)"),
             subtitle=_("Make the PDF text-searchable"),
@@ -638,12 +643,6 @@ class ScanForm:
             active=True,
         )
         self.processing_group.add(self._pdfa_row)
-        self._deskew_row = Adw.SwitchRow(
-            title=_("Deskew"),
-            subtitle=_("Correct skewed scanned pages"),
-            active=True,
-        )
-        self.processing_group.add(self._deskew_row)
 
     # ------------------------------------------------------------- devices
 

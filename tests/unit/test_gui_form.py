@@ -487,6 +487,27 @@ def _row_titles(widget: Any) -> list[str]:
     return titles
 
 
+def test_processing_group_orders_page_steps_before_the_ocr_chain() -> None:
+    events = Events()
+    form = _form(events)
+
+    titles = []
+    child = form.processing_group.get_first_child()
+    while child is not None:
+        titles.extend(_row_titles(child))
+        child = child.get_next_sibling()
+
+    # Page-level steps first, then the OCR chain and the archival output
+    # that its stage produces.
+    assert titles == [
+        "Skip blank pages",
+        "Deskew",
+        "OCR (Optical Character Recognition)",
+        "OCR Language",
+        "Archival PDF/A",
+    ]
+
+
 def test_the_preview_row_shows_the_bare_next_file_name() -> None:
     events = Events()
     form = _form(events, device="epsonds:net:10.0.0.2")

@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: scanmole\n"
 "Report-Msgid-Bugs-To: office@foundata.com\n"
-"POT-Creation-Date: 2026-08-22 04:14+0200\n"
+"POT-Creation-Date: 2026-08-22 04:18+0200\n"
 "PO-Revision-Date: 2026-07-26 06:15+0200\n"
 "Last-Translator: foundata <office@foundata.com>\n"
 "Language-Team: German\n"
@@ -456,10 +456,9 @@ msgid "Behaviour"
 msgstr "Verhalten"
 
 #: src/scanmole_gui/form.py:339
-msgid ""
-"Keep adding scans to the same document until you press Finish (status bar)"
+msgid "Add scans to the same document until you press Finish (status bar)"
 msgstr ""
-"Fügt weitere Scans zum selben Dokument hinzu, bis Sie auf Abschließen "
+"Fügt Scans zum selben Dokument hinzu, bis Sie auf Abschließen "
 "(Statusleiste) drücken"
 
 #: src/scanmole_gui/form.py:346
@@ -476,9 +475,8 @@ msgid "Auto-start when paper is inserted"
 msgstr "Automatisch beim Einlegen von Papier starten"
 
 #: src/scanmole_gui/form.py:356
-msgid "Begin scanning when a sheet is loaded into the idle scanner"
-msgstr ""
-"Startet einen Scan, sobald ein Blatt in den wartenden Scanner eingelegt wird"
+msgid "Scan when a sheet is loaded into the idle scanner"
+msgstr "Scannt, sobald ein Blatt in den wartenden Scanner eingelegt wird"
 
 #: src/scanmole_gui/form.py:365
 msgid "Hardware scan button"
@@ -582,8 +580,7 @@ msgstr "Bevorzugte Papierformate"
 
 #: src/scanmole_gui/form.py:639
 msgid "Resolves automatic sizes that fit both A4 and Letter"
-msgstr ""
-"Entscheidet automatische Formate, die zu A4 und Letter passen"
+msgstr "Entscheidet automatische Formate, die zu A4 und Letter passen"
 
 #: src/scanmole_gui/form.py:772
 msgid "Add more…"
