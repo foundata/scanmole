@@ -459,7 +459,11 @@ def test_build_scan_command_uses_batch_print(tmp_path: Path) -> None:
     )
 
     assert "--batch-print" in command
-    assert effective == EffectiveSettings(source=None, mode=None, resolution=None)
+    # An empty listing proves nothing, so the duplex request stands: the
+    # pipeline pairs the frames it would then get exactly the same way.
+    assert effective == EffectiveSettings(
+        source=None, mode=None, resolution=None, duplex=True
+    )
 
 
 def test_build_scan_command_auto_size_requests_the_full_window(
@@ -1680,6 +1684,55 @@ def test_collect_emits_settings_once_and_reads_sensors_with_them(
     assert set(sensor_settings) == {
         (("--source", "ADF Front"), ("--resolution", "300"))
     }
+
+
+def test_collect_counts_sheets_the_way_the_pipeline_pairs_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A device that advertises no usable sources leaves the duplex request
+    # standing, and that is what the pipeline pairs front and back frames
+    # by. The waiting status must agree: two frames of one duplex sheet
+    # are one sheet, never two.
+    commands = CollectCommands()
+    commands.feed_line("next\n")  # start the first segment at once
+    monkeypatch.setattr("scanmole.scanner._collect_commands", lambda: commands)
+    monkeypatch.setattr("scanmole.scanner.COLLECT_IDLE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_sensors",
+        lambda device, settings=(): SensorSnapshot(scan=None, page_loaded=None),
+    )
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        for index in (1, 2):  # front and back of one physical sheet
+            page = tmp_path / f"page_{index:04d}.pnm"
+            page.write_bytes(b"P4\n1 1\n\x00")
+            on_page(page)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    result = scan_to_files(
+        _config(sheet_flow="collect"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=True, stream=stream),
+        lambda p, o: None,
+    )
+
+    assert result.settings.duplex is True
+    waiting = [
+        json.loads(line)
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["event"] == "waiting"
+    ]
+    assert [(event["sheets"], event["pages"]) for event in waiting] == [(1, 2)]
 
 
 def test_collect_numbers_the_next_segment_past_unannounced_frames(

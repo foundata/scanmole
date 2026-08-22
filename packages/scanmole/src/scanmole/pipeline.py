@@ -346,8 +346,14 @@ def _apply_content_sizes(
     # Front/back frames of a duplex batch are the same physical sheet and
     # share one paper size. All measured frames enter the decision (dropped
     # blank backsides still pair with their front side); only kept pages are
-    # rewritten.
-    duplex = "duplex" in (source or config.source or "").lower()
+    # rewritten. The negotiation's own verdict decides, so this pairing and
+    # a collect run's sheet count can never disagree; without one (a failure
+    # before the first settings) the request is all there is.
+    duplex = (
+        negotiated[0].duplex
+        if negotiated
+        else "duplex" in (config.source or "").lower()
+    )
     sized: Counter[str] = Counter()
     crops = choose_crops(measured, dpi, flatbed, duplex, config.auto_size_preference)
     for decision in crops:

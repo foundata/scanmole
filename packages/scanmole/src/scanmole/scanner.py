@@ -97,6 +97,14 @@ class EffectiveSettings:
     on every other ``lineart-auto`` path an arriving 1-bit frame proves
     the faint request cannot be satisfied and the pipeline must stop.
     """
+    duplex: bool = False
+    """Whether the negotiated source delivers one sheet as two frames.
+
+    The single place that decides duplex pairing. A collect run counts
+    physical sheets with it and the pipeline pairs front and back frames
+    into one paper size with it, so a reported sheet count can never
+    contradict the sizing decision.
+    """
 
 
 @dataclass(frozen=True)
@@ -292,6 +300,7 @@ def build_scan_command(
             plan.mode.requested == "lineart-auto"
             and plan.mode.support is Support.NATIVE
         ),
+        duplex=plan.source.effective == "adf-duplex",
     )
 
 
@@ -762,7 +771,10 @@ def scan_to_files(
             read_sensors=lambda: probe_sensors(device, final_settings),
             feeder=conclusive
             and plan.source.effective in ("adf", "adf-duplex", "adf-back"),
-            duplex=conclusive and plan.source.effective == "adf-duplex",
+            # The pairing the pipeline will apply, never a second opinion:
+            # a sheet count that contradicts the sizing decision would
+            # report one duplex sheet as two.
+            duplex=effective.duplex,
             events=events,
             idle_seconds=COLLECT_IDLE_TIMEOUT_SECONDS,
         )

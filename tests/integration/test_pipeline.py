@@ -743,7 +743,11 @@ def test_auto_page_size_sizes_white_backed_frames_by_content(
         on_settings: object = None,
     ) -> ScanResult:
         settings = EffectiveSettings(
-            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+            source="ADF Duplex",
+            mode="Lineart",
+            resolution=dpi,
+            window_mm=window,
+            duplex=True,
         )
         assert callable(on_settings)
         on_settings(settings)
@@ -815,7 +819,11 @@ def test_mid_batch_failure_preserves_sized_pages(
         on_settings: object = None,
     ) -> ScanResult:
         settings = EffectiveSettings(
-            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+            source="ADF Duplex",
+            mode="Lineart",
+            resolution=dpi,
+            window_mm=window,
+            duplex=True,
         )
         assert callable(on_settings)
         on_settings(settings)
@@ -996,7 +1004,11 @@ def test_hardware_cropped_frames_stay_untouched(
         on_settings: object = None,
     ) -> ScanResult:
         settings = EffectiveSettings(
-            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+            source="ADF Duplex",
+            mode="Lineart",
+            resolution=dpi,
+            window_mm=window,
+            duplex=True,
         )
         assert callable(on_settings)
         on_settings(settings)
@@ -1206,7 +1218,11 @@ def _partial_crop_scan(frame_w: int, frame_h: int, boxes, dpi: int, window):  # 
         on_settings: object = None,
     ) -> ScanResult:
         settings = EffectiveSettings(
-            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+            source="ADF Duplex",
+            mode="Lineart",
+            resolution=dpi,
+            window_mm=window,
+            duplex=True,
         )
         assert callable(on_settings)
         on_settings(settings)
@@ -1598,7 +1614,11 @@ def test_white_clipped_height_is_content_sized_not_stripped(
         on_settings: object = None,
     ) -> ScanResult:
         settings = EffectiveSettings(
-            source="ADF Duplex", mode="Lineart", resolution=dpi, window_mm=window
+            source="ADF Duplex",
+            mode="Lineart",
+            resolution=dpi,
+            window_mm=window,
+            duplex=True,
         )
         assert callable(on_settings)
         on_settings(settings)
