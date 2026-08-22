@@ -79,11 +79,24 @@ def test_insert_needs_a_real_no_to_yes_transition() -> None:
     assert arbiter.observe(_PAPER) == Observation(insert=True)
 
 
-def test_a_yes_after_unavailable_paper_evidence_is_not_an_insertion() -> None:
+def test_paper_needs_an_observed_empty_level_to_be_an_insertion() -> None:
+    # Without one, a yes could just as well be a sheet that was lying
+    # there all along.
     arbiter = SensorArbiter()
     arbiter.observe(SensorSnapshot(scan=False, page_loaded=None))
 
     assert arbiter.observe(_PAPER) == Observation()
+
+
+def test_unavailable_reads_do_not_break_an_insertion_chain() -> None:
+    # Empty, then a poll the sensor did not answer, then paper: the sheet
+    # went in between those reads, whatever the gap. Forgetting the empty
+    # level here would drop a real insertion for no safety gain.
+    arbiter = SensorArbiter()
+    arbiter.observe(_IDLE)
+    arbiter.observe(SensorSnapshot(scan=False, page_loaded=None))
+
+    assert arbiter.observe(_PAPER) == Observation(insert=True)
 
 
 def test_button_and_insertion_in_one_observation_report_both() -> None:

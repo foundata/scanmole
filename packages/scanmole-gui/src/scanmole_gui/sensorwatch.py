@@ -135,8 +135,12 @@ class SensorArbiter:
             self._last_button = snapshot.scan
         insert = False
         if snapshot.page_loaded is not None:
-            # Only a real no-to-yes transition counts as an insertion; a
-            # yes following unavailable evidence proves nothing fresh.
+            # An insertion needs an observed empty level to come from, so
+            # a yes with no such evidence behind it (the option was never
+            # readable) proves nothing. Unavailable reads in between do
+            # not break the chain: paper absent at some point and present
+            # now is an insertion whether or not the sensor answered
+            # every poll along the way.
             insert = snapshot.page_loaded and self._last_paper is False
             self._last_paper = snapshot.page_loaded
         return Observation(button=button, insert=insert)
