@@ -124,7 +124,10 @@ without churning the device; the engine's own collect wait polls
 faster because a sheet is imminently expected there.
 """
 
-DEFAULT_WINDOW_SIZE = (1050, 655)  # starts in the two-column layout
+# Above the layout breakpoint and tall enough for both columns, so a first
+# start shows every setting instead of hiding some below the fold. A screen
+# too small for it gets a window clamped to the work area by the compositor.
+DEFAULT_WINDOW_SIZE = (1010, 879)
 
 # App-level styling: compact resolution preset chips, a dpi entry sized to
 # its digits, and no separator between the .joined-below/.joined-above row
