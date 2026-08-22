@@ -976,6 +976,37 @@ def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
     assert seen == result.pages
 
 
+def test_swept_pages_are_reported_as_possibly_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Only the announcement proves a frame is complete. A swept one is
+    # still delivered (it is a scanned page, and processing rejects an
+    # unreadable one), but the user is told which file to check instead
+    # of it passing as an ordinary page.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
+    )
+
+    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+        scan_to_files(
+            _config(),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
+        )
+
+    warnings = [record.getMessage() for record in caplog.records]
+    assert any("page_0001.pnm" in text and "incomplete" in text for text in warnings)
+
+
 def test_scan_to_files_delivers_segment_origins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

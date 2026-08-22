@@ -719,8 +719,8 @@ def _scan_artifacts(work_dir: Path) -> list[Path] | None:
     preserve conservatively, because unknown contents may hold the only
     scanned copy. The files are never validated, modified or renamed
     here: an interrupted final frame stays exactly as the scanner left
-    it, and only announced pages ever reach processing or recovery
-    sizing.
+    it, and a frame the interrupt beat is never delivered, processed or
+    sized.
     """
     try:
         return sorted(
