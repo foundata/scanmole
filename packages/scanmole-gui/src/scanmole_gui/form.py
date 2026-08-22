@@ -419,21 +419,24 @@ class ScanForm:
         self._name_row.add_css_class("joined-below")
         self.output_group.add(self._name_row)
 
-        hint_row = Adw.ActionRow(title=_("Placeholders"))
+        hint_row = Adw.ActionRow()
         hint = Gtk.Label(
             xalign=1.0,
             wrap=True,
             justify=Gtk.Justification.RIGHT,
-            max_width_chars=44,
+            max_width_chars=52,
             hexpand=True,
             valign=Gtk.Align.CENTER,
         )
         # The tokens themselves render monospaced (they are literal input,
-        # not prose); the explanation next to them stays in the body font.
+        # not prose); the label and the explanation stay in the body font.
+        # Every <tt> must close: unbalanced markup makes Pango reject the
+        # whole string, leaving the row blank.
         hint.set_markup(
             _(
-                "<tt>{YYYY} {MM} {DD} {hh} {mm} {ss} {device}</tt>\n"
-                "<tt>{N}</tt> (auto-no., 0-padded, repeatable)"
+                "Placeholders: <tt>{YYYY}</tt> · <tt>{MM}</tt> · <tt>{DD}</tt> · "
+                "<tt>{hh}</tt> · <tt>{mm}</tt> · <tt>{ss}</tt>\n"
+                "<tt>{N}</tt> (auto-no., 0-padded, repeatable) · <tt>{device}</tt>"
             )
         )
         hint.add_css_class("caption")
