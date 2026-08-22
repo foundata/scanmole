@@ -365,7 +365,7 @@ class ScanForm:
         self._stack_row = Adw.SwitchRow(
             title=_("Scan all pages in feeder"),
             subtitle=_(
-                "Scan every page in the document feeder. Turn off to scan one page."
+                "Scan every page in the document feeder. Turn off to scan one sheet."
             ),
             active=True,
         )
