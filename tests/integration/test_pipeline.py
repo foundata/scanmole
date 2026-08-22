@@ -535,7 +535,9 @@ def test_snapped_resolution_reaches_pdf_assembly(
 
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
     monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
-    monkeypatch.setattr("scanmole.scanner.probe_capabilities", lambda device: caps)
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
     monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run_scanimage)
     monkeypatch.setattr("scanmole.pipeline.build_pdf", fake_build_pdf)
     stream = io.StringIO()
@@ -2326,3 +2328,63 @@ def test_fixed_page_size_bypasses_autocrop_and_content_sizing(
     kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
     kept_w, kept_h = (int(v) for v in kept.split(b"\n")[1].split(b" "))
     assert (kept_w, kept_h) == (width, height)  # untouched by detection
+
+
+@_NEEDS_IMG2PDF
+def test_the_resolution_applied_window_arms_content_sizing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # End to end through the real negotiation: a backend that shrinks its
+    # window once the dpi is applied (216x900 before, 200x300 at 100 dpi).
+    # The frame comes back at the real window, so both axes read as
+    # unresolved and the batch is content-sized. Carrying the stale
+    # 216x900 instead would make the same frame look hardware-cropped and
+    # silently skip sizing, which is the regression this pins.
+    dpi = 100
+    scale = dpi / 25.4
+    frame_w, frame_h = round(200 * scale), round(300 * scale)
+    row_bytes = (frame_w + 7) // 8
+    raster = bytearray(row_bytes * frame_h)
+    for y in range(round(20 * scale), round(200 * scale)):
+        for x in range(round(20 * scale), round(150 * scale)):
+            raster[y * row_bytes + x // 8] |= 0x80 >> (x % 8)
+    frame = b"P4\n%d %d\n" % (frame_w, frame_h) + bytes(raster)
+
+    def fake_probe(
+        device: str, settings: tuple[tuple[str, str], ...] = ()
+    ) -> dict[str, Capability]:
+        applied = dict(settings)
+        width, height = (
+            (200.0, 300.0) if applied.get("--resolution") == "100" else (216.0, 900.0)
+        )
+        return {
+            "resolution": Capability(kind="enum", choices=["100"]),
+            "x": Capability(kind="range", minimum=0, maximum=width),
+            "y": Capability(kind="range", minimum=0, maximum=height),
+        }
+
+    def fake_run_scanimage(command: list[str], on_page: object) -> tuple[int, str]:
+        assert command[command.index("-y") + 1] == "300"
+        batch = next(a for a in command if a.startswith("--batch=")).split("=", 1)[1]
+        page = Path(batch % 1)
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.scanner.probe_capabilities", fake_probe)
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run_scanimage)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        source="flatbed",
+        resolution=dpi,
+        page_size="auto",
+    )
+
+    with caplog.at_level("INFO", logger="scanmole.pipeline"):
+        assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("sized" in text and "by content" in text for text in messages)

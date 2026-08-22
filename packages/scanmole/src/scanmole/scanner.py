@@ -507,10 +507,12 @@ def _close_stream(stream: IO[str]) -> None:
 
 
 def _acquisition_settings(plan: Plan) -> tuple[tuple[str, str], ...]:
-    """The plan's complete ordered acquisition state, as probe settings.
+    """The plan's acquisition state up to the resolution, as probe settings.
 
-    Exactly the options the scan command will apply before geometry:
+    Exactly the options the scan command applies before the resolution:
     source, final mode, native-enhancement extras and an explicit depth.
+    The resolution itself is appended by the caller once it has been
+    assessed against this state.
     """
     settings: list[tuple[str, str]] = []
     if plan.source.backend_value is not None:
@@ -631,9 +633,43 @@ def scan_to_files(
             "--resolution evidence); refusing to scan because the page "
             "geometry would be untrustworthy"
         )
+    window_unverified = False
+    if plan.resolution.backend_value is not None:
+        # The scan window can depend on the resolution just as it depends
+        # on the source and the mode (SANE lets any option change reload
+        # every other constraint), so the geometry below is read from a
+        # snapshot with the negotiated dpi applied. The resolution is not
+        # assessed again from it; the value in this probe is the one the
+        # scan will carry.
+        final_settings += (("--resolution", plan.resolution.backend_value),)
+        with_resolution = _staged_prober(device)(final_settings)
+        if with_resolution is not None:
+            caps = with_resolution
+        else:
+            window_unverified = True
     log_notices(plan, LOGGER)
     pattern = str(work_dir / "page_%04d.pnm")
     command, effective = build_scan_command(config, device, caps, pattern, plan)
+    if (
+        window_unverified
+        and parse_page_size(config.page_size) is None
+        and effective.window_mm is not None
+    ):
+        # Automatic page size decides whether a frame was cropped by the
+        # hardware by comparing it against this window, so a stale one is
+        # not a harmless fallback: a frame that came back at the real,
+        # smaller window reads as paper-sized and skips content sizing.
+        # A fixed page size never makes that comparison and keeps the
+        # tolerant path, and a device without usable x/y evidence carries
+        # no window either way, so neither is refused here.
+        raise DeviceError(
+            "cannot establish the scan window with the effective resolution "
+            f"applied ({effective.resolution} dpi): the capability listing "
+            "failed and the earlier one may no longer hold. Automatic page "
+            "size would size pages against an unverified window, so refusing "
+            "to scan -- select a fixed page size (for example --page-size a4) "
+            "to continue"
+        )
     if on_settings is not None:
         on_settings(effective)
     events.emit(

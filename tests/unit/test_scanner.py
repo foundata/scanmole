@@ -785,13 +785,167 @@ def test_scan_to_files_reprobes_with_the_mapped_source(
         lambda p, o: None,
     )
 
-    # Bare, source-applied, then the final acquisition state (source plus
-    # the negotiated options; no mode option exists here).
+    # Bare, source-applied, the acquisition state the resolution is
+    # assessed against (no mode option exists here), and finally the same
+    # state with that resolution applied, which is what the geometry and
+    # the sensor reads are taken from.
     assert probes == [
         (),
         (("--source", "ADF Duplex"),),
         (("--source", "ADF Duplex"),),
+        (("--source", "ADF Duplex"), ("--resolution", "300")),
     ]
+
+
+def _shrinking_window_probe(
+    fail_with_resolution: bool = False, window: bool = True
+) -> Callable[..., dict[str, Capability]]:
+    """A backend whose window shrinks once the resolution is applied.
+
+    Advertises 216x900 mm until the dpi is set and 200x300 mm at 600 dpi,
+    which is the constraint reload SANE explicitly permits. With
+    ``fail_with_resolution`` the resolution-applied listing is refused, so
+    only the stale pre-resolution geometry would be left.
+    """
+
+    def probe(
+        device: str, settings: tuple[tuple[str, str], ...] = ()
+    ) -> dict[str, Capability]:
+        applied = dict(settings)
+        with_resolution = applied.get("--resolution") == "600"
+        if with_resolution and fail_with_resolution:
+            raise DeviceError("cannot list with a resolution applied")
+        caps: dict[str, Capability] = {
+            "resolution": Capability(kind="enum", choices=["300", "600"])
+        }
+        if window:
+            width, height = (200.0, 300.0) if with_resolution else (216.0, 900.0)
+            caps["x"] = Capability(kind="range", minimum=0, maximum=width)
+            caps["y"] = Capability(kind="range", minimum=0, maximum=height)
+        return caps
+
+    return probe
+
+
+def test_geometry_is_read_with_the_negotiated_resolution_applied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # SANE lets any option change reload every other constraint, and a
+    # window that shrinks at the chosen dpi is exactly that: both axes
+    # must come from the snapshot the scan's own state produces, not from
+    # one taken before the resolution was applied.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", _shrinking_window_probe()
+    )
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(resolution=600, page_size="auto"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: None,
+    )
+
+    command = commands[0]
+    assert command[command.index("-x") + 1] == "200"
+    assert command[command.index("-y") + 1] == "300"
+    # The window the pipeline arms content sizing with must be the one the
+    # scan actually ran in; 216x900 would make a full frame look cropped.
+    assert result.settings.window_mm == (200.0, 300.0)
+
+
+def test_auto_size_refuses_a_window_the_resolution_never_confirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Automatic page size decides whether a frame was hardware-cropped by
+    # comparing it against the requested window, so a stale window is not
+    # a harmless fallback: a 216x300 frame from a window recorded as
+    # 216x900 reads as cropped and skips content sizing entirely. Refuse
+    # before any paper moves rather than mis-size the result.
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        _shrinking_window_probe(fail_with_resolution=True),
+    )
+
+    def never_run(command: list[str], on_page: object) -> tuple[int, str]:
+        raise AssertionError("no paper may be fed on unverified geometry")
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", never_run)
+
+    with pytest.raises(DeviceError, match="scan window"):
+        scan_to_files(
+            _config(resolution=600, page_size="auto"),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
+        )
+
+
+def test_a_fixed_page_size_survives_a_refused_resolution_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fixed size never compares the frame against the window, so the
+    # stale listing costs nothing and the tolerant path stands.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        _shrinking_window_probe(fail_with_resolution=True),
+    )
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(resolution=600, page_size="a4"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: None,
+    )
+
+    assert commands and result.settings.resolution == 600
+
+
+def test_a_refused_resolution_listing_without_a_window_still_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No x/y evidence means no window travels either way, so the optional
+    # probe failing must not invent a new reason to refuse.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        return 7, ""
+
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        _shrinking_window_probe(fail_with_resolution=True, window=False),
+    )
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    result = scan_to_files(
+        _config(resolution=600, page_size="auto"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: None,
+    )
+
+    assert commands and result.settings.window_mm is None
 
 
 def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
@@ -1198,7 +1352,8 @@ def test_faint_command_engages_fujitsu_sdtc_in_order(
         (source,),
         (source, ("--mode", "Lineart")),
         final,  # the SDTC verification reprobe
-        final,  # the final-state probe deciding resolution and geometry
+        final,  # the final-state probe deciding the resolution
+        (*final, ("--resolution", "300")),  # geometry, with that dpi applied
     ]
     command = commands[0]
     mode_at = command.index("--mode")
@@ -1489,9 +1644,11 @@ def test_collect_emits_settings_once_and_reads_sensors_with_them(
     events = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
     assert events.count("settings") == 1
     # Every sensor read applied the final acquisition settings, so the
-    # snapshot is the same source-dependent state the scan will use.
+    # snapshot is the same option-dependent state the scan will use.
     assert sensor_settings
-    assert set(sensor_settings) == {(("--source", "ADF Front"),)}
+    assert set(sensor_settings) == {
+        (("--source", "ADF Front"), ("--resolution", "300"))
+    }
 
 
 def test_collect_numbers_the_next_segment_past_unannounced_frames(
