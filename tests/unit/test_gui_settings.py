@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scanmole_gui.settings import load_settings, store_settings
+from scanmole_gui.settings import load_settings, reset_settings, store_settings
 
 
 def test_missing_file_is_a_first_start(tmp_path: Path) -> None:
@@ -85,7 +85,7 @@ def test_failed_write_preserves_the_original(
 
     monkeypatch.setattr(Path, "write_text", failing_write)
 
-    store_settings(path, {"lost": "snapshot"})  # must not raise
+    assert store_settings(path, {"lost": "snapshot"}) is False  # must not raise
 
     assert load_settings(path) == {"keep": "me"}
     assert list(tmp_path.iterdir()) == [path]  # no staging leftovers
@@ -102,7 +102,60 @@ def test_failed_replace_preserves_the_original_and_cleans_up(
 
     monkeypatch.setattr(os, "replace", failing_replace)
 
-    store_settings(path, {"lost": "snapshot"})
+    assert store_settings(path, {"lost": "snapshot"}) is False
 
     assert load_settings(path) == {"keep": "me"}
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_reset_clears_a_file_no_loader_can_parse(tmp_path: Path) -> None:
+    # The case a reset is supposed to cure: whatever is in there, the
+    # next launch must start from the defaults.
+    path = tmp_path / "gui.json"
+    path.write_text('{"window_width": 0, truncated', encoding="utf-8")
+
+    assert reset_settings(path) is True
+
+    assert load_settings(path) == {}
+    assert path.read_text(encoding="utf-8").strip() == "{}"
+
+
+def test_reset_falls_back_to_removing_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An absent file is the same first-start state, so a write that
+    # cannot land must not leave the old content in place.
+    path = tmp_path / "gui.json"
+    store_settings(path, {"stale": "value"})
+
+    def failing_replace(src: object, dst: object) -> None:
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    assert reset_settings(path) is True
+
+    assert not path.exists()
+    assert load_settings(path) == {}
+
+
+def test_reset_reports_failure_when_nothing_worked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Silence here is the dangerous outcome: the window would look reset
+    # while the old content waits to come back at the next launch.
+    path = tmp_path / "gui.json"
+    store_settings(path, {"stale": "value"})
+
+    def failing_replace(src: object, dst: object) -> None:
+        raise OSError(30, "Read-only file system")
+
+    def failing_unlink(self: Path, missing_ok: bool = False) -> None:
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    assert reset_settings(path) is False
+
+    assert load_settings(path) == {"stale": "value"}

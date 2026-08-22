@@ -60,7 +60,11 @@ from scanmole_gui.discovery import (  # noqa: E402
     evaluate_listing,
     parse_version,
 )
-from scanmole_gui.form import ScanForm, default_folder  # noqa: E402
+from scanmole_gui.form import (  # noqa: E402
+    ScanForm,
+    abbreviate_home,
+    default_folder,
+)
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole_gui.probing import (  # noqa: E402
     CapabilityFlow,
@@ -78,7 +82,11 @@ from scanmole_gui.session import (  # noqa: E402
     complete,
     mark_cancelled,
 )
-from scanmole_gui.settings import load_settings, store_settings  # noqa: E402
+from scanmole_gui.settings import (  # noqa: E402
+    load_settings,
+    reset_settings,
+    store_settings,
+)
 from scanmole_gui.status import (  # noqa: E402
     LogView,
     ResultBar,
@@ -1149,7 +1157,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # Only the GUI settings file is cleared; scans, output folders and
         # the CLI are never touched.
         self._settings = {}
-        store_settings(CONFIG_FILE, self._settings)
+        stored = reset_settings(CONFIG_FILE)
         self._apply_saved_settings()
         # The defaults may name choices the connected scanner blocks (the
         # duplex default on a front-only feeder): negotiate again, exactly
@@ -1167,7 +1175,18 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # close it, the next open rebuilds from the defaults.
         if self._settings_dialog is not None:
             self._settings_dialog.close()
-        self._set_result_bar("idle", _("Settings reset to defaults."))
+        if stored:
+            self._set_result_bar("idle", _("Settings reset to defaults."))
+            return
+        # The window is reset either way, but the file is not: saying
+        # "done" here would send the user off believing a corrupt or
+        # unwanted config is gone when it comes back at the next launch.
+        self._append_log(f"[gui] could not rewrite {CONFIG_FILE}")
+        self._set_result_bar(
+            "error",
+            _("Settings reset here, but %s could not be rewritten.")
+            % abbreviate_home(str(CONFIG_FILE)),
+        )
 
     def _on_about_clicked(self, *_args: object) -> None:
         """Show a flat, single-page About dialog (no nested subpages)."""
