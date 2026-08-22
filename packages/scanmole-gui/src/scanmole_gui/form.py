@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import gi
@@ -25,7 +26,10 @@ from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402  # after require_ver
 
 # The GUI holds no pipeline logic; the pure naming helper is imported only so
 # the live filename preview matches what the CLI will produce.
-from scanmole.config import SheetFlow  # noqa: E402  # a pure type alias
+from scanmole.config import (  # noqa: E402  # pure type aliases
+    AutoSizePreference,
+    SheetFlow,
+)
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
 from scanmole_gui.i18n import _  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES  # noqa: E402
@@ -131,6 +135,23 @@ HARDWARE_BUTTON_ACTIONS = (
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
 _SIZE_BASE_MB = {"lineart": 0.1, "lineart-auto": 0.1, "gray": 0.3, "color": 0.5}
+
+
+@lru_cache(maxsize=1)
+def _locale_paper_family() -> AutoSizePreference:
+    """The paper family the desktop's locale implies, ISO when unclear.
+
+    Reads the paper convention (POSIX ``LC_PAPER``), not the interface
+    language, so an English desktop in Germany still means A4. Families
+    outside our two, notably the JIS B series, resolve to ISO: the
+    preference only breaks the A4-versus-Letter tie, and those regions
+    use A4 rather than Letter.
+    """
+    try:
+        name = Gtk.PaperSize.get_default()
+    except Exception:  # pragma: no cover -- defensive; GTK always answers
+        return "iso"
+    return "north-american" if str(name).startswith("na_") else "iso"
 
 
 def default_folder() -> str:
@@ -962,11 +983,12 @@ class ScanForm:
             resolution = 300
         self._set_resolution(resolution)
         combo_select(self._size_row, PAGE_SIZES, str(settings.get("page_size", "auto")))
-        # A missing or unknown saved value keeps the default (index 0: ISO).
+        # Without a saved value the locale decides, so a first start in the
+        # US does not begin on ISO; an unknown value falls back the same way.
         combo_select(
             self._size_pref_row,
             AUTO_SIZE_PREFERENCES,
-            str(settings.get("auto_size_preference", "iso")),
+            str(settings.get("auto_size_preference") or _locale_paper_family()),
         )
         self._on_page_size_changed()
         self._ocr_row.set_active(bool(settings.get("ocr", True)))

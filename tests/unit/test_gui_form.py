@@ -610,3 +610,42 @@ def test_a_blocked_side_is_ignored_while_the_flatbed_is_selected() -> None:
     # The sides row is inert on the flatbed, so its blocked value must
     # not keep Start disabled.
     assert form.selection_blocked_reason() is None
+
+
+def test_the_paper_family_defaults_to_the_locale_on_a_first_start() -> None:
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gtk
+
+    from scanmole_gui import form as form_module
+
+    events = Events()
+    form = _form(events)
+    original = Gtk.PaperSize.get_default
+
+    def with_locale_paper(name: str, settings: dict[str, object]) -> str:
+        form_module._locale_paper_family.cache_clear()
+        Gtk.PaperSize.get_default = staticmethod(lambda value=name: value)
+        try:
+            form.apply_settings(settings)
+        finally:
+            Gtk.PaperSize.get_default = original
+        return str(form.persisted_values()["auto_size_preference"])
+
+    # No saved value: the desktop's paper convention decides, and that is
+    # LC_PAPER rather than the interface language, so an English desktop in
+    # Germany still gets ISO.
+    for paper_name, expected in (
+        ("iso_a4", "iso"),
+        ("na_letter", "north-american"),
+        ("na_legal", "north-american"),
+        ("jis_b4", "iso"),  # neither family; ISO is the right A4/Letter tie
+        ("", "iso"),
+    ):
+        assert with_locale_paper(paper_name, {}) == expected, paper_name
+
+    # A saved choice always wins over the locale.
+    assert with_locale_paper("iso_a4", {"auto_size_preference": "north-american"}) == (
+        "north-american"
+    )
