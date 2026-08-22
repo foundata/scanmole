@@ -239,16 +239,18 @@ def test_running_state_toggles_the_form() -> None:
     form.set_running(True)
     assert form._scan_row.get_visible() is False
     assert form._cancel_row.get_visible() is True
-    assert form.scanner_group.get_sensitive() is True  # hosts Cancel
-    assert form._device_row.get_sensitive() is False
-    assert form._source_row.row.get_sensitive() is False
-    assert form.document_group.get_sensitive() is False
+    # The Scan card hosts Cancel, so it stays sensitive while every one
+    # of its settings rows locks individually.
+    assert form.scan_group.get_sensitive() is True
+    assert [row.get_sensitive() for row in form._scan_setting_rows] == [False] * 6
+    assert form.behaviour_group.get_sensitive() is False
+    assert form.processing_group.get_sensitive() is False
 
     form.set_running(False)
     assert form._scan_row.get_visible() is True
     assert form._cancel_row.get_visible() is False
-    assert form._device_row.get_sensitive() is True
-    assert form.document_group.get_sensitive() is True
+    assert [row.get_sensitive() for row in form._scan_setting_rows] == [True] * 6
+    assert form.behaviour_group.get_sensitive() is True
 
 
 def test_source_changes_carry_the_manual_context() -> None:

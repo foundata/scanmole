@@ -308,6 +308,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
         container = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
+            spacing=18,
             margin_top=18,
             margin_bottom=18,
             margin_start=16,
@@ -316,14 +317,23 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._narrow_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=18, visible=False
         )
-        # A grid (not two independent columns) so paired sections start at
-        # the same height: Scanner|Output, Document|Application,
-        # Processing|Log each share a grid row.
-        self._grid = Gtk.Grid(
-            column_spacing=24, row_spacing=18, column_homogeneous=True
+        # Two independent columns, not a grid: the cards have very
+        # different heights (Scan carries the device, the document
+        # settings and the action), so each column packs its own stack
+        # from the top instead of leaving a hole beside the tallest card.
+        self._columns = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=24, homogeneous=True
         )
+        self._left_column = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=18, valign=Gtk.Align.START
+        )
+        self._right_column = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=18, valign=Gtk.Align.START
+        )
+        self._columns.append(self._left_column)
+        self._columns.append(self._right_column)
         container.append(self._narrow_box)
-        container.append(self._grid)
+        container.append(self._columns)
         # Credit block below the form, outside the layout switching so it
         # always spans the full width; same identity layout as the About
         # dialog (logo, bold line, tagline).
@@ -371,6 +381,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             effective_resolution=self._effective_resolution,
         )
         self._log = LogView()
+        # The log spans the full width below both columns: its monospace
+        # CLI output reads badly in a narrow column, and staying outside
+        # the column layout means it never moves between the two modes.
+        container.insert_child_after(self._log.widget, self._columns)
         self._status = ResultBar(
             on_show=self._show_in_folder,
             on_open=self._open_output,
@@ -395,34 +409,37 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._form.refresh_document_hints()
 
     def _apply_layout(self, *, wide: bool) -> None:
-        """Arrange the form sections in one column or a two-column grid."""
-        grid_cells = (
-            (self._form.scanner_group, 0, 0, 1),
-            (self._form.output_group, 1, 0, 1),
-            (self._form.document_group, 0, 1, 1),
-            (self._form.behaviour_group, 1, 1, 1),
-            (self._form.processing_group, 0, 2, 1),
-            (self._log.widget, 1, 2, 1),
+        """Arrange the form sections in one column or two.
+
+        Both arrangements keep the same reading order, most-changed
+        settings first: Scan, Output, Processing, Behaviour. The wide
+        layout splits that order into two independently packed columns.
+        """
+        columns = (
+            (self._left_column, (self._form.scan_group, self._form.output_group)),
+            (
+                self._right_column,
+                (self._form.processing_group, self._form.behaviour_group),
+            ),
         )
         sections_narrow = (
-            self._form.scanner_group,
+            self._form.scan_group,
             self._form.output_group,
-            self._form.behaviour_group,
-            self._form.document_group,
             self._form.processing_group,
-            self._log.widget,
+            self._form.behaviour_group,
         )
         for section in sections_narrow:
             parent = section.get_parent()
             if parent is not None:
                 parent.remove(section)
         if wide:
-            for section, column, row, width in grid_cells:
-                self._grid.attach(section, column, row, width, 1)
+            for column, sections in columns:
+                for section in sections:
+                    column.append(section)
         else:
             for section in sections_narrow:
                 self._narrow_box.append(section)
-        self._grid.set_visible(wide)
+        self._columns.set_visible(wide)
         self._narrow_box.set_visible(not wide)
         self._clamp.set_maximum_size(1080 if wide else 640)
         self._clamp.set_tightening_threshold(900 if wide else 480)

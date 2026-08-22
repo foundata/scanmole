@@ -1,6 +1,6 @@
 """The scan form: widgets and form-local behavior, no orchestration.
 
-Owns the Scanner, Output, Document and Processing groups, their local
+Owns the Scan, Output, Processing and Behaviour groups, their local
 consequences (dependent sensitivity, the resolution control, the live
 filename preview, the OCR language list) and the snapshotting of form
 values for persistence and the immutable :class:`ScanRequest`. Events
@@ -142,6 +142,11 @@ def abbreviate_home(path: str) -> str:
 class ScanForm:
     """The scan form component: four preference groups plus Scan/Cancel.
 
+    The Scan group carries one whole scan (device, source, document
+    settings, the primary action); Output names the file, Processing
+    covers the PDF stages and Behaviour holds what a scan spans and what
+    may trigger it.
+
     The window composes the group widgets into its responsive layout and
     receives orchestration events through the constructor callbacks; all
     other signal handling is form-local.
@@ -190,21 +195,40 @@ class ScanForm:
         self._res_syncing = False
         self._res_value = 300
 
-        self._build_scanner_group()
+        self._build_scan_group()
         self._build_output_group()
-        self._build_behaviour_group()
-        self._build_document_group()
         self._build_processing_group()
-        self._equalize_form_rows()
+        self._build_behaviour_group()
         # The initial hint/preview render happens via refresh_document_hints()
         # once the window finished wiring; the preview callback reaches back
         # into the controller, which must hold the form reference by then.
 
     # ------------------------------------------------------------ building
 
-    def _build_scanner_group(self) -> None:
-        """Build the Scanner group including the primary Scan action."""
-        self.scanner_group = Adw.PreferencesGroup(title=_("Scanner"))
+    def _build_scan_group(self) -> None:
+        """Build the Scan group: the device, the document, the action.
+
+        One card carries everything a single scan needs, in the order it
+        is usually changed: the scanner and its source, what to make of
+        the paper, and the primary action at the bottom.
+        """
+        self.scan_group = Adw.PreferencesGroup(title=_("Scan"))
+        self._add_device_rows()
+        self._add_document_rows()
+        self._add_scan_actions()
+        # The card's settings rows, disabled one by one while a scan
+        # runs so the Cancel action inside the same card stays usable.
+        self._scan_setting_rows = (
+            self._device_row,
+            self._source_row.row,
+            self._mode_row.row,
+            self._size_row,
+            self._res_row,
+            self._chips_row,
+        )
+
+    def _add_device_rows(self) -> None:
+        """Add the scanner selection and its source to the Scan group."""
         # Never make this row insensitive: the refresh button is one of its
         # suffix children, and a disabled row would take the only way to
         # recover from an empty device list down with it.
@@ -224,20 +248,25 @@ class ScanForm:
         self._refresh_btn.add_css_class("flat")
         self._refresh_btn.connect("clicked", lambda *_a: self._on_refresh())
         self._device_row.add_suffix(self._refresh_btn)
-        self.scanner_group.add(self._device_row)
+        self.scan_group.add(self._device_row)
         self._source_row = ChoiceRow(
-            self.scanner_group,
+            self.scan_group,
             _("Source"),
             SOURCES,
             self._source_changed,
             tooltips=SOURCE_TOOLTIPS,
         )
-        # One primary action: Scan is the only accented control, full width at
-        # the bottom of the Scanner group (mockup rule); Cancel swaps in while
-        # a scan runs. The buttons are wrapped in list rows because a plain
-        # widget given to PreferencesGroup.add() lands below the card, not in
-        # it. A split button keeps that single accent while its menu offers
-        # the one-shot sheet-flow overrides.
+
+    def _add_scan_actions(self) -> None:
+        """Add the primary Scan action and its Cancel counterpart.
+
+        One primary action: Scan is the only accented control, full width
+        at the bottom of the card (mockup rule); Cancel swaps in while a
+        scan runs. The buttons are wrapped in list rows because a plain
+        widget given to PreferencesGroup.add() lands below the card, not
+        in it. A split button keeps that single accent while its menu
+        offers the one-shot sheet-flow overrides.
+        """
         self._scan_btn = Adw.SplitButton(
             margin_top=8, margin_bottom=8, margin_start=8, margin_end=8
         )
@@ -256,7 +285,7 @@ class ScanForm:
         self._scan_row = Gtk.ListBoxRow(
             child=self._scan_btn, activatable=False, selectable=False
         )
-        self.scanner_group.add(self._scan_row)
+        self.scan_group.add(self._scan_row)
         self._cancel_btn = Gtk.Button(
             label=_("Cancel"),
             margin_top=8,
@@ -270,7 +299,7 @@ class ScanForm:
         self._cancel_row = Gtk.ListBoxRow(
             child=self._cancel_btn, activatable=False, selectable=False, visible=False
         )
-        self.scanner_group.add(self._cancel_row)
+        self.scan_group.add(self._cancel_row)
 
     def _build_behaviour_group(self) -> None:
         """Build the Behaviour group: what a scan covers and what starts it.
@@ -455,11 +484,10 @@ class ScanForm:
         preview_row.add_suffix(self._name_preview)
         self.output_group.add(preview_row)
 
-    def _build_document_group(self) -> None:
-        """Build the Document group (color mode, page size, resolution)."""
-        self.document_group = Adw.PreferencesGroup(title=_("Document"))
+    def _add_document_rows(self) -> None:
+        """Add color mode, page size and resolution to the Scan group."""
         self._mode_row = ChoiceRow(
-            self.document_group,
+            self.scan_group,
             _("Color mode"),
             MODES,
             self._on_document_changed,
@@ -494,7 +522,7 @@ class ScanForm:
         self._size_pref_dropdown.connect("notify::selected", self._on_document_changed)
         size_box.append(self._size_pref_dropdown)
         self._size_row.add_suffix(size_box)
-        self.document_group.add(self._size_row)
+        self.scan_group.add(self._size_row)
 
         # Hybrid resolution control, composed as entry / unit / stepper so
         # the unit sits between the number and the buttons (GtkSpinButton
@@ -544,11 +572,11 @@ class ScanForm:
         entry_box.append(stepper)
         self._res_row.add_suffix(entry_box)
         self._res_row.add_css_class("joined-below")
-        self.document_group.add(self._res_row)
+        self.scan_group.add(self._res_row)
 
-        # The dpi presets get their own row directly below Resolution: the
-        # split gives Document the same four-row shape as Processing, which
-        # _equalize_form_rows() then locks to identical heights.
+        # The dpi presets get their own row directly below Resolution,
+        # joined to it by the shared border so the pair reads as one
+        # setting instead of two.
         self._chips_row = Adw.ActionRow()
         self._chips_row.add_css_class("joined-above")
         chips = Gtk.Box(
@@ -565,7 +593,7 @@ class ScanForm:
             chips.append(chip)
             self._res_chips.append((chip, preset))
         self._chips_row.add_suffix(chips)
-        self.document_group.add(self._chips_row)
+        self.scan_group.add(self._chips_row)
 
     def _build_processing_group(self) -> None:
         """Build the Processing group (blank pages, OCR, language)."""
@@ -596,27 +624,6 @@ class ScanForm:
             active=True,
         )
         self.processing_group.add(self._deskew_row)
-
-    def _equalize_form_rows(self) -> None:
-        """Lock Document and Behaviour to the same height, row by row.
-
-        Both cards have four rows and share a grid row in the two-column
-        layout; a vertical size group per cross-column pair makes them end
-        flush, with the resolution entry and preset rows together exactly
-        as tall as the two trigger rows. The groups must outlive this
-        method (widgets do not reference them).
-        """
-        self._row_size_groups: list[Gtk.SizeGroup] = []
-        for left, right in (
-            (self._mode_row.row, self._collect_row),
-            (self._size_row, self._stack_row),
-            (self._res_row, self._insert_row),
-            (self._chips_row, self._button_row),
-        ):
-            size_group = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.VERTICAL)
-            size_group.add_widget(left)
-            size_group.add_widget(right)
-            self._row_size_groups.append(size_group)
 
     # ------------------------------------------------------------- devices
 
@@ -977,22 +984,16 @@ class ScanForm:
         self._cancel_btn.set_sensitive(True)
         self._refresh_btn.set_sensitive(not running)
         for group in (
-            self.scanner_group,
             self.behaviour_group,
-            self.document_group,
             self.processing_group,
             self.output_group,
         ):
             group.set_sensitive(not running)
-        # The Scanner group hosts the Scan/Cancel buttons; keep them usable
-        # while the rest of the group is locked during a run.
-        if running:
-            self.scanner_group.set_sensitive(True)
-            self._device_row.set_sensitive(False)
-            self._source_row.row.set_sensitive(False)
-        else:
-            self._device_row.set_sensitive(True)
-            self._source_row.row.set_sensitive(True)
+        # The Scan group hosts the Scan/Cancel buttons, so it stays
+        # sensitive as a whole and locks its settings rows one by one.
+        self.scan_group.set_sensitive(True)
+        for row in self._scan_setting_rows:
+            row.set_sensitive(not running)
 
     def set_cancel_enabled(self, enabled: bool) -> None:
         """Toggle the Cancel action (disabled while cancelling)."""
