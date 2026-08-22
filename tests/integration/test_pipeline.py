@@ -7,6 +7,7 @@ off so the test needs only ``img2pdf``; it is skipped when that is absent.
 from __future__ import annotations
 
 import dataclasses
+import glob
 import io
 import json
 import random
@@ -305,7 +306,10 @@ def test_unannounced_complete_frame_survives_a_scan_error(
 
     assert (work_dir / "page_0001.pnm").read_bytes() == _COMPLETE_FRAME
     assert info.value.message.startswith("lamp failure")  # original cause
-    assert "incomplete" in info.value.message  # the inspect caveat
+    # Complete, but nothing processed it, so the directory is kept and the
+    # message must not call the frame incomplete.
+    assert "completed page file(s)" in info.value.message
+    assert "incomplete" not in info.value.message
     events = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert not [e for e in events if e["event"] == "page"]  # never announced
 
@@ -328,20 +332,17 @@ def test_unannounced_frame_survives_an_interrupt(
     assert (work_dir / "page_0001.pnm").read_bytes() == _COMPLETE_FRAME
 
 
-@pytest.mark.parametrize(
-    "tail",
-    [b"P5\n40 40\n255\n" + bytes([120] * 100), b""],
-    ids=["partial", "zero-length"],
-)
-def test_partial_final_frame_is_preserved_byte_for_byte(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: bytes
+def test_completed_pages_are_preserved_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Questionable bytes are evidence: preserved exactly, never validated,
-    # renamed or fed to processing during failure handling.
+    # scanimage renames page_NNNN.pnm.part to page_NNNN.pnm only once the
+    # page finished, so every file under that name is a completed frame:
+    # preserved exactly, never validated or renamed during the failure.
     work_dir = _owned_work_dir(tmp_path, monkeypatch)
+    second = b"P5\n40 40\n255\n" + bytes([90] * 1600)
     monkeypatch.setattr(
         "scanmole.pipeline.scan_to_files",
-        _unannounced_scan([_COMPLETE_FRAME, tail], ScanMoleError("feeder jam")),
+        _unannounced_scan([_COMPLETE_FRAME, second], ScanMoleError("feeder jam")),
     )
 
     with pytest.raises(ScanMoleError) as info:
@@ -351,8 +352,84 @@ def test_partial_final_frame_is_preserved_byte_for_byte(
         )
 
     assert (work_dir / "page_0001.pnm").read_bytes() == _COMPLETE_FRAME
-    assert (work_dir / "page_0002.pnm").read_bytes() == tail
+    assert (work_dir / "page_0002.pnm").read_bytes() == second
     assert info.value.message.startswith("feeder jam")
+
+
+def test_a_lone_staging_file_does_not_preserve_the_work_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An interrupted scanimage leaves its in-progress raster as
+    # page_NNNN.pnm.part (measured on sane-backends 1.4.0). That is not a
+    # page, so it is not a reason to keep a directory holding nothing
+    # else, and no recovery is promised for it.
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir_arg: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(EffectiveSettings(source=None, mode=None, resolution=300))
+        (work_dir_arg / "page_0001.pnm.part").write_bytes(_COMPLETE_FRAME[:200])
+        raise ScanMoleError("cable pulled")
+
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert not work_dir.exists()
+    assert "preserved" not in info.value.message
+
+
+def test_a_recovery_command_never_reaches_a_staging_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Completed pages keep the directory, and an incidental .part may ride
+    # along, but the documented rebuild must not pick it up: its glob ends
+    # in .pnm, and expanding it must yield the completed page alone.
+    work_dir = _owned_work_dir(tmp_path, monkeypatch)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir_arg: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(EffectiveSettings(source=None, mode=None, resolution=300))
+        page = work_dir_arg / "page_0001.pnm"
+        page.write_bytes(_COMPLETE_FRAME)
+        assert callable(on_page)
+        on_page(page)
+        (work_dir_arg / "page_0002.pnm.part").write_bytes(_COMPLETE_FRAME[:200])
+        raise ScanMoleError("feeder jam")
+
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+
+    with pytest.raises(ScanMoleError) as info:
+        run_pipeline(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            EventWriter(enabled=False),
+        )
+
+    assert work_dir.exists()  # the completed page kept it
+    pattern = re.search(r"--from-images (\S+)", info.value.message)
+    assert pattern is not None
+    expanded = sorted(
+        Path(part) for part in glob.glob(shlex.split(pattern.group(1))[0])
+    )
+    assert expanded == [work_dir / "page_0001.pnm"]
 
 
 def test_no_artifacts_and_no_callbacks_removes_the_work_dir(
@@ -377,8 +454,9 @@ def test_no_artifacts_and_no_callbacks_removes_the_work_dir(
 def test_announced_and_unannounced_pages_keep_both_messages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # One page went through its callback, a second was still unannounced:
-    # the established recovery message stays, plus the inspect caveat.
+    # One page went through its callback, a second completed page was
+    # never announced: the established recovery message stays and gains a
+    # count of what the command covers but nothing processed.
     work_dir = _owned_work_dir(tmp_path, monkeypatch)
 
     def fake_scan(
@@ -395,7 +473,7 @@ def test_announced_and_unannounced_pages_keep_both_messages(
         page.write_bytes(_COMPLETE_FRAME)
         assert callable(on_page)
         on_page(page)
-        (work_dir_arg / "page_0002.pnm").write_bytes(_COMPLETE_FRAME[:20])
+        (work_dir_arg / "page_0002.pnm").write_bytes(_COMPLETE_FRAME)
         raise ScanMoleError("feeder jam")
 
     monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
@@ -408,8 +486,11 @@ def test_announced_and_unannounced_pages_keep_both_messages(
 
     assert f"the 1 scanned page(s) are kept in {work_dir}" in info.value.message
     assert "recover with:" in info.value.message
-    assert "incomplete" in info.value.message
-    assert (work_dir / "page_0002.pnm").read_bytes() == _COMPLETE_FRAME[:20]
+    # The unannounced page is complete; only its processing was skipped.
+    assert "1 further completed page(s)" in info.value.message
+    assert "no blank detection or sizing" in info.value.message
+    assert "incomplete" not in info.value.message
+    assert (work_dir / "page_0002.pnm").read_bytes() == _COMPLETE_FRAME
 
 
 def test_from_images_failure_never_preserves_a_work_dir(

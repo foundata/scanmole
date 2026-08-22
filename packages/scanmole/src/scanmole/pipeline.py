@@ -668,17 +668,18 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                 )
                 if unannounced:
                     exc.message += (
-                        "; unannounced raw page file(s) were preserved too "
-                        "and the final frame may be incomplete -- inspect it "
-                        "before recovering it"
+                        f"; {len(artifacts or ()) - total} further completed "
+                        "page(s) scanimage never announced are kept and "
+                        "recovered along with them, but went through no "
+                        "blank detection or sizing"
                     )
                 exc.args = (exc.message,)
             elif artifacts is None or artifacts:
                 preserve = True
                 exc.message += (
                     f" -- the work directory {work_dir} was preserved; it "
-                    "may hold raw page file(s) and the final frame may be "
-                    "incomplete -- inspect it before recovering"
+                    "may hold completed page file(s) that never reached "
+                    "processing"
                 )
                 exc.args = (exc.message,)
         raise
@@ -700,16 +701,16 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                 )
                 if unannounced:
                     LOGGER.info(
-                        "Unannounced raw page file(s) were preserved too; "
-                        "the final frame may be incomplete -- inspect it "
-                        "before recovering it"
+                        "%d further completed page(s) scanimage never "
+                        "announced are kept and recovered along with them, "
+                        "but went through no blank detection or sizing",
+                        len(artifacts or ()) - total,
                     )
             elif artifacts is None or artifacts:
                 preserve = True
                 LOGGER.info(
-                    "The work directory %s was preserved; it may hold raw "
-                    "page file(s) and the final frame may be incomplete -- "
-                    "inspect it before recovering",
+                    "The work directory %s was preserved; it may hold "
+                    "completed page file(s) that never reached processing",
                     work_dir,
                 )
         raise
@@ -723,10 +724,12 @@ def _scan_artifacts(work_dir: Path) -> list[Path] | None:
 
     ``None`` means the directory could not be inspected; the caller must
     preserve conservatively, because unknown contents may hold the only
-    scanned copy. The files are never validated, modified or renamed
-    here: an interrupted final frame stays exactly as the scanner left
-    it, and a frame the interrupt beat is never delivered, processed or
-    sized.
+    scanned copy. Only completed pages are listed: scanimage scans into
+    ``page_NNNN.pnm.part`` and renames to ``page_NNNN.pnm`` once the page
+    finished, so this name means a finished frame even when its
+    announcement was lost, while a surviving ``.part`` holds an
+    incomplete raster ScanMole makes no recovery promise for. The files
+    are never validated, modified or renamed here.
     """
     try:
         return sorted(

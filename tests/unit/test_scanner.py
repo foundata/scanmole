@@ -980,13 +980,14 @@ def test_scan_to_files_sweeps_pages_scanimage_did_not_announce(
     assert seen == result.pages
 
 
-def test_swept_pages_are_reported_as_possibly_incomplete(
+def test_a_swept_page_reports_the_lost_announcement_not_a_lost_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # Only the announcement proves a frame is complete. A swept one is
-    # still delivered (it is a scanned page, and processing rejects an
-    # unreadable one), but the user is told which file to check instead
-    # of it passing as an ordinary page.
+    # page_NNNN.pnm only exists once scanimage renamed it from .part, so a
+    # swept file is a completed page and is delivered as one. What went
+    # missing is the announcement, and that is what the warning says: it
+    # must not cast doubt on the page or send the user to a result that
+    # processing may still fail to produce.
     (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")
     monkeypatch.setattr(
         "scanmole.scanner.probe_capabilities",
@@ -1008,7 +1009,10 @@ def test_swept_pages_are_reported_as_possibly_incomplete(
         )
 
     warnings = [record.getMessage() for record in caplog.records]
-    assert any("page_0001.pnm" in text and "incomplete" in text for text in warnings)
+    assert any(
+        "page_0001.pnm" in text and "did not announce" in text for text in warnings
+    )
+    assert not any("incomplete" in text for text in warnings)
 
 
 def test_scan_to_files_delivers_segment_origins(
@@ -1772,27 +1776,28 @@ def test_collect_numbers_the_next_segment_past_unannounced_frames(
 def test_collect_stops_when_a_swept_frame_fails_delivery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A partial or invalid unannounced frame must stop the collection and
-    # reach the ordinary preservation path, never be skipped or replaced.
+    # A swept frame goes through the same callback as an announced one, so
+    # a failure there must stop the collection and reach the ordinary
+    # preservation path, never be skipped or replaced.
     _commands, calls = _collect_setup(tmp_path, monkeypatch)
 
     def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
         calls.append(cmd)
-        (tmp_path / "page_0001.pnm").write_bytes(b"P5\n2 2\n255\n\x00")  # truncated
+        (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")  # never announced
         return 7, ""
 
     monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
 
-    def parse_like_the_pipeline(page: Path, origin: PageOrigin) -> None:
-        raise ValueError("truncated PNM raster")
+    def failing_processing(page: Path, origin: PageOrigin) -> None:
+        raise ValueError("page processing failed")
 
-    with pytest.raises(ValueError, match="truncated"):
+    with pytest.raises(ValueError, match="processing failed"):
         scan_to_files(
             _config(source="adf", sheet_flow="collect"),
             "test:0",
             tmp_path,
             EventWriter(enabled=False),
-            parse_like_the_pipeline,
+            failing_processing,
         )
 
     assert len(calls) == 1  # no further segment was started
@@ -1818,3 +1823,36 @@ def test_collect_idle_timeout_without_pages_raises_no_pages(
             EventWriter(enabled=False),
             lambda p, o: None,
         )
+
+
+def test_a_staging_file_is_never_swept_into_the_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An interrupted scanimage leaves its in-progress raster beside the
+    # completed pages as page_NNNN.pnm.part (measured on sane-backends
+    # 1.4.0). It is not a page: never delivered, never counted, and never
+    # the frame a later segment numbers past.
+    (tmp_path / "page_0001.pnm").write_bytes(b"P4\n1 1\n\x00")  # never announced
+    (tmp_path / "page_0002.pnm.part").write_bytes(b"P4\n1 1\n")  # incomplete
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.run_scanimage", lambda command, on_page: (7, "")
+    )
+    seen: list[Path] = []
+
+    result = scan_to_files(
+        _config(),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False),
+        lambda p, o: seen.append(p),
+    )
+
+    assert [page.name for page in result.pages] == ["page_0001.pnm"]
+    assert seen == result.pages
+    assert (tmp_path / "page_0002.pnm.part").exists()  # left exactly as found

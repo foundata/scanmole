@@ -713,17 +713,18 @@ def scan_to_files(
         on_page(path, PageOrigin(segment=segment, frame=frame))
 
     def sweep(segment: int, segment_start: int) -> None:
-        # A completed frame whose --batch-print announcement was lost is
-        # still a scanned page and is delivered rather than dropped, but
-        # never silently: the announcement is what proves a frame is
-        # complete, so the user is named the file to check. Processing
-        # rejects an unreadable one on its own and the preservation
-        # contract then applies.
+        # scanimage writes the frame it is scanning to page_NNNN.pnm.part
+        # and renames it to page_NNNN.pnm only once the page completed
+        # (close, rename, then announce; unchanged since sane-backends
+        # 1.0.27), so a file under this name is a finished page whichever
+        # way it got here. Missing the announcement is the anomaly, not
+        # the page: deliver it and say the announcement was lost, never
+        # that the page might be.
         for path in sorted(work_dir.iterdir()):
             if _PAGE_NAME.fullmatch(path.name) and path not in seen:
                 LOGGER.warning(
-                    "scanimage wrote %s without announcing it; that frame "
-                    "may be incomplete -- check it in the result",
+                    "scanimage did not announce %s; recovered the completed "
+                    "page after the batch",
                     path.name,
                 )
                 deliver(path, segment, segment_start)
