@@ -1300,6 +1300,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             on_install_desktop=install_desktop_entry,
             on_remove_desktop=remove_desktop_entry,
             borrowed_groups=(
+                self._form.settings_scan_group,
                 self._form.settings_processing_group,
                 self._form.settings_behaviour_group,
             ),

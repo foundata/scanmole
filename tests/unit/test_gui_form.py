@@ -498,6 +498,9 @@ def test_the_advanced_group_opens_the_settings_dialog() -> None:
     assert _group_titles(form.advanced_group) == ["Advanced settings"]
     row = _find_row(form.advanced_group, "Advanced settings")
     assert row is not None
+    # The way in is named after the menu entry it duplicates.
+    assert row.get_activatable_widget().get_child().get_label() == "Settings"
+    assert row.get_subtitle() == "More control over scans and the application"
     row.get_activatable_widget().emit("clicked")
 
     assert events.names() == ["open_settings"]
@@ -509,6 +512,7 @@ def test_the_rarer_rows_wait_in_the_borrowed_settings_groups() -> None:
     events = Events()
     form = _form(events)
 
+    assert _group_titles(form.settings_scan_group) == ["Page size"]
     assert _group_titles(form.settings_processing_group) == [
         "Deskew",
         "Archival PDF/A",
@@ -518,7 +522,8 @@ def test_the_rarer_rows_wait_in_the_borrowed_settings_groups() -> None:
         "Hardware scan button",
         "Preferred paper sizes",
     ]
-    # Neither group is on the page: the dialog puts them up while open.
+    # None of them is on the page: the dialog puts them up while open.
+    assert form.settings_scan_group.get_parent() is None
     assert form.settings_processing_group.get_parent() is None
     assert form.settings_behaviour_group.get_parent() is None
 

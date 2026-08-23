@@ -283,7 +283,6 @@ class ScanForm:
             self._path_row.row,
             self._sides_row.row,
             self._mode_row.row,
-            self._size_row,
             self._res_row,
             self._chips_row,
         )
@@ -380,6 +379,15 @@ class ScanForm:
         :func:`~scanmole_gui.dialogs.build_settings_dialog`). Keeping one
         owner avoids mirroring five values across two objects.
         """
+        self.settings_scan_group = Adw.PreferencesGroup(title=_("Scan"))
+        self._size_row = Adw.ComboRow(title=_("Page size"))
+        self._size_row.set_factory(plain_string_factory())
+        self._size_row.set_model(
+            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
+        )
+        self._size_row.connect("notify::selected", self._on_page_size_changed)
+        self.settings_scan_group.add(self._size_row)
+
         self.settings_processing_group = Adw.PreferencesGroup(title=_("Processing"))
         self._deskew_row = Adw.SwitchRow(
             title=_("Deskew"),
@@ -465,11 +473,11 @@ class ScanForm:
         self.advanced_group = Adw.PreferencesGroup(title=_("Advanced"))
         row = Adw.ActionRow(
             title=_("Advanced settings"),
-            subtitle=_("Behaviour and application options"),
+            subtitle=_("More control over scans and the application"),
         )
         button = Gtk.Button(valign=Gtk.Align.CENTER)
         button.set_child(
-            Adw.ButtonContent(icon_name="emblem-system-symbolic", label=_("Advanced…"))
+            Adw.ButtonContent(icon_name="emblem-system-symbolic", label=_("Settings"))
         )
         button.connect("clicked", lambda *_a: self._on_open_settings())
         row.add_suffix(button)
@@ -620,17 +628,6 @@ class ScanForm:
             self._on_document_changed,
             tooltips=MODE_TOOLTIPS,
         )
-        # The size itself is a plain choice; which paper family resolves an
-        # ambiguous automatic size is a rarely touched default and lives
-        # with the other seldom-changed options in Behaviour.
-        self._size_row = Adw.ComboRow(title=_("Page size"))
-        self._size_row.set_factory(plain_string_factory())
-        self._size_row.set_model(
-            Gtk.StringList.new([label for label, _value in PAGE_SIZES])
-        )
-        self._size_row.connect("notify::selected", self._on_page_size_changed)
-        self.scan_group.add(self._size_row)
-
         # Hybrid resolution control, composed as entry / unit / stepper so
         # the unit sits between the number and the buttons (GtkSpinButton
         # cannot render a unit suffix). The static bounds are a sanity clamp
