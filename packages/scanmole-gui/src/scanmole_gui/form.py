@@ -569,26 +569,30 @@ class ScanForm:
         self._stack_row.set_sensitive(self._path_row.value() != "flatbed")
 
     def _build_output_group(self) -> None:
-        """Build the Output group (folder, filename template)."""
+        """Build the Output group (destination, filename template)."""
         self.output_group = Adw.PreferencesGroup(title=_("Output"))
-        self._folder_row = Adw.ActionRow(title=_("Folder"))
-        self._folder_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        self._folder_btn.set_child(
-            Adw.ButtonContent(
-                icon_name="folder-symbolic", label=abbreviate_home(self._folder)
-            )
+        # Folder and file name are one answer to one question, so they are
+        # one linked control reading left to right, the way a save dialog
+        # puts them. The row carries no title: the group heading says
+        # "Output" already, and a title would take about 53 px the entry
+        # needs to show the whole default template (31 characters).
+        self._output_row = Adw.ActionRow()
+        destination = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            hexpand=True,
+            valign=Gtk.Align.CENTER,
         )
+        destination.add_css_class("linked")
+        self._folder_btn = Gtk.Button(valign=Gtk.Align.CENTER)
         self._folder_btn.connect("clicked", lambda *_a: self._on_pick_folder())
-        self._folder_row.add_suffix(self._folder_btn)
-        self._folder_row.set_activatable_widget(self._folder_btn)
-        self.output_group.add(self._folder_row)
+        self._set_folder_button()
+        destination.append(self._folder_btn)
 
         # The filename template as three standard-height rows joined into
         # one optical block, the same border trick as the Resolution row
-        # and its preset chips: the entry, the placeholder help and the
-        # live preview read as one setting while every row keeps the
+        # and its preset chips: the destination, the placeholder help and
+        # the live preview read as one setting while every row keeps the
         # common field height.
-        self._name_row = Adw.ActionRow(title=_("File name"))
         self._name_entry = Gtk.Entry(
             placeholder_text=DEFAULT_OUTPUT_TEMPLATE,
             width_chars=32,
@@ -602,10 +606,13 @@ class ScanForm:
         name_focus = Gtk.EventControllerFocus()
         name_focus.connect("enter", self._on_name_entry_focus)
         self._name_entry.add_controller(name_focus)
-        self._name_row.add_suffix(self._name_entry)
-        self._name_row.set_activatable_widget(self._name_entry)
-        self._name_row.add_css_class("joined-below")
-        self.output_group.add(self._name_row)
+        destination.append(self._name_entry)
+        self._output_row.add_suffix(destination)
+        # Activating the row lands on the name; the folder button beside
+        # it keeps its own click.
+        self._output_row.set_activatable_widget(self._name_entry)
+        self._output_row.add_css_class("joined-below")
+        self.output_group.add(self._output_row)
 
         hint_row = Adw.ActionRow()
         hint = Gtk.Label(
@@ -715,14 +722,17 @@ class ScanForm:
         # chips down with it.
         hint = Gtk.Label(
             label=_(
-                "Recommended for reasonably small files: "
-                "300 dpi for B/W, 200 for Gray and Color"
+                "Recommended for small files: 300 dpi for B/W, 200 for Gray and Color"
             ),
             wrap=True,
             xalign=0.0,
             hexpand=True,
             valign=Gtk.Align.CENTER,
-            max_width_chars=34,
+            # Two lines beside the presets at the width the card usually
+            # has. How much it gets is not fixed, since the other
+            # column's width travels with the output folder's name, so
+            # the cap only keeps the wider layouts from stretching it.
+            max_width_chars=40,
         )
         hint.add_css_class("caption")
         hint.add_css_class("dim-label")
@@ -1115,14 +1125,27 @@ class ScanForm:
         """The output folder currently shown on the folder button."""
         return self._folder
 
+    def _set_folder_button(self) -> None:
+        """Render the folder on its button, capped and spelled out in full.
+
+        A deep path would otherwise stretch the row without limit and
+        squeeze the name beside it, so the button may shrink and ellipsize
+        while the whole path stays in the tooltip. The preview below shows
+        only the file name, so this button is where the folder is read.
+        """
+        content = Adw.ButtonContent(
+            icon_name="folder-symbolic",
+            label=abbreviate_home(self._folder),
+            can_shrink=True,
+        )
+        content.set_use_underline(False)
+        self._folder_btn.set_child(content)
+        self._folder_btn.set_tooltip_text(self._folder)
+
     def set_folder(self, path: str) -> None:
         """Adopt a picked output folder and refresh the button label."""
         self._folder = path
-        self._folder_btn.set_child(
-            Adw.ButtonContent(
-                icon_name="folder-symbolic", label=abbreviate_home(self._folder)
-            )
-        )
+        self._set_folder_button()
         # Which names are free is a property of the folder, so the
         # preview and its directory monitor both follow it.
         self._on_preview_stale()

@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: scanmole\n"
 "Report-Msgid-Bugs-To: office@foundata.com\n"
-"POT-Creation-Date: 2026-08-23 20:56+0200\n"
+"POT-Creation-Date: 2026-08-24 00:09+0200\n"
 "PO-Revision-Date: 2026-07-26 06:15+0200\n"
 "Last-Translator: foundata <office@foundata.com>\n"
 "Language-Team: German\n"
@@ -489,7 +489,7 @@ msgstr "Bevorzugte Papierformate"
 msgid "Resolves automatic sizes that fit both A4 and Letter"
 msgstr "Entscheidet automatische Formate, die zu A4 und Letter passen"
 
-#: src/scanmole_gui/form.py:421 src/scanmole_gui/form.py:752
+#: src/scanmole_gui/form.py:421 src/scanmole_gui/form.py:762
 msgid "Processing"
 msgstr "Verarbeitung"
 
@@ -568,15 +568,7 @@ msgstr "Nur für diesen Scan"
 msgid "Output"
 msgstr "Ausgabe"
 
-#: src/scanmole_gui/form.py:574
-msgid "Folder"
-msgstr "Ordner"
-
-#: src/scanmole_gui/form.py:591
-msgid "File name"
-msgstr "Dateiname"
-
-#: src/scanmole_gui/form.py:625
+#: src/scanmole_gui/form.py:632
 #, python-brace-format
 msgid ""
 "Placeholders: <tt>{YYYY}</tt> · <tt>{MM}</tt> · <tt>{DD}</tt> · <tt>{hh}</"
@@ -588,62 +580,59 @@ msgstr ""
 "<tt>{N}</tt> (Auto-Nr., mit Nullen aufgefüllt, wiederholbar) · <tt>{device}</"
 "tt>"
 
-#: src/scanmole_gui/form.py:639
+#: src/scanmole_gui/form.py:646
 msgid "Preview"
 msgstr "Vorschau"
 
-#: src/scanmole_gui/form.py:639
+#: src/scanmole_gui/form.py:646
 msgid "Expected output filename"
 msgstr "Erwarteter Ausgabedateiname"
 
-#: src/scanmole_gui/form.py:652
+#: src/scanmole_gui/form.py:659
 msgid "Color mode"
 msgstr "Farbmodus"
 
-#: src/scanmole_gui/form.py:662
+#: src/scanmole_gui/form.py:669
 msgid "Resolution"
 msgstr "Auflösung"
 
-#: src/scanmole_gui/form.py:718
-msgid ""
-"Recommended for reasonably small files: 300 dpi for B/W, 200 for Gray and "
-"Color"
+#: src/scanmole_gui/form.py:725
+msgid "Recommended for small files: 300 dpi for B/W, 200 for Gray and Color"
 msgstr ""
-"Für angemessen kleine Dateien empfohlen: 300 dpi für S/W, 200 für Graustufen "
-"und Farbe"
+"Für kleine Dateien empfohlen: 300 dpi für S/W, 200 für Graustufen und Farbe"
 
-#: src/scanmole_gui/form.py:754
+#: src/scanmole_gui/form.py:764
 msgid "Skip blank pages"
 msgstr "Leere Seiten überspringen"
 
-#: src/scanmole_gui/form.py:755
+#: src/scanmole_gui/form.py:765
 msgid "Removes pages detected as empty"
 msgstr "Als leer erkannte Seiten entfernen"
 
-#: src/scanmole_gui/form.py:760
+#: src/scanmole_gui/form.py:770
 msgid "OCR (Optical Character Recognition)"
 msgstr "OCR (optische Zeichenerkennung)"
 
-#: src/scanmole_gui/form.py:761
+#: src/scanmole_gui/form.py:771
 msgid "Make the PDF text-searchable"
 msgstr "Durchsuchbare PDF erzeugen"
 
-#: src/scanmole_gui/form.py:782
+#: src/scanmole_gui/form.py:792
 msgid "OCR Language"
 msgstr "OCR-Sprache"
 
-#: src/scanmole_gui/form.py:914
+#: src/scanmole_gui/form.py:924
 msgid "Add more…"
 msgstr "Weitere hinzufügen…"
 
-#: src/scanmole_gui/form.py:1065
+#: src/scanmole_gui/form.py:1075
 #, python-format
 msgid ""
 "%(dpi)d dpi · scans at %(effective)d dpi · approx. %(size).1f MB per page"
 msgstr ""
 "%(dpi)d dpi · scannt mit %(effective)d dpi · ca. %(size).1f MB pro Seite"
 
-#: src/scanmole_gui/form.py:1077
+#: src/scanmole_gui/form.py:1087
 #, python-format
 msgid "%(dpi)d dpi · approx. %(size).1f MB per page"
 msgstr "%(dpi)d dpi · ca. %(size).1f MB pro Seite"

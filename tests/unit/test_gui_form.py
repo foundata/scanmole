@@ -516,8 +516,7 @@ def test_the_resolution_presets_carry_their_recommendation() -> None:
         if child.get_label() and "dim-label" in child.get_css_classes()
     ]
     assert hints == [
-        "Recommended for reasonably small files: 300 dpi for B/W, 200 for Gray "
-        "and Color"
+        "Recommended for small files: 300 dpi for B/W, 200 for Gray and Color"
     ]
 
 
@@ -560,6 +559,34 @@ def test_the_encoder_hint_appears_only_where_it_applies(
 
     assert form.jbig2_hint_applies() is shown
     assert form._jbig2_row.get_visible() is shown
+
+
+def test_the_output_row_puts_the_folder_in_front_of_the_name() -> None:
+    # Folder and file name answer one question, so they share one row as
+    # one linked control, folder first. The row has no title: the group
+    # heading says Output, and the space goes to the entry, which is
+    # sized to show the whole default template.
+    from gi.repository import Gtk
+
+    from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE
+
+    events = Events()
+    form = _form(events)
+
+    assert form._output_row.get_title() == ""
+    assert form._output_row.get_activatable_widget() is form._name_entry
+    box = form._folder_btn.get_parent()
+    assert "linked" in box.get_css_classes()
+    assert list(box)[:2] == [form._folder_btn, form._name_entry]
+    assert form._name_entry.get_width_chars() >= len(DEFAULT_OUTPUT_TEMPLATE)
+    # A deep folder may not force the row wider: the button shrinks to
+    # its icon and the whole path stays reachable in the tooltip.
+    before = form._folder_btn.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+    form.set_folder("/home/somebody/Documents/Archive/Incoming/2026/August")
+    assert form._folder_btn.measure(Gtk.Orientation.HORIZONTAL, -1)[0] == before
+    assert form._folder_btn.get_tooltip_text() == (
+        "/home/somebody/Documents/Archive/Incoming/2026/August"
+    )
 
 
 def test_the_advanced_group_opens_the_settings_dialog() -> None:
