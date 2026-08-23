@@ -469,6 +469,20 @@ def _find_row(widget: Any, title: str) -> Any:
     return None
 
 
+def _labels(widget: Any) -> list[Any]:
+    """Every label in a widget subtree, in order."""
+    from gi.repository import Gtk
+
+    found = []
+    if isinstance(widget, Gtk.Label):
+        found.append(widget)
+    child = widget.get_first_child()
+    while child is not None:
+        found.extend(_labels(child))
+        child = child.get_next_sibling()
+    return found
+
+
 def _group_titles(group: Any) -> list[str]:
     titles: list[str] = []
     child = group.get_first_child()
@@ -492,6 +506,34 @@ def test_the_scan_group_puts_the_flow_rows_above_the_action() -> None:
     assert not hasattr(form, "behaviour_group")
 
 
+def test_the_resolution_presets_carry_their_recommendation() -> None:
+    events = Events()
+    form = _form(events)
+
+    hints = [
+        child.get_label()
+        for child in _labels(form._chips_row)
+        if child.get_label() and "dim-label" in child.get_css_classes()
+    ]
+    assert hints == [
+        "Recommended for reasonably small files: 300 dpi for B/W, 200 for Gray "
+        "and Color"
+    ]
+
+
+def test_the_one_shot_menu_names_the_switches_it_stands_in_for() -> None:
+    # The menu action and the switch are the same flow, so they carry the
+    # same word; the caption above them says it applies to one run.
+    from scanmole_gui.form import FLOW_ACTIONS
+
+    assert [label for label, _value in FLOW_ACTIONS] == [
+        "Scan one sheet",
+        "Scan loaded stack",
+        "Combine scans",
+    ]
+    assert dict(FLOW_ACTIONS)["Combine scans"] == "collect"
+
+
 def test_the_advanced_group_opens_the_settings_dialog() -> None:
     events = Events()
     form = _form(events)
@@ -513,15 +555,17 @@ def test_the_rarer_rows_wait_in_the_borrowed_settings_groups() -> None:
     events = Events()
     form = _form(events)
 
-    assert _group_titles(form.settings_scan_group) == ["Page size"]
+    assert _group_titles(form.settings_scan_group) == [
+        "Page size",
+        "Preferred paper sizes",
+    ]
     assert _group_titles(form.settings_processing_group) == [
         "Deskew",
-        "Archival PDF/A",
+        "Create <a href='https://en.wikipedia.org/wiki/PDF/A'>PDF/A</a> files",
     ]
     assert _group_titles(form.settings_behaviour_group) == [
         "Scan all pages in feeder",
         "Hardware scan button",
-        "Preferred paper sizes",
     ]
     # None of them is on the page: the dialog puts them up while open.
     assert form.settings_scan_group.get_parent() is None

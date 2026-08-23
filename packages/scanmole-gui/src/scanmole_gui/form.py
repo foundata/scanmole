@@ -105,6 +105,9 @@ AUTO_SIZE_PREFERENCES = (
     (_("ISO (A sizes)"), "iso"),
     (_("North America (Letter/Legal)"), "north-american"),
 )
+PDFA_LINK = "<a href='{url}'>PDF/A</a>"
+"""The linked format name the archival switch names itself after."""
+
 LANGUAGES = (
     (_("German (deu)"), "deu"),
     (_("English (eng)"), "eng"),
@@ -116,7 +119,9 @@ LANGUAGES = (
 FLOW_ACTIONS: tuple[tuple[str, SheetFlow], ...] = (
     (_("Scan one sheet"), "single"),
     (_("Scan loaded stack"), "stack"),
-    (_("Collect sheets"), "collect"),
+    # Named after the switch it stands in for, like the button mappings
+    # below, so the one-shot action and the setting read as one thing.
+    (_("Combine scans"), "collect"),
 )
 
 # What a press of the scanner's own button starts while ScanMole is idle.
@@ -389,6 +394,19 @@ class ScanForm:
         )
         self._size_row.connect("notify::selected", self._on_page_size_changed)
         self.settings_scan_group.add(self._size_row)
+        # Only automatic page sizes can be ambiguous, so the row grays out
+        # for a fixed size and says as much in its own words. It sits
+        # directly under the size it disambiguates.
+        self._size_pref_row = Adw.ComboRow(
+            title=_("Preferred paper sizes"),
+            subtitle=_("Resolves automatic sizes that fit both A4 and Letter"),
+        )
+        self._size_pref_row.set_factory(plain_string_factory())
+        self._size_pref_row.set_model(
+            Gtk.StringList.new([label for label, _value in AUTO_SIZE_PREFERENCES])
+        )
+        self._size_pref_row.connect("notify::selected", self._on_document_changed)
+        self.settings_scan_group.add(self._size_pref_row)
 
         self.settings_processing_group = Adw.PreferencesGroup(title=_("Processing"))
         self._deskew_row = Adw.SwitchRow(
@@ -398,9 +416,17 @@ class ScanForm:
         )
         self.settings_processing_group.add(self._deskew_row)
         # Archival output is produced by the OCR stage, so like the
-        # language it only means something while OCR runs.
+        # language it only means something while OCR runs. The format
+        # name links to its own article; the link is assembled here so
+        # the translatable sentence stays free of markup, and the URL is
+        # its own message so a catalogue can point at its own language
+        # edition of the article. xgettext warns about that URL; it is
+        # the message here, not embedded in a sentence, and an untouched
+        # catalogue simply keeps the English article.
         self._pdfa_row = Adw.SwitchRow(
-            title=_("Archival PDF/A"),
+            title=_("Create {format} files").format(
+                format=PDFA_LINK.format(url=_("https://en.wikipedia.org/wiki/PDF/A"))
+            ),
             subtitle=_("Long-term preservation format; needs OCR"),
             active=True,
         )
@@ -425,18 +451,6 @@ class ScanForm:
         )
         self._button_row.connect("notify::selected", self._on_button_pref_changed)
         self.settings_behaviour_group.add(self._button_row)
-        # Only automatic page sizes can be ambiguous, so the row grays out
-        # for a fixed size and says as much in its own words.
-        self._size_pref_row = Adw.ComboRow(
-            title=_("Preferred paper sizes"),
-            subtitle=_("Resolves automatic sizes that fit both A4 and Letter"),
-        )
-        self._size_pref_row.set_factory(plain_string_factory())
-        self._size_pref_row.set_model(
-            Gtk.StringList.new([label for label, _value in AUTO_SIZE_PREFERENCES])
-        )
-        self._size_pref_row.connect("notify::selected", self._on_document_changed)
-        self.settings_behaviour_group.add(self._size_pref_row)
 
     def _add_flow_rows(self) -> None:
         """Add what a scan covers and what may start it, above the action.
@@ -451,9 +465,7 @@ class ScanForm:
         """
         self._collect_row = Adw.SwitchRow(
             title=_("Combine scans"),
-            subtitle=_(
-                "Add scans to the same document until you press Finish (status bar)"
-            ),
+            subtitle=_("Add scans to the PDF until you press “Finish” (status bar)"),
             active=False,
         )
         self.scan_group.add(self._collect_row)
@@ -687,6 +699,24 @@ class ScanForm:
         # setting instead of two.
         self._chips_row = Adw.ActionRow()
         self._chips_row.add_css_class("joined-above")
+        # The presets are bare numbers, so the row says what they are for.
+        # A prefix label rather than the row title: the title style would
+        # read as a setting of its own, and dimming the row would take the
+        # chips down with it.
+        hint = Gtk.Label(
+            label=_(
+                "Recommended for reasonably small files: "
+                "300 dpi for B/W, 200 for Gray and Color"
+            ),
+            wrap=True,
+            xalign=0.0,
+            hexpand=True,
+            valign=Gtk.Align.CENTER,
+            max_width_chars=34,
+        )
+        hint.add_css_class("caption")
+        hint.add_css_class("dim-label")
+        self._chips_row.add_prefix(hint)
         chips = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL,
             halign=Gtk.Align.END,
