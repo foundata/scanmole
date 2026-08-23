@@ -574,3 +574,79 @@ def test_probe_evidence_feeds_the_arbiter_without_a_synthetic_edge() -> None:
     assert arbiter.observe(_IDLE) == Observation()
     assert arbiter.observe(_PAPER) == Observation(insert=True)
     assert arbiter.observe(_PAPER) == Observation()
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_a_restart_reaches_the_application_only_through_a_real_close() -> None:
+    # Restart is a request to close and come back. While the close is
+    # still open to refusal the intent stays in the window, or a declined
+    # restart would re-execute on some later, unrelated quit.
+    from scanmole_gui.app import MainWindow
+    from scanmole_gui.session import SessionState
+
+    class App:
+        def __init__(self) -> None:
+            self.restart_requested = False
+
+    class Runner:
+        def is_running(self) -> bool:
+            return True
+
+    class Window:
+        _on_restart_clicked = MainWindow._on_restart_clicked
+        _close_discards_pages = MainWindow._close_discards_pages
+        _on_close_confirm_response = MainWindow._on_close_confirm_response
+        _append_log = MainWindow._append_log
+
+        def __init__(self, pages: int) -> None:
+            self._app = App()
+            self._settings_dialog = None
+            self._runner: Any = Runner()
+            self._session = SessionState(drop_blanks=True, pages=pages)
+            self._closing = False
+            self._close_confirmed = False
+            self._restart_pending = False
+            self._echo_log = False
+            self._log = type("Log", (), {"append": lambda self, text: None})()
+            self.prompts = 0
+
+        def get_application(self) -> App:
+            return self._app
+
+        def restart_reached_the_app(self) -> bool:
+            return self._app.restart_requested
+
+        def close(self) -> None:
+            # Stands in for GTK dispatching close-request, whose real
+            # handler transfers the intent once the close goes through.
+            window: Any = self
+            if window._close_discards_pages():
+                self.prompts += 1
+                return
+            if self._restart_pending:
+                self._app.restart_requested = True
+
+    plain: Any = Window(pages=0)  # nothing captured: no question asked
+    plain._on_restart_clicked()
+    assert plain.prompts == 0
+    assert plain.restart_reached_the_app() is True
+
+    confirmed: Any = Window(pages=3)
+    confirmed._on_restart_clicked()
+    assert confirmed.prompts == 1  # inhibited by the discard prompt
+    assert confirmed.restart_reached_the_app() is False
+    confirmed._on_close_confirm_response(None, "close")
+    assert confirmed.restart_reached_the_app() is True
+
+    # "Keep Scanning" leaves nothing behind for a later ordinary quit.
+    # Dismissing the dialog arrives here as the same response, because
+    # ``_confirm_close`` registers "keep" as its close response.
+    declined: Any = Window(pages=3)
+    declined._on_restart_clicked()
+    declined._on_close_confirm_response(None, "keep")
+    assert declined._restart_pending is False
+    declined._session = SessionState(drop_blanks=True, pages=0)
+    declined.close()  # an ordinary close, much later
+    assert declined.restart_reached_the_app() is False

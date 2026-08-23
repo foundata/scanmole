@@ -250,6 +250,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         the close it triggers is not questioned a second time."""
         self._echo_log = False
         """Whether log lines also go to stderr (a confirmed discard)."""
+        self._restart_pending = False
+        """Set by the settings dialog's Restart row. It stays here until
+        the window actually closes, because the close it asks for can
+        still be refused; only then does the application learn of it."""
         self._close_patience = 0
         self._searching = False
         self._device_poll_id: int | None = None
@@ -1133,10 +1137,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._schedule_sensor_poll()
 
     def _on_restart_clicked(self, *_args: object) -> None:
-        """Quit and re-execute the application (see ``main``)."""
-        application = self.get_application()
-        if application is not None:
-            application.restart_requested = True
+        """Ask to close, and re-execute afterwards (see ``main``)."""
+        # Not on the application yet: closing may be inhibited by the
+        # discard prompt and then declined, and a restart intent that
+        # outlived its refused close would fire on the next ordinary quit.
+        self._restart_pending = True
         dialog = self._settings_dialog
         if dialog is not None:
             # An open dialog swallows the window's close(); close the dialog
@@ -1469,6 +1474,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_close_confirm_response(self, _dialog: object, response: str) -> None:
         """Close for real when the discard was confirmed."""
         if response != "close":
+            # "Keep Scanning" and a dismissed dialog (its close response)
+            # both land here: the window stays, so any restart it was
+            # asking for is off.
+            self._restart_pending = False
             return
         self._close_confirmed = True
         # The engine preserves the pages and logs the recovery command,
@@ -1484,6 +1493,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             # scanning", and a half-released window cannot resume.
             self._confirm_close()
             return True  # inhibit until the user decides
+        if self._restart_pending:
+            # The close is going through, so the intent may leave the
+            # window; ``main`` re-executes once the loop ends.
+            application = self.get_application()
+            if application is not None:
+                application.restart_requested = True
         self._persist_ui_state()
         # No advisory child may outlive the window, and no late advisory
         # result may touch it while it is closing.
