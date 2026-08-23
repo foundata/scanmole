@@ -6,11 +6,15 @@ import logging
 import subprocess
 from pathlib import Path
 
+from scanmole import CREATOR
 from scanmole.config import ScanConfig
 from scanmole.errors import ProcessingError
 from scanmole.external import INSTALL_HINT, TOOL_TIMEOUT_SECONDS, run_command
 
 LOGGER = logging.getLogger(__name__)
+
+PLUGIN_FILE = Path(__file__).with_name("ocrmypdf_plugin.py")
+"""The ocrmypdf plugin shipped beside this module (see its docstring)."""
 
 
 def build_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
@@ -25,7 +29,9 @@ def build_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
     Raises:
         ProcessingError: If ``img2pdf`` fails or times out.
     """
-    command = ["img2pdf"]
+    # img2pdf names itself as the producer, which is right: it wrote the
+    # bytes. The creator is the application the document came from.
+    command = ["img2pdf", "--creator", CREATOR]
     if dpi is not None:
         command += ["--imgsize", f"{dpi}dpi"]
     command += [str(page) for page in pages]
@@ -61,6 +67,14 @@ def run_ocr(
         "--skip-text",
         "--optimize",
         str(config.optimize),
+        # ocrmypdf rewrites the creator with its own name and drops what
+        # the input carried, so ScanMole travels through the plugin hook
+        # that composes that value. The plugin runs in ocrmypdf's
+        # interpreter, which is why the string comes in as an argument.
+        "--plugin",
+        str(PLUGIN_FILE),
+        "--scanmole-creator",
+        CREATOR,
     ]
     if deskew:
         command.append("--deskew")

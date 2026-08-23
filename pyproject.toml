@@ -46,6 +46,14 @@ warn_unreachable = true                   # Extends strict mode.
 module = ["gi", "gi.*"]
 ignore_missing_imports = true
 
+# ocrmypdf is an external tool, not a dependency: the plugin ScanMole ships
+# for it is loaded by ocrmypdf's own interpreter and imports its API there.
+# Checking must not require it to be installed alongside the engine.
+[[tool.mypy.overrides]]
+module = ["ocrmypdf", "ocrmypdf.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
 [tool.pytest.ini_options]
 addopts = [
   "--import-mode=importlib",

@@ -59,7 +59,8 @@ def test_build_pdf_passes_the_resolution_explicitly(
     build_pdf([Path("a.pnm"), Path("b.pnm")], Path("out.pdf"), dpi=300)
 
     (command,) = calls
-    assert command[:3] == ["img2pdf", "--imgsize", "300dpi"]
+    assert command[0] == "img2pdf"
+    assert command[command.index("--imgsize") + 1] == "300dpi"
     assert command[-2:] == ["-o", "out.pdf"]
 
 
@@ -127,3 +128,40 @@ def test_run_ocr_failure_hints_at_the_language_pack(
 
     with pytest.raises(ProcessingError, match="tesseract-langpack-deu"):
         run_ocr(Path("raw.pdf"), Path("out.pdf"), _CONFIG)
+
+
+def test_the_pdf_names_scanmole_as_its_creator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The creator is the application the document came from; the producer
+    # stays whatever wrote the bytes, which img2pdf fills in itself.
+    from scanmole import CREATOR
+
+    calls = _record(monkeypatch)
+
+    build_pdf([Path("a.pnm")], Path("out.pdf"), dpi=300)
+
+    (command,) = calls
+    assert command[command.index("--creator") + 1] == CREATOR
+    assert CREATOR.startswith("ScanMole ") and CREATOR.endswith(" by foundata")
+    assert "--producer" not in command
+
+
+def test_ocr_carries_the_creator_through_the_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ocrmypdf overwrites the incoming creator, so the name travels
+    # through the hook that composes the value it writes.
+    from scanmole import CREATOR
+    from scanmole.pdf import PLUGIN_FILE
+
+    calls = _record(monkeypatch)
+
+    run_ocr(Path("in.pdf"), Path("out.pdf"), _CONFIG)
+
+    (command,) = calls
+    assert command[command.index("--plugin") + 1] == str(PLUGIN_FILE)
+    assert command[command.index("--scanmole-creator") + 1] == CREATOR
+    # The plugin ships with the engine, or ocrmypdf could not load it.
+    assert PLUGIN_FILE.is_file()
+    assert PLUGIN_FILE.parent.name == "scanmole"
