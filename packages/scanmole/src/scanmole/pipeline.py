@@ -18,6 +18,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from scanmole.autocrop import autocrop_image
 from scanmole.config import ScanConfig
 from scanmole.devices import pick_default_device
 from scanmole.errors import InputError, NoPagesError, ProcessingError, ScanMoleError
@@ -28,7 +29,6 @@ from scanmole.pdf import build_pdf, run_ocr
 from scanmole.pnm import (
     CoherentInk,
     adaptive_lineart_threshold,
-    autocrop_image,
     binarize_image,
     coherent_ink,
     crop_image,

@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import scanmole.pipeline as pipeline_module
+from scanmole.autocrop import autocrop_image
 from scanmole.config import AutoSizePreference, ScanConfig
 from scanmole.errors import (
     DeviceError,
@@ -32,7 +33,6 @@ from scanmole.events import EventWriter
 from scanmole.negotiation import negotiate, resolve_faint_plan
 from scanmole.options import Capability, parse_capabilities
 from scanmole.pipeline import analyze_page, publish_pdf, run_pipeline
-from scanmole.pnm import autocrop_image
 from scanmole.scanner import (
     EffectiveSettings,
     ScanResult,

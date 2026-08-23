@@ -73,6 +73,7 @@ scanmole/                      # repository root (uv workspace)
 │   │       ├── options.py     # -A capability parsing + source/mode/page-size mapping
 │   │       ├── naming.py      # output filename templates (shared with the GUI preview)
 │   │       ├── devices.py     # device discovery
+│   │       ├── autocrop.py    # automatic paper-edge detection
 │   │       ├── pnm.py         # stdlib PNM parsing + blank detection
 │   │       ├── pdf.py         # img2pdf + ocrmypdf wrappers
 │   │       ├── events.py      # JSON-lines event protocol writer
@@ -139,7 +140,7 @@ Commit messages follow the foundata guideline (`guidelines/git-commits.md`): `<s
 
 | Scope | Area |
 |---|---|
-| `cli`, `pipeline`, `scanner`, `options`, `naming`, `devices`, `pnm`, `pdf`, `events`, `errors`, `external`, `config` | the engine module of the same name |
+| `cli`, `pipeline`, `scanner`, `options`, `naming`, `devices`, `pnm`, `autocrop`, `pdf`, `events`, `errors`, `external`, `config` | the engine module of the same name |
 | `gui` | the GTK frontend |
 | `i18n` | translations and gettext machinery |
 | `build`, `dependencies` | packaging, lockfile |
