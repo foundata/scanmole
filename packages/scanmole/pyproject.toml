@@ -16,7 +16,14 @@ maintainers = [
   { name = "Andreas Haerter", email = "ah@foundata.com" },
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  # Raster rotation for host-side deskew (scanmole/deskew.py). The only
+  # runtime dependency: rotating a page well needs resampling, which the
+  # standard library has no image support for, and every alternative
+  # (ImageMagick, unpaper, OpenCV, a Leptonica binding) is either a second
+  # external tool or a far larger surface for one operation.
+  "pillow>=10.0",
+]
 
 # https://pypi.org/classifiers/
 classifiers = [
