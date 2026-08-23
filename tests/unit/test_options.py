@@ -94,6 +94,17 @@ def test_parse_page_size_rejects_zero_dimensions() -> None:
         parse_page_size("210x0")
 
 
+def test_parse_page_size_rejects_dimensions_that_overflow_a_float() -> None:
+    # The pattern only sees digits, so an over-long one reaches float() and
+    # becomes infinity: positive, larger than every device maximum, and
+    # silently accepted before this check.
+    huge = "9" * 400
+    with pytest.raises(InputError, match="out of range"):
+        parse_page_size(f"{huge}x210")
+    with pytest.raises(InputError, match="out of range"):
+        parse_page_size(f"210x{huge}")
+
+
 def test_parse_page_size_auto_returns_none() -> None:
     assert parse_page_size("auto") is None
     assert parse_page_size(" AUTO ") is None

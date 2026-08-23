@@ -380,6 +380,11 @@ def parse_page_size(spec: str) -> tuple[float, float] | None:
             "(use auto, a4|a5|a6|letter|legal, or WxH in mm)"
         )
     width, height = float(match.group(1)), float(match.group(2))
+    # A digit string long enough to overflow a float converts to infinity,
+    # which passes any "> 0" test and then poisons every millimetre-based
+    # comparison downstream, so the size has to be a real number first.
+    if not (math.isfinite(width) and math.isfinite(height)):
+        raise InputError(f"invalid --page-size '{spec}' (dimensions are out of range)")
     if width <= 0 or height <= 0:
         raise InputError(f"invalid --page-size '{spec}' (dimensions must be > 0 mm)")
     return width, height
