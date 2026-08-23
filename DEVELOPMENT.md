@@ -38,7 +38,7 @@ This file provides information for maintainers and contributors to ScanMole. Wha
 ## Getting started<a id="getting-started"></a>
 
 1. Clone the repository.
-2. Set up the environment. The `--system-site-packages` flag matters for the GUI only: PyGObject comes from the distribution package and an isolated venv cannot see it. The CLI is pure stdlib and works either way.
+2. Set up the environment. The `--system-site-packages` flag matters for the GUI only: PyGObject comes from the distribution package and an isolated venv cannot see it. The CLI needs only Pillow beyond the standard library and works either way.
 
    ```sh
    uv venv --system-site-packages
@@ -74,6 +74,7 @@ scanmole/                      # repository root (uv workspace)
 │   │       ├── naming.py      # output filename templates (shared with the GUI preview)
 │   │       ├── devices.py     # device discovery
 │   │       ├── autocrop.py    # automatic paper-edge detection
+│   │       ├── deskew.py      # host raster deskew: tesseract angle + Pillow rotation
 │   │       ├── pnm.py         # stdlib PNM parsing + blank detection
 │   │       ├── pdf.py         # img2pdf + ocrmypdf wrappers
 │   │       ├── events.py      # JSON-lines event protocol writer

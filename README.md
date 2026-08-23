@@ -62,6 +62,7 @@ Main features:
 - **Scan a stack of paper into one searchable PDF with a single command:** duplex batch, blank backsides dropped, OCR text layer, archival PDF/A output by default.
 - **Automatic page size detection crops every page to the detected paper edges**, falling back to conservative framing around the printed content where a device hides the paper boundary, so receipts come out receipt-sized and mixed stacks need no set-up. When content fits A4 and US Letter alike, `--auto-size-preference iso|north-american` decides the ambiguity (ISO by default).
 - **Small files by default:** 1-bit black-and-white at 300 dpi lands at roughly 100 KB per A4 text page, and ocrmypdf shrinks that further where `jbig2enc` is installed.
+- **Skewed pages are straightened even where the scanner cannot do it:** ScanMole measures the angle itself and rotates the raster before the PDF is built, so deskew no longer depends on the driver offering it. A page it cannot measure, or cannot rotate safely, is left as scanned rather than guessed at.
 - **Works with anything [SANE](https://en.wikipedia.org/wiki/Scanner_Access_Now_Easy)** can drive, including driverless eSCL devices via `sane-airscan`. Device capabilities are probed and mapped instead of hardcoded, and devices without a native 1-bit mode get software binarization automatically.
 - **Automation-grade CLI** with defined exit codes, filename templates and a versioned JSON event protocol; interrupted batches can be rebuilt from the preserved page images without rescanning the paper.
 - **Easy-to-use GTK4/libadwaita GUI** on top of the same engine, with a live filename preview and translations (German included).
@@ -99,7 +100,7 @@ uv pip install scanmole-gui
 
 Tip: after the first `scanmole-gui` start, the settings dialog can install a menu entry, so later starts come straight from the desktop's application grid without any venv activation.
 
-**Server or scripting (CLI only):** the CLI is pure stdlib and installs into any isolated environment:
+**Server or scripting (CLI only):** the CLI carries one Python dependency (Pillow, for raster rotation) and installs into any isolated environment:
 
 ```sh
 uv tool install scanmole
@@ -214,8 +215,8 @@ Multi-sheet documents on single-sheet scanners: turn on "Combine scans" above th
 | `1` | Unexpected internal error. |
 | `2` | Usage or input error: bad arguments, invalid page size, conflicting options. No PDF was produced. |
 | `3` | Acquisition failure: `scanimage` failed, no usable device, device vanished mid-batch, or a device probe timed out. |
-| `4` | Missing external tool: scanimage, img2pdf or ocrmypdf is not installed. |
-| `5` | Processing failure: img2pdf or ocrmypdf failed after successful acquisition. Scanned pages are preserved in the work directory (path in the error message), so the batch can be rebuilt with `--from-images` instead of rescanning the paper. |
+| `4` | Missing external tool: scanimage, img2pdf, ocrmypdf or (for `--deskew` on a device without its own) tesseract is not installed. |
+| `5` | Processing failure after successful acquisition: img2pdf or ocrmypdf failed, or a page could not be measured or straightened. Scanned pages are preserved in the work directory (path in the error message), so the batch can be rebuilt with `--from-images` instead of rescanning the paper. |
 | `6` | Nothing to scan: feeder empty, or every page was blank. Not a malfunction; no PDF was produced. |
 | `130` | Interrupted (SIGINT). |
 | `143` | Terminated (SIGTERM), e.g. a GUI cancel. |
