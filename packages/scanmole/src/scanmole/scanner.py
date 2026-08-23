@@ -318,6 +318,20 @@ def build_scan_command(
     # A flatbed never reports "feeder empty", so it always carries a frame
     # limit; a single-sheet flow limits every source to one physical sheet.
     batch_count = 1 if flatbed else None
+    if not plan.source.conclusive:
+        # The listing proved nothing about the source, so "drain the
+        # feeder" is an assumption, not a fact. On a flatbed the scan
+        # would never end by itself, so an unproven source gets the
+        # flatbed's limit: one frame per invocation. A collect run simply
+        # asks again for the next one.
+        batch_count = 1
+        if batch_start is None:
+            # Once per run: collect rebuilds this command per segment.
+            LOGGER.warning(
+                "the scanner's source capabilities could not be read, so "
+                "ScanMole cannot tell a feeder from a flatbed; limiting this "
+                "invocation to one frame instead of an open-ended batch"
+            )
     if config.sheet_flow == "single":
         batch_count = _single_sheet_count(plan)
     if batch_count is not None:
@@ -335,8 +349,7 @@ def build_scan_command(
         # Pairing needs proof, not a request: an UNKNOWN source echoes the
         # requested value back, and pairing on that would fuse unrelated
         # simplex pages into one sheet for sizing and undercount a
-        # collection. The flatbed frame limit below deliberately keeps
-        # trusting the request, because guessing wrong there is unbounded.
+        # collection.
         duplex=plan.source.conclusive and plan.source.effective == "adf-duplex",
     )
 

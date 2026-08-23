@@ -2020,17 +2020,107 @@ def test_unknown_source_still_refuses_a_single_sheet_scan(tmp_path: Path) -> Non
         )
 
 
-def test_unknown_source_keeps_the_flatbed_frame_limit(tmp_path: Path) -> None:
-    # Deliberately asymmetric to the duplex verdict: a flatbed never
-    # reports "feeder empty", so dropping the limit on an unproven listing
-    # would batch forever. Trusting the request is the bounded choice.
-    command, _settings = build_scan_command(
+def test_unknown_source_evidence_bounds_the_batch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A listing that proves nothing about the source may still belong to a
+    # flatbed, which never reports "feeder empty", so an open-ended batch
+    # would never stop. The request cannot settle it: it is the request
+    # that is unverified. One frame per invocation, and say why.
+    caps = {"resolution": Capability(kind="range", minimum=50, maximum=600)}
+
+    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+        command, _settings = build_scan_command(
+            _config(source="adf-duplex", sheet_flow="stack"),
+            "test:0",
+            caps,
+            str(tmp_path / "page_%04d.pnm"),
+        )
+
+    assert "--batch-count=1" in command
+    warnings = [record.getMessage() for record in caplog.records]
+    assert len(warnings) == 1
+    assert "source capabilities" in warnings[0]
+    assert "one frame" in warnings[0]
+
+    # A flatbed request over the same listing is bounded for the same
+    # reason, not because the request said flatbed.
+    flatbed, _ = build_scan_command(
         _config(source="flatbed"),
         "test:0",
-        {"resolution": Capability(kind="range", minimum=50, maximum=600)},
+        caps,
         str(tmp_path / "page_%04d.pnm"),
     )
-    assert "--batch-count=1" in command
+    assert "--batch-count=1" in flatbed
+
+
+def test_conclusive_source_evidence_keeps_its_batch_behaviour(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Nothing changes where the listing settles the question: a proven
+    # feeder still drains, a proven flatbed still stops after one frame,
+    # and neither is worth warning about.
+    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+        feeder, _f = build_scan_command(
+            _config(source="adf-duplex", sheet_flow="stack"),
+            "test:0",
+            {"source": _FEEDER_SOURCES},
+            str(tmp_path / "page_%04d.pnm"),
+        )
+        flatbed, _b = build_scan_command(
+            _config(source="flatbed"),
+            "test:0",
+            {"source": Capability(kind="enum", choices=["Flatbed"])},
+            str(tmp_path / "page_%04d.pnm"),
+        )
+
+    assert not any(part.startswith("--batch-count") for part in feeder)
+    assert "--batch-count=1" in flatbed
+    assert caplog.records == []
+
+
+def test_the_unknown_source_warning_is_not_repeated_per_segment(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Collect rebuilds the command for every continuation segment. Each
+    # one stays bounded; only the run's first command explains it.
+    caps = {"resolution": Capability(kind="range", minimum=50, maximum=600)}
+
+    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+        first, _a = build_scan_command(
+            _config(source="adf", sheet_flow="collect"),
+            "test:0",
+            caps,
+            str(tmp_path / "page_%04d.pnm"),
+        )
+        for start in (3, 5):
+            segment, _b = build_scan_command(
+                _config(source="adf", sheet_flow="collect"),
+                "test:0",
+                caps,
+                str(tmp_path / "page_%04d.pnm"),
+                None,
+                start,
+            )
+            assert "--batch-count=1" in segment
+            assert f"--batch-start={start}" in segment
+
+    assert "--batch-count=1" in first
+    assert len(caplog.records) == 1
+
+
+def test_unknown_source_evidence_still_refuses_a_single_sheet_flow(
+    tmp_path: Path,
+) -> None:
+    # Bounding the batch does not make one frame one sheet: a duplex
+    # source needs two, and that is exactly what is unproven here.
+    with pytest.raises(DeviceError, match="could not be negotiated"):
+        build_scan_command(
+            _config(source="adf-duplex", sheet_flow="single"),
+            "test:0",
+            {"resolution": Capability(kind="range", minimum=50, maximum=600)},
+            str(tmp_path / "page_%04d.pnm"),
+        )
 
 
 def _window_caps(x: str, y: str) -> dict[str, Capability]:
@@ -2115,3 +2205,62 @@ def test_writable_geometry_keeps_reporting_what_it_requested(tmp_path: Path) -> 
 
     assert "-x" in command and "-y" in command
     assert effective.window_mm == (210.0, 297.0)  # the A4 request, not the maxima
+
+
+def test_an_unknown_source_collect_run_bounds_every_segment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # End to end through the engine: an unreadable listing bounds the
+    # first acquisition and every reload, warns once on stderr, and leaves
+    # the JSON event stream exactly as it was.
+    commands = CollectCommands()
+    monkeypatch.setattr("scanmole.scanner._collect_commands", lambda: commands)
+    monkeypatch.setattr("scanmole.scanner.COLLECT_IDLE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_sensors",
+        lambda device, settings=(): SensorSnapshot(scan=None, page_loaded=None),
+    )
+    issued: list[list[str]] = []
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        issued.append(cmd)
+        page = tmp_path / f"page_{len(issued):04d}.pnm"
+        page.write_bytes(b"P4\n1 1\n\x00")
+        on_page(page)
+        commands.feed_line("next\n" if len(issued) == 1 else "done\n")
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+        result = scan_to_files(
+            _config(source="adf", sheet_flow="collect"),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=True, stream=stream),
+            lambda p, o: None,
+        )
+
+    assert len(issued) == 2
+    for command in issued:
+        assert "--batch-count=1" in command
+    assert len(result.pages) == 2
+    bounded = [
+        record.getMessage()
+        for record in caplog.records
+        if "source capabilities" in record.getMessage()
+    ]
+    assert len(bounded) == 1  # the segment rebuild stays quiet
+
+    # Both triggers were already pending, so nothing waited; the stream is
+    # the same shape it has always been and carries no new field.
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert [event["event"] for event in events] == ["settings"]
+    assert set(events[0]) == {"event", "device", "source", "mode", "resolution"}
