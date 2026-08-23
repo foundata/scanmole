@@ -13,7 +13,7 @@ instead of engine imports.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -132,6 +132,28 @@ HARDWARE_BUTTON_ACTIONS = (
     (_("Scan one sheet"), "single"),
     (_("Combine scans"), "collect"),
 )
+
+DEFAULT_HARDWARE_BUTTON = "same"
+"""The mapping a profile without an explicit choice uses.
+
+The scanner's own button is the obvious way to start the scan it is
+attached to, so it follows the Scan button until the user says otherwise.
+It costs nothing on a device without a scan button: idle polling only
+starts where a sensor could answer an enabled preference."""
+
+
+def hardware_button_value(settings: Mapping[str, object]) -> str:
+    """The button mapping ``settings`` selects, with the shared fallback.
+
+    A missing or unrecognized value takes the default. An explicitly
+    saved ``"off"`` is a decision and is kept, which is what lets the
+    default change without a settings migration.
+    """
+    mapping = str(settings.get("hardware_button") or DEFAULT_HARDWARE_BUTTON)
+    if mapping not in [value for _label, value in HARDWARE_BUTTON_ACTIONS]:
+        return DEFAULT_HARDWARE_BUTTON
+    return mapping
+
 
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
@@ -1039,10 +1061,9 @@ class ScanForm:
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
         self._stack_row.set_active(bool(settings.get("scan_loaded_stack", True)))
         self._collect_row.set_active(bool(settings.get("wait_for_more_sheets", False)))
-        mapping = str(settings.get("hardware_button") or "off")
-        if mapping not in [value for _label, value in HARDWARE_BUTTON_ACTIONS]:
-            mapping = "off"
-        combo_select(self._button_row, HARDWARE_BUTTON_ACTIONS, mapping)
+        combo_select(
+            self._button_row, HARDWARE_BUTTON_ACTIONS, hardware_button_value(settings)
+        )
         self._insert_row.set_active(bool(settings.get("insert_to_scan")))
         template = str(settings.get("filename_template") or "")
         self._name_entry.set_text(

@@ -64,6 +64,7 @@ from scanmole_gui.form import (  # noqa: E402
     ScanForm,
     abbreviate_home,
     default_folder,
+    hardware_button_value,
 )
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole_gui.probing import (  # noqa: E402
@@ -883,24 +884,24 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _sensor_prefs(self) -> tuple[str, bool]:
         """The persisted trigger preferences: (button mapping, insert)."""
-        mapping = str(self._settings.get("hardware_button") or "off")
-        if mapping not in ("off", "same", "single", "collect"):
-            mapping = "off"
-        return mapping, bool(self._settings.get("insert_to_scan"))
+        return (
+            hardware_button_value(self._settings),
+            bool(self._settings.get("insert_to_scan")),
+        )
 
     def _sensor_polling_wanted(self) -> bool:
         """Whether an idle sensor poll should run right now.
 
-        Capability-driven and preference-gated: some trigger must be
-        enabled, the window alive and visible, Start currently allowed
-        (which covers the running scan, an active search, a blocked CLI
-        and the selected device), no capability probe active, and the
-        device's last advisory listing must actually carry usable
-        sensors. Never a device list.
+        Capability-driven and preference-gated: the window alive and
+        visible, Start currently allowed (which covers the running scan,
+        an active search, a blocked CLI and the selected device), no
+        capability probe active, and an enabled trigger whose sensor the
+        device's last advisory listing actually carries. Pairing the two
+        matters: a paper level is no evidence of a scan button, so a
+        button mapping alone must not poll a device that has none. Never
+        a device list.
         """
         mapping, insert = self._sensor_prefs()
-        if mapping == "off" and not insert:
-            return False
         if self._released or self._closing:
             return False
         if not self._scan_allowed():
@@ -908,7 +909,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if self._flow.probe_active:
             return False
         caps = self._flow.last_caps
-        return caps is not None and assess_sensors(caps).usable
+        if caps is None:
+            return False
+        sensors = assess_sensors(caps)
+        return (mapping != "off" and sensors.scan is not None) or (
+            insert and sensors.page_loaded is not None
+        )
 
     def _schedule_sensor_poll(self) -> None:
         """Arm the next idle poll if wanted and none is armed or running."""

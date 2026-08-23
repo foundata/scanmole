@@ -450,7 +450,7 @@ def test_scanner_trigger_rows_fire_and_round_trip() -> None:
     assert persisted["insert_to_scan"] is True
 
     form.apply_settings({"hardware_button": "bogus"})  # tolerant fallback
-    assert form.persisted_values()["hardware_button"] == "off"
+    assert form.persisted_values()["hardware_button"] == "same"
     assert form.persisted_values()["insert_to_scan"] is False
 
 
@@ -693,3 +693,31 @@ def test_the_paper_family_defaults_to_the_locale_on_a_first_start() -> None:
     assert with_locale_paper("iso_a4", {"auto_size_preference": "north-american"}) == (
         "north-american"
     )
+
+
+@pytest.mark.parametrize(
+    ("saved", "expected"),
+    [
+        ({}, "same"),  # a profile that never chose one
+        ({"hardware_button": "bogus"}, "same"),  # unrecognized
+        ({"hardware_button": ""}, "same"),  # empty is not a choice
+        ({"hardware_button": "off"}, "off"),  # an explicit choice is kept
+        ({"hardware_button": "same"}, "same"),
+        ({"hardware_button": "single"}, "single"),
+        ({"hardware_button": "collect"}, "collect"),
+    ],
+)
+def test_the_button_mapping_round_trips_and_defaults_to_same(
+    saved: dict[str, object], expected: str
+) -> None:
+    # The scanner's own button follows the Scan button unless the user
+    # turned it off, so only an explicitly saved "off" stays off.
+    from scanmole_gui.form import hardware_button_value
+
+    events = Events()
+    form = _form(events)
+    form.apply_settings(saved)
+
+    assert form.persisted_values()["hardware_button"] == expected
+    # The form and the window's runtime reading agree by construction.
+    assert hardware_button_value(saved) == expected
