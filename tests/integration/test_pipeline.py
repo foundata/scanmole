@@ -28,7 +28,8 @@ from scanmole.errors import (
     ScanMoleError,
 )
 from scanmole.events import EventWriter
-from scanmole.options import Capability
+from scanmole.negotiation import negotiate, resolve_faint_plan
+from scanmole.options import Capability, parse_capabilities
 from scanmole.pipeline import analyze_page, publish_pdf, run_pipeline
 from scanmole.scanner import (
     EffectiveSettings,
@@ -2693,3 +2694,86 @@ def test_unknown_source_evidence_keeps_unrelated_pages_independent(
         header = (keep_dir / "out" / name).read_bytes().split(b"\n", 2)
         sizes.append(tuple(map(int, header[1].split())))
     assert sizes[0] != sizes[1], "unrelated pages were fused into one sheet size"
+
+
+def _read_only_lineart_caps(engaged: bool) -> dict[str, Capability]:
+    """An Epson-shaped listing fixed in Lineart, TET on or parked."""
+    return parse_capabilities(
+        "    --source ADF|Flatbed [ADF]\n"
+        "    --mode Lineart|Gray|Color [Lineart] [read-only]\n"
+        "    --halftoning Text Enhanced Technology|Halftone A "
+        f"[{'Text Enhanced Technology' if engaged else 'Halftone A'}] [read-only]\n"
+        "    --resolution 300 [300]\n"
+        "    -x 0..215.9mm [215.9]\n"
+        "    -y 0..297.18mm [297.18]\n"
+    )
+
+
+def _negotiated_faint(caps: dict[str, Capability], tmp_path: Path) -> EffectiveSettings:
+    """The settings a real faint negotiation plus command build produces."""
+    plan = negotiate(
+        caps,
+        source="adf",
+        mode="lineart",
+        resolution=300,
+        lineart_threshold="auto",
+    )
+    plan = resolve_faint_plan(plan, caps, lambda _settings: caps)
+    command, effective = build_scan_command(
+        dataclasses.replace(
+            _config(images=None, output=tmp_path / "out.pdf"),
+            source="adf",
+            mode="lineart",
+            lineart_threshold="auto",
+            page_size="a4",
+        ),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+        plan,
+    )
+    # The mode and the enhancement are both read-only here, so neither may
+    # appear in argv however the negotiation classified them.
+    assert "--mode" not in command
+    assert "--halftoning" not in command
+    assert not any(argument.startswith("--halftoning") for argument in command)
+    return effective
+
+
+def test_an_engaged_read_only_enhancement_carries_its_p4_frames_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End to end over the real negotiation: a device already sitting in
+    # Lineart with TET engaged delivers the enhanced 1-bit result, and the
+    # pipeline must accept it instead of refusing it as plain 1-bit.
+    effective = _negotiated_faint(_read_only_lineart_caps(engaged=True), tmp_path)
+    assert effective.faint_native is True
+
+    native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
+    keep_dir = tmp_path / "kept"
+    config = _auto_config(tmp_path, keep_images=keep_dir)
+    _run_capture(config, monkeypatch, [native], faint_native=effective.faint_native)
+
+    assert (keep_dir / "out" / "page_0001.pnm").read_bytes() == native
+
+
+def test_an_unengaged_read_only_enhancement_still_refuses_plain_p4(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same read-only topology with the enhancement parked proves
+    # nothing, so the delivered 1-bit frame is plain 1-bit and the run
+    # fails while preserving the page.
+    effective = _negotiated_faint(_read_only_lineart_caps(engaged=False), tmp_path)
+    assert effective.faint_native is False
+
+    native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _gray_scan_pages([native]))
+
+    with pytest.raises(ProcessingError, match="cannot preserve faint") as excinfo:
+        run_pipeline(_auto_config(tmp_path), EventWriter(enabled=False))
+
+    match = re.search(r"kept in (\S+)", str(excinfo.value))
+    assert match is not None
+    shutil.rmtree(Path(match.group(1)), ignore_errors=True)

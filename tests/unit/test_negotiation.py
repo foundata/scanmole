@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -784,3 +785,89 @@ def test_read_only_sdtc_counts_only_with_the_circuit_already_selected() -> None:
         "    --variance 0..255 [0] [read-only]\n"
     )
     assert detect_native_enhancement(idle) is None
+
+
+def _fixed_at(capability: Capability, current: str) -> Capability:
+    """The same option as a ``[read-only]`` listing fixed at ``current``."""
+    return replace(capability, settable=False, current=current)
+
+
+def test_an_engaged_read_only_tet_resolves_native_without_emitting_a_mode() -> None:
+    # The device is already in Lineart with the enhancement on and accepts
+    # a value for neither. That is still a native faint scan; it just has
+    # nothing to set, so the reprobe reads the state as it stands.
+    caps = _fixture("epson-perfection1660-epson2.txt")
+    caps["mode"] = _fixed_at(caps["mode"], "Lineart")
+    caps["halftoning"] = _fixed_at(caps["halftoning"], "Text Enhanced Technology")
+    prober = _Prober(caps)
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, prober, (("--source", "ADF"),))
+
+    assert plan.mode.support is Support.NATIVE
+    assert plan.mode.reason == "native-epson-tet"
+    assert plan.mode.effective == "lineart-auto"
+    assert plan.mode.backend_value is None  # nothing to emit
+    assert plan.extra_options == ()
+    assert prober.calls == [(("--source", "ADF"),)]  # base settings only
+
+
+def test_an_engaged_read_only_sdtc_resolves_native_without_emitting_a_mode() -> None:
+    caps = _fixture("fujitsu-scansnap-ix500.txt")
+    caps["mode"] = _fixed_at(caps["mode"], "Lineart")
+    caps["threshold"] = _fixed_at(caps["threshold"], "0")
+    prober = _Prober(caps)
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, prober)
+
+    assert plan.mode.support is Support.NATIVE
+    assert plan.mode.reason == "native-fujitsu-sdtc"
+    assert plan.mode.backend_value is None
+    assert plan.extra_options == ()
+    # No verification reprobe either: there is no setting to verify.
+    assert prober.calls == [()]
+
+
+def test_an_unengaged_read_only_enhancement_is_not_native() -> None:
+    # The same read-only topology with the enhancement parked on another
+    # value proves nothing, and a read-only mode leaves nothing to set, so
+    # the verdict stays the existing inconclusive one.
+    caps = _fixture("epson-perfection1660-epson2.txt")
+    caps["mode"] = _fixed_at(caps["mode"], "Lineart")
+    caps["halftoning"] = _fixed_at(caps["halftoning"], "Halftone A")
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+
+    assert plan.mode.support is Support.UNKNOWN
+    assert plan.extra_options == ()
+
+    sdtc = _fixture("fujitsu-scansnap-ix500.txt")
+    sdtc["mode"] = _fixed_at(sdtc["mode"], "Lineart")
+    sdtc["threshold"] = _fixed_at(sdtc["threshold"], "128")
+
+    parked = resolve_faint_plan(_faint_plan(sdtc), sdtc, _Prober(sdtc))
+
+    assert parked.mode.support is Support.UNKNOWN
+    assert parked.extra_options == ()
+
+
+def test_a_read_only_mode_on_a_non_lineart_value_is_not_a_candidate() -> None:
+    # Read-only means the scan runs in whatever the device reports; a
+    # device parked in Color cannot deliver a native 1-bit page.
+    caps = _fixture("epson-perfection1660-epson2.txt")
+    caps["mode"] = _fixed_at(caps["mode"], "Color")
+    caps["halftoning"] = _fixed_at(caps["halftoning"], "Text Enhanced Technology")
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+
+    assert plan.mode.support is not Support.NATIVE
+
+
+def test_the_advisory_verdict_follows_an_engaged_read_only_enhancement() -> None:
+    caps = _fixture("epson-perfection1660-epson2.txt")
+    caps["mode"] = _fixed_at(caps["mode"], "Lineart")
+    caps["halftoning"] = _fixed_at(caps["halftoning"], "Text Enhanced Technology")
+
+    assessment = advisory_faint_assessment(caps)
+
+    assert assessment.support is Support.NATIVE
+    assert assessment.backend_value is None

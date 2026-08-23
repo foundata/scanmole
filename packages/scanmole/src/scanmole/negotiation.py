@@ -453,25 +453,55 @@ def _engaged_enhancement(caps: dict[str, Capability]) -> NativeEnhancement | Non
     return None
 
 
-def _native_lineart_choice(caps: dict[str, Capability] | None) -> str | None:
-    """The device's own 1-bit mode choice, the candidate for enhancement."""
+@dataclass(frozen=True)
+class _LineartCandidate:
+    """The device's own 1-bit mode and what it takes to get there.
+
+    ``effective`` is the mode the scan runs in. ``backend_value`` is what
+    the command may emit for it, which is ``None`` when the device already
+    sits in that mode and will not accept a value. ``settings`` are the
+    ordered options the staged probe applies on top of the base settings,
+    and are empty for the same reason.
+    """
+
+    effective: str
+    backend_value: str | None
+    settings: Settings
+
+
+def _native_lineart_candidate(
+    caps: dict[str, Capability] | None,
+) -> _LineartCandidate | None:
+    """The device's own 1-bit mode, the candidate for enhancement.
+
+    A writable ``--mode`` offering a 1-bit choice is set and reprobed. A
+    read-only ``--mode`` whose current value is already a 1-bit mode is
+    just as much a 1-bit scan and just as eligible for a native
+    enhancement; it simply cannot be set, so it contributes nothing to
+    emit and the probe reads the state as it stands.
+    """
     if caps is None:
         return None
-    capability = writable_capability(caps, "mode")
-    if capability is None or not capability.choices:
+    capability = readable_capability(caps, "mode")
+    if capability is None:
         return None
-    return _pick(capability.choices, _MODE_PREDICATES["lineart"])
+    choice = _pick(_state_choices(capability), _MODE_PREDICATES["lineart"])
+    if choice is None:
+        return None
+    if not capability.settable:
+        return _LineartCandidate(choice, None, ())
+    return _LineartCandidate(choice, choice, (("--mode", choice),))
 
 
 def _native_faint_assessment(
-    candidate: str, enhancement: NativeEnhancement
+    candidate: _LineartCandidate, enhancement: NativeEnhancement
 ) -> Assessment:
     return Assessment(
         requested="lineart-auto",
         support=Support.NATIVE,
         reason=enhancement.reason,
         consequence=enhancement.notice,
-        backend_value=candidate,
+        backend_value=candidate.backend_value,
         effective="lineart-auto",
     )
 
@@ -551,7 +581,7 @@ def advisory_faint_assessment(caps: dict[str, Capability] | None) -> Assessment:
     settings would emit plain 1-bit lineart, the exact bug the faint mode
     exists to avoid).
     """
-    candidate = _native_lineart_choice(caps)
+    candidate = _native_lineart_candidate(caps)
     if caps is not None and candidate is not None:
         enhancement = detect_native_enhancement(caps)
         if enhancement is not None:
@@ -590,9 +620,11 @@ def _resolve_faint_mode(
     prober: Prober,
     base_settings: Settings,
 ) -> tuple[Assessment, Settings]:
-    candidate = _native_lineart_choice(caps)
+    candidate = _native_lineart_candidate(caps)
     if candidate is not None:
-        applied = (*base_settings, ("--mode", candidate))
+        # A read-only candidate contributes no settings, so the reprobe
+        # sees the base state: exactly the snapshot the scan will run in.
+        applied = (*base_settings, *candidate.settings)
         staged = prober(applied)
         if staged is not None:
             enhancement = detect_native_enhancement(staged)
