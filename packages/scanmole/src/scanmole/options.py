@@ -84,8 +84,28 @@ class Capability:
     step: float | None = None
 
 
-def active_capability(caps: dict[str, Capability], name: str) -> Capability | None:
-    """The named capability if it is present and currently settable."""
+def writable_capability(caps: dict[str, Capability], name: str) -> Capability | None:
+    """The named capability if the scan command may emit it.
+
+    Requires both ``active`` and ``settable``: a ``[read-only]`` option
+    describes state the backend will not accept a value for, so emitting
+    it makes ``scanimage`` fail or silently ignore the argument. Use
+    :func:`readable_capability` where the current value is evidence
+    rather than something to set.
+    """
+    capability = caps.get(name)
+    if capability is None or not capability.active or not capability.settable:
+        return None
+    return capability
+
+
+def readable_capability(caps: dict[str, Capability], name: str) -> Capability | None:
+    """The named capability if it is active, whether or not it is settable.
+
+    For negotiation that reads current state. A read-only option still
+    reports what the device is doing, which can establish effective
+    behaviour; it just cannot be written.
+    """
     capability = caps.get(name)
     if capability is None or not capability.active:
         return None
@@ -293,7 +313,7 @@ def map_source(want: str, caps: dict[str, Capability]) -> str | None:
     Raises:
         DeviceError: If no source (requested or fallback) is available.
     """
-    capability = active_capability(caps, "source")
+    capability = writable_capability(caps, "source")
     if capability is None or not capability.choices:
         LOGGER.debug("device has no active --source option; not passing one")
         return None
@@ -321,7 +341,7 @@ def map_mode(want: str, caps: dict[str, Capability]) -> str | None:
     Raises:
         DeviceError: If no mode (requested or fallback) is available.
     """
-    capability = active_capability(caps, "mode")
+    capability = writable_capability(caps, "mode")
     if capability is None or not capability.choices:
         LOGGER.debug("device has no active --mode option; not passing one")
         return None
@@ -429,7 +449,7 @@ def snap_resolution(resolution: int, caps: dict[str, Capability]) -> int | None:
         The dpi to request, or ``None`` when the device has no ``--resolution``
         option (so it should not be passed at all).
     """
-    capability = active_capability(caps, "resolution")
+    capability = writable_capability(caps, "resolution")
     if capability is None:
         return None
     if capability.kind == "enum":

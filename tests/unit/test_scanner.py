@@ -20,7 +20,7 @@ import pytest
 from scanmole.config import ScanConfig
 from scanmole.errors import DeviceError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
-from scanmole.options import Capability
+from scanmole.options import Capability, parse_capabilities
 from scanmole.scanner import (
     EffectiveSettings,
     build_scan_command,
@@ -1856,3 +1856,72 @@ def test_a_staging_file_is_never_swept_into_the_batch(
     assert [page.name for page in result.pages] == ["page_0001.pnm"]
     assert seen == result.pages
     assert (tmp_path / "page_0002.pnm.part").exists()  # left exactly as found
+
+
+def _read_only_caps() -> dict[str, Capability]:
+    """A device whose whole option set is listed as read-only state."""
+    return parse_capabilities(
+        "    --source ADF Front [ADF Front] [read-only]\n"
+        "    --mode Lineart [Lineart] [read-only]\n"
+        "    --resolution 300 [300] [read-only]\n"
+        "    -x 0..219.4mm [219.4] [read-only]\n"
+        "    -y 0..297mm [297] [read-only]\n"
+        "    --swdeskew[=(yes|no)] [no] [read-only]\n"
+        "    --swcrop[=(yes|no)] [no] [read-only]\n"
+        "    --swdespeck 0..9 [0] [read-only]\n"
+        "    --ald[=(yes|no)] [no] [read-only]\n"
+    )
+
+
+def test_read_only_options_are_never_emitted(tmp_path: Path) -> None:
+    # Writing a [read-only] option makes scanimage fail or ignore the
+    # argument, so none of them may reach the command whatever they say.
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=True, despeckle=1, page_size="auto"),
+        "test:0",
+        _read_only_caps(),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    for option in (
+        "--source",
+        "--mode",
+        "--resolution",
+        "-x",
+        "-y",
+        "--ald=yes",
+        "--swcrop=no",
+        "--swcrop=yes",
+        "--swdeskew=yes",
+        "--swdeskew=no",
+        "--swdespeck=1",
+    ):
+        assert option not in command, option
+    # The read-only resolution still establishes the dpi without emission,
+    # and no window travels because none could be requested.
+    assert effective.resolution == 300
+    assert effective.window_mm is None
+    assert effective.deskew_applied is False
+
+
+def test_writable_geometry_and_controls_are_still_emitted(tmp_path: Path) -> None:
+    caps = parse_capabilities(
+        "    --source ADF Front [ADF Front]\n"
+        "    --mode Lineart [Lineart]\n"
+        "    -x 0..219.4mm [219.4]\n"
+        "    -y 0..297mm [297]\n"
+        "    --swdeskew[=(yes|no)] [no]\n"
+        "    --swdespeck 0..9 [0]\n"
+    )
+
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=True, despeckle=1, page_size="a4"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "--source" in command and "--mode" in command
+    assert "-x" in command and "-y" in command
+    assert "--swdespeck=1" in command and "--swdeskew=yes" in command
+    assert effective.deskew_applied is True

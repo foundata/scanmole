@@ -682,3 +682,105 @@ def test_probe_snapshot_turns_failures_into_none(
     monkeypatch.setattr("scanmole.options.run_command", failing)
 
     assert probe_snapshot("test:0") is None
+
+
+# ---- read-only options are state, never something to emit ----------------
+
+
+def _read_only(listing: str) -> dict[str, Capability]:
+    return parse_capabilities(listing)
+
+
+def test_read_only_source_matching_the_request_establishes_without_emitting() -> None:
+    # A device fixed to ADF Front satisfies an ADF request, but the option
+    # is not writable, so no --source may be produced for it.
+    caps = _read_only("    --source ADF Front [ADF Front] [read-only]\n")
+
+    assessment = assess_source(caps, "adf")
+
+    assert assessment.support is Support.NATIVE
+    assert assessment.effective == "adf"
+    assert assessment.backend_value is None
+
+
+def test_read_only_source_runs_the_ordinary_degradation_rules() -> None:
+    # The fixed current value is matched by the same fallback rules as a
+    # settable choice list, rather than collapsing to UNKNOWN.
+    caps = _read_only("    --source ADF Front [ADF Front] [read-only]\n")
+
+    duplex = assess_source(caps, "adf-duplex")
+    assert duplex.support is Support.DEGRADED
+    assert duplex.effective == "adf"
+    assert duplex.backend_value is None
+
+    flatbed = assess_source(caps, "flatbed")
+    assert flatbed.support is Support.UNSUPPORTED
+    assert flatbed.backend_value is None
+
+
+def test_read_only_source_without_a_current_value_is_unknown() -> None:
+    caps = _read_only("    --source ADF Front|Flatbed [read-only]\n")
+
+    assessment = assess_source(caps, "adf")
+
+    assert assessment.support is Support.UNKNOWN
+    assert assessment.backend_value is None
+
+
+def test_read_only_mode_matches_and_degrades_without_emitting() -> None:
+    caps = _read_only("    --mode Lineart [Lineart] [read-only]\n")
+
+    native = assess_mode(caps, "lineart", 0.5)
+    assert native.support is Support.NATIVE
+    assert native.effective == "lineart"
+    assert native.backend_value is None
+
+    colour = assess_mode(caps, "color", 0.5)
+    assert colour.support is Support.DEGRADED
+    assert colour.effective == "lineart"
+    assert colour.backend_value is None
+
+
+def test_writable_and_inactive_capabilities_keep_their_behaviour() -> None:
+    writable = _read_only("    --source ADF Front|Flatbed [ADF Front]\n")
+    assert assess_source(writable, "adf").backend_value == "ADF Front"
+
+    inactive = _read_only("    --source ADF Front|Flatbed [inactive]\n")
+    assessment = assess_source(inactive, "adf")
+    assert assessment.support is Support.UNKNOWN
+    assert assessment.backend_value is None
+
+
+def test_read_only_enhancement_counts_only_when_already_engaged() -> None:
+    engaged = _read_only(
+        "    --mode Lineart [Lineart]\n"
+        "    --halftoning Text Enhanced Technology"
+        " [Text Enhanced Technology] [read-only]\n"
+    )
+    enhancement = detect_native_enhancement(engaged)
+    assert enhancement is not None
+    assert enhancement.reason == "native-epson-tet"
+    assert enhancement.settings == ()  # nothing may be emitted for it
+
+    idle = _read_only(
+        "    --mode Lineart [Lineart]\n"
+        "    --halftoning Text Enhanced Technology [None] [read-only]\n"
+    )
+    assert detect_native_enhancement(idle) is None
+
+
+def test_read_only_sdtc_counts_only_with_the_circuit_already_selected() -> None:
+    engaged = _read_only(
+        "    --threshold 0..255 [0] [read-only]\n"
+        "    --variance 0..255 [0] [read-only]\n"
+    )
+    enhancement = detect_native_enhancement(engaged)
+    assert enhancement is not None
+    assert enhancement.reason == "native-fujitsu-sdtc"
+    assert enhancement.settings == ()
+
+    idle = _read_only(
+        "    --threshold 0..255 [128] [read-only]\n"
+        "    --variance 0..255 [0] [read-only]\n"
+    )
+    assert detect_native_enhancement(idle) is None

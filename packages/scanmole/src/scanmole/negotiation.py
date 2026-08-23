@@ -22,7 +22,7 @@ import logging
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from scanmole.config import LineartThreshold
 from scanmole.errors import DeviceError
@@ -33,10 +33,11 @@ from scanmole.options import (
     _SOURCE_PREDICATES,
     Capability,
     _pick,
-    active_capability,
     parse_dpi,
     probe_capabilities,
+    readable_capability,
     snap_resolution,
+    writable_capability,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -126,6 +127,26 @@ _SOURCE_CONSEQUENCE = {
 }
 
 
+def _state_choices(capability: Capability | None) -> list[str]:
+    """The values a capability offers, or its current value when read-only.
+
+    A ``[read-only]`` option lists no settable alternatives; what it does
+    report is the value the device is using, and that is the only outcome
+    a scan can have.
+    """
+    if capability is None:
+        return []
+    if capability.settable:
+        return capability.choices
+    current = (capability.current or "").strip()
+    return [current] if current else []
+
+
+def _unsettable(assessment: Assessment) -> Assessment:
+    """Keep an assessment's verdict while forbidding its emission."""
+    return replace(assessment, backend_value=None)
+
+
 def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
     """Negotiate the paper source for a request."""
     if caps is None:
@@ -136,8 +157,9 @@ def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
             consequence="capabilities could not be read; trying as requested",
             effective=want,
         )
-    capability = active_capability(caps, "source")
-    if capability is None or not capability.choices:
+    capability = readable_capability(caps, "source")
+    choices = _state_choices(capability)
+    if capability is None or not choices:
         inactive = caps.get("source") is not None
         return Assessment(
             requested=want,
@@ -147,7 +169,16 @@ def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
             "trying as requested",
             effective=want,
         )
-    choices = capability.choices
+    if not capability.settable:
+        # Read-only: the current value is what the device will use, so the
+        # ordinary matching runs against it alone and establishes effective
+        # behaviour, but nothing may be emitted for it.
+        return _unsettable(_match_source(choices, want))
+    return _match_source(choices, want)
+
+
+def _match_source(choices: list[str], want: str) -> Assessment:
+    """Match a source request against the choices the device offers."""
     exact = _pick(choices, _EXACT_SOURCE[want])
     if exact is not None:
         return Assessment(
@@ -218,8 +249,9 @@ def assess_mode(
             consequence="capabilities could not be read; trying as requested",
             effective=want,
         )
-    capability = active_capability(caps, "mode")
-    if capability is None or not capability.choices:
+    capability = readable_capability(caps, "mode")
+    choices = _state_choices(capability)
+    if capability is None or not choices:
         inactive = caps.get("mode") is not None
         return Assessment(
             requested=want,
@@ -229,7 +261,17 @@ def assess_mode(
             "trying as requested",
             effective=want,
         )
-    choices = capability.choices
+    if not capability.settable:
+        # Read-only: match against the current value alone and keep the
+        # verdict, but never emit a value for it.
+        return _unsettable(_match_mode(choices, want, base, lineart_threshold))
+    return _match_mode(choices, want, base, lineart_threshold)
+
+
+def _match_mode(
+    choices: list[str], want: str, base: str, lineart_threshold: LineartThreshold
+) -> Assessment:
+    """Match a mode request against the choices the device offers."""
     native = _pick(choices, _MODE_PREDICATES[base])
     if native is not None:
         return Assessment(
@@ -335,7 +377,7 @@ def detect_native_enhancement(
     ``Halftone``, Brother ``Gray[Error Diffusion]``), ``threshold-curve``
     style controls, and any inactive option.
     """
-    halftoning = active_capability(caps, "halftoning")
+    halftoning = writable_capability(caps, "halftoning")
     if halftoning is not None and _TET_CHOICE in halftoning.choices:
         return NativeEnhancement(
             reason="native-epson-tet",
@@ -345,8 +387,8 @@ def detect_native_enhancement(
             ),
             settings=(("--halftoning", _TET_CHOICE),),
         )
-    threshold = active_capability(caps, "threshold")
-    variance = active_capability(caps, "variance")
+    threshold = writable_capability(caps, "threshold")
+    variance = writable_capability(caps, "variance")
     if (
         variance is not None
         and threshold is not None
@@ -361,6 +403,43 @@ def detect_native_enhancement(
             settings=(("--threshold", "0"), ("--variance", "0")),
             verify_option="variance",
         )
+    return _engaged_enhancement(caps)
+
+
+def _engaged_enhancement(caps: dict[str, Capability]) -> NativeEnhancement | None:
+    """A read-only enhancement whose current values prove it is already on.
+
+    Read-only controls cannot be configured, so the only way one counts is
+    if the device already reports the enhancement engaged. Nothing is
+    emitted for it; the settings tuple stays empty.
+    """
+    halftoning = readable_capability(caps, "halftoning")
+    if (
+        halftoning is not None
+        and not halftoning.settable
+        and (halftoning.current or "").strip() == _TET_CHOICE
+    ):
+        return NativeEnhancement(
+            reason="native-epson-tet",
+            notice=(
+                "the scanner's built-in text enhancement (Text Enhanced "
+                "Technology) is already engaged"
+            ),
+            settings=(),
+        )
+    threshold = readable_capability(caps, "threshold")
+    variance = readable_capability(caps, "variance")
+    if (
+        threshold is not None
+        and variance is not None
+        and not threshold.settable
+        and (threshold.current or "").strip() in ("0", "0.0")
+    ):
+        return NativeEnhancement(
+            reason="native-fujitsu-sdtc",
+            notice="the scanner's built-in text enhancement (SDTC) is already engaged",
+            settings=(),
+        )
     return None
 
 
@@ -368,7 +447,7 @@ def _native_lineart_choice(caps: dict[str, Capability] | None) -> str | None:
     """The device's own 1-bit mode choice, the candidate for enhancement."""
     if caps is None:
         return None
-    capability = active_capability(caps, "mode")
+    capability = writable_capability(caps, "mode")
     if capability is None or not capability.choices:
         return None
     return _pick(capability.choices, _MODE_PREDICATES["lineart"])
@@ -405,7 +484,7 @@ def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
             consequence="capabilities could not be read; trying as requested",
             effective="lineart-auto",
         )
-    capability = active_capability(caps, "mode")
+    capability = writable_capability(caps, "mode")
     if capability is None or not capability.choices:
         inactive = caps.get("mode") is not None
         return Assessment(
@@ -525,7 +604,7 @@ def _enhancement_verified(
     verified = prober((*applied, *enhancement.settings))
     return (
         verified is not None
-        and active_capability(verified, enhancement.verify_option) is not None
+        and readable_capability(verified, enhancement.verify_option) is not None
     )
 
 
@@ -533,7 +612,7 @@ def _eight_bit_choice(caps: dict[str, Capability] | None) -> str | None:
     """The value engaging an explicit 8-bit depth, if the device has one."""
     if caps is None:
         return None
-    capability = active_capability(caps, "depth")
+    capability = writable_capability(caps, "depth")
     if capability is None:
         return None
     if capability.kind == "enum":
