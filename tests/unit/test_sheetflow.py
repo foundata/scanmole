@@ -274,7 +274,9 @@ def test_a_stale_button_latch_at_entry_is_discarded() -> None:
 
     controller.run(_recording_acquire(acquired))
 
-    assert acquired == []
+    # The launching action scans one sheet; the button that stayed pressed
+    # through it is baseline state at the next wait, never a second trigger.
+    assert acquired == [1]
     assert _events(stream)[0]["manual_trigger"] is True
 
 
@@ -301,7 +303,9 @@ def test_a_fresh_button_edge_starts_the_next_frame() -> None:
 
 def test_sensorless_wait_requires_next_and_never_polls() -> None:
     # Without usable sensors the wait must not probe the device blindly:
-    # one baseline read per wait entry, none inside the loop.
+    # one baseline read per wait entry, none inside the loop. The first
+    # segment runs on the launching action, so the wait under test is the
+    # one after it, and no further next ever arrives.
     sensors = _SensorScript(_NO_SENSORS)
     controller, _commands, _clock, stream = _controller(
         sensors=sensors, feeder=True, idle_seconds=60.0
@@ -310,8 +314,8 @@ def test_sensorless_wait_requires_next_and_never_polls() -> None:
 
     controller.run(_recording_acquire(acquired))
 
-    assert acquired == []  # no next ever arrived, so nothing may start
-    assert sensors.reads == 1
+    assert acquired == [1]  # the launching action, and nothing after it
+    assert sensors.reads == 2  # one baseline per decision, none in the loop
     assert _events(stream)[0]["manual_trigger"] is True
 
 
@@ -452,3 +456,141 @@ def test_acquisition_failures_propagate_unchanged() -> None:
         controller.run(acquire)
 
     assert info.value is error
+
+
+# ---- the launching action is the first trigger ---------------------------
+
+
+def _finishing_acquire(
+    commands: CollectCommands, acquired: list[int]
+) -> Callable[[], int]:
+    """Acquire once, then finish, so a first-trigger test cannot loop."""
+
+    def acquire() -> int:
+        acquired.append(1)
+        commands.feed_line("done\n")
+        return 1
+
+    return acquire
+
+
+def test_a_sensorless_feeder_scans_the_first_sheet_without_waiting() -> None:
+    # Pressing Scan is the trigger. Requiring Next Sheet before page one
+    # would make the first action do nothing visible.
+    sensors = _SensorScript(_NO_SENSORS)
+    controller, commands, _clock, stream = _controller(sensors=sensors, feeder=True)
+    acquired: list[int] = []
+
+    controller.run(_finishing_acquire(commands, acquired))
+
+    assert acquired == [1]
+    assert _events(stream) == []  # nothing was waited for, so no event
+
+
+def test_a_flatbed_scans_the_first_sheet_without_waiting() -> None:
+    sensors = _SensorScript(_NO_SENSORS)
+    controller, commands, _clock, stream = _controller(sensors=sensors, feeder=False)
+    acquired: list[int] = []
+
+    controller.run(_finishing_acquire(commands, acquired))
+
+    assert acquired == [1]
+    assert _events(stream) == []
+
+
+def test_a_button_only_source_scans_the_first_sheet_without_waiting() -> None:
+    # The button press that started the collection counts; a second press
+    # must not be required before anything is scanned.
+    sensors = _SensorScript(SensorSnapshot(scan=False, page_loaded=None))
+    controller, commands, _clock, stream = _controller(sensors=sensors, feeder=True)
+    acquired: list[int] = []
+
+    controller.run(_finishing_acquire(commands, acquired))
+
+    assert acquired == [1]
+    assert _events(stream) == []
+
+
+def test_a_pending_done_still_finishes_before_the_first_acquisition() -> None:
+    sensors = _SensorScript(_NO_SENSORS)
+    controller, commands, _clock, stream = _controller(sensors=sensors, feeder=True)
+    commands.feed_line("done\n")
+    acquired: list[int] = []
+
+    controller.run(_recording_acquire(acquired))
+
+    assert acquired == []
+    assert _events(stream) == []
+
+
+def test_a_sensed_feeder_still_governs_the_first_acquisition() -> None:
+    # A usable paper level outranks the launching action in both
+    # directions: present starts, absent waits rather than running an
+    # empty feeder.
+    present = _SensorScript(SensorSnapshot(scan=False, page_loaded=True))
+    controller, commands, _clock, stream = _controller(sensors=present, feeder=True)
+    acquired: list[int] = []
+    controller.run(_finishing_acquire(commands, acquired))
+    assert acquired == [1]
+    assert _events(stream) == []
+
+    absent = _SensorScript(SensorSnapshot(scan=False, page_loaded=False))
+    controller, _commands, _clock, stream = _controller(
+        sensors=absent, feeder=True, idle_seconds=60.0
+    )
+    acquired = []
+    controller.run(_recording_acquire(acquired))
+    assert acquired == []  # never start an empty sensed feeder
+    assert _events(stream)[0]["manual_trigger"] is False
+
+
+def test_a_failure_during_the_first_acquisition_propagates() -> None:
+    sensors = _SensorScript(_NO_SENSORS)
+    controller, _commands, _clock, stream = _controller(sensors=sensors, feeder=True)
+
+    def failing() -> int:
+        raise RuntimeError("lamp failure")
+
+    with pytest.raises(RuntimeError, match="lamp failure"):
+        controller.run(failing)
+    assert _events(stream) == []  # it failed acquiring, not waiting
+
+
+def test_the_second_sheet_still_waits_for_an_explicit_trigger() -> None:
+    # Only the first segment is exempt; afterwards the ordinary manual
+    # wait applies and its waiting event is emitted.
+    sensors = _SensorScript(
+        SensorSnapshot(scan=False, page_loaded=None),  # baseline, segment one
+        SensorSnapshot(scan=False, page_loaded=None),  # baseline of the wait
+        SensorSnapshot(scan=True, page_loaded=None),  # the press that resumes
+    )
+    controller, commands, _clock, stream = _controller(
+        sensors=sensors, feeder=True, idle_seconds=60.0
+    )
+    acquired: list[int] = []
+
+    def acquire() -> int:
+        acquired.append(1)
+        if len(acquired) == 2:
+            commands.feed_line("done\n")
+        return 1
+
+    controller.run(acquire)
+
+    assert acquired == [1, 1]
+    events = _events(stream)
+    assert len(events) == 1  # one genuine wait, between the two segments
+    assert events[0]["manual_trigger"] is True
+
+
+def test_idle_expiry_after_the_first_segment_still_ends_the_run() -> None:
+    sensors = _SensorScript(_NO_SENSORS)
+    controller, _commands, _clock, stream = _controller(
+        sensors=sensors, feeder=True, idle_seconds=5.0
+    )
+    acquired: list[int] = []
+
+    controller.run(_recording_acquire(acquired))
+
+    assert acquired == [1]  # the launching action, then nothing more arrived
+    assert len(_events(stream)) == 1

@@ -1698,7 +1698,6 @@ def test_collect_counts_sheets_the_way_the_pipeline_pairs_them(
     # by. The waiting status must agree: two frames of one duplex sheet
     # are one sheet, never two.
     commands = CollectCommands()
-    commands.feed_line("next\n")  # start the first segment at once
     monkeypatch.setattr("scanmole.scanner._collect_commands", lambda: commands)
     monkeypatch.setattr("scanmole.scanner.COLLECT_IDLE_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(
@@ -1925,3 +1924,49 @@ def test_writable_geometry_and_controls_are_still_emitted(tmp_path: Path) -> Non
     assert "-x" in command and "-y" in command
     assert "--swdespeck=1" in command and "--swdeskew=yes" in command
     assert effective.deskew_applied is True
+
+
+def test_collect_scans_the_first_sheet_on_a_sensorless_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End to end through the engine: a device without usable sensors must
+    # produce page one from the run that started it, with no waiting event
+    # before it and no second command needed.
+    commands = CollectCommands()
+    monkeypatch.setattr("scanmole.scanner._collect_commands", lambda: commands)
+    monkeypatch.setattr("scanmole.scanner.COLLECT_IDLE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "source": Capability(kind="enum", choices=["Flatbed"]),
+            "resolution": Capability(kind="range", minimum=50, maximum=600),
+        },
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_sensors",
+        lambda device, settings=(): SensorSnapshot(scan=None, page_loaded=None),
+    )
+    runs: list[int] = []
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        runs.append(1)
+        page = tmp_path / f"page_{len(runs):04d}.pnm"
+        page.write_bytes(b"P4\n1 1\n\x00")
+        on_page(page)
+        commands.feed_line("done\n")
+        return 7, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    result = scan_to_files(
+        _config(source="flatbed", sheet_flow="collect"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=True, stream=stream),
+        lambda p, o: None,
+    )
+
+    assert len(result.pages) == 1
+    events = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
+    assert "waiting" not in events  # the scan start was the trigger

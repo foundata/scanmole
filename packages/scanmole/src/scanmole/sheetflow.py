@@ -11,8 +11,11 @@ being re-derived later.
 Between segments the :class:`CollectController` waits for the next trigger:
 paper presence on a feeder with a usable sensor, a fresh scan-button edge,
 or a manual ``next`` on standard input; ``done`` (or end of input) finishes
-the collection. Waiting never starts the scanner blindly, and it is bounded
-by one documented idle timeout.
+the collection. The first sheet is the exception: without a usable paper
+level there is nothing to consult, so the action that started the
+collection is its own trigger and the first segment runs immediately.
+Waiting never starts the scanner blindly, and it is bounded by one
+documented idle timeout.
 """
 
 from __future__ import annotations
@@ -171,14 +174,21 @@ class Trigger(enum.Enum):
 class CollectController:
     """The wait loop between collect acquisition segments.
 
-    States: wait for the first trigger, acquire a segment, wait for the
-    next trigger, ... until ``done`` or the idle timeout. Every wait entry
-    performs one baseline sensor read whose button latch is deliberately
-    discarded (a press made during the acquisition must not trigger
-    another segment) while its paper level is honored. The scanner is
-    never started against an empty feeder whose paper sensor is usable,
-    and devices without usable sensors are never polled blindly: they wait
-    for an explicit ``next``.
+    States: acquire the first segment, wait for the next trigger, acquire,
+    ... until ``done`` or the idle timeout. Every wait entry performs one
+    baseline sensor read whose button latch is deliberately discarded (a
+    press made during the acquisition must not trigger another segment)
+    while its paper level is honored. The scanner is never started against
+    an empty feeder whose paper sensor is usable, and devices without
+    usable sensors are never polled blindly: after the first segment they
+    wait for an explicit ``next`` or a fresh button edge.
+
+    The first segment is decided differently, because there has been no
+    chance to wait for anything yet. A pending ``done`` still wins. A
+    usable paper level still governs, so an empty sensed feeder waits
+    rather than starting. Everything else acquires at once: the click,
+    command or button press that started the collection is the trigger,
+    and demanding a second one before page one would be a surprise.
     """
 
     def __init__(
@@ -218,8 +228,9 @@ class CollectController:
         frames it delivered; its failures propagate unchanged, so the
         established abort-and-preserve contract applies.
         """
+        first = True
         while True:
-            trigger = self._await_trigger()
+            trigger = self._await_trigger(first)
             if trigger is Trigger.DONE:
                 return
             if trigger is Trigger.IDLE:
@@ -230,8 +241,14 @@ class CollectController:
                 )
                 return
             self._segments.append(acquire())
+            first = False
 
-    def _await_trigger(self) -> Trigger:
+    def _await_trigger(self, first: bool = False) -> Trigger:
+        """Decide whether to acquire, finish or wait.
+
+        ``first`` marks the decision before any segment has run, where the
+        launching action stands in for a trigger on sensorless sources.
+        """
         baseline = self._read_sensors()
         auto = self._feeder and baseline.page_loaded is not None
         watch_button = not auto and baseline.scan is not None
@@ -240,6 +257,13 @@ class CollectController:
         if self._commands.done_pending():
             return Trigger.DONE
         if auto and baseline.page_loaded:
+            return Trigger.START
+        if first and not auto:
+            # Without a paper level to consult, the action that started the
+            # collection (the Scan click, the CLI invocation, a button press
+            # mapped to collect) is itself the trigger for the first sheet.
+            # Waiting here would demand a second action before page one, and
+            # nothing is waited for, so no waiting event is emitted.
             return Trigger.START
         if self._commands.take_next() and not auto:
             # With a usable paper sensor, paper presence governs; a manual
