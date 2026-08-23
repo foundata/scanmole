@@ -48,6 +48,7 @@ It consists of two components, shipped as two Python packages, so servers and sc
   - [What to do if my scanner isn't working as expected?](#faq-scanner-quirks)
   - [How can I optimize the PDF file size?](#faq-file-size)
   - [Why is a page missing from my PDF, or a blank page kept?](#faq-blank-pages)
+  - [Why did automatic page size cut content near the edge?](#faq-edge-crop)
 - [Contributing](#contributing)
 - [Licensing, copyright](#licensing-copyright)
   - [Trademarks](#trademarks)
@@ -320,6 +321,12 @@ To keep files small:
 
 Duplex scanning reads both sides of every sheet, and ScanMole drops a page as blank when its mean brightness is above `0.995`, i.e. when less than 0.5% of it is "ink". The mean is measured over the cropped page, or over the detected content area on frames still at the full scan window, so window padding cannot hide sparse content. That is what removes the empty backsides of single-sided documents, but a page holding only a line or two sits close to the cutoff and can land on either side of it. Both failure directions have knobs: if a page with sparse or faint content was dropped, raise `--blank-threshold` towards `1`, use `--keep-blanks` to keep every page while blanks are still counted, or set `--blank-threshold 0` to switch the classification off entirely; in the GUI, disable "Skip blank pages" (it maps to `--keep-blanks`). If a truly blank page survives, something dark is pulling its mean down, typically punch holes, staple shadows or a skewed scan showing the scan-bed edge; if tuning the threshold does not fix it, [report the device quirk](CONTRIBUTING.md#issues-scanner-quirks).
 
+
+### Why did automatic page size cut content near the edge?<a id="faq-edge-crop"></a>
+
+Automatic page size finds the paper by walking in from each edge until the image is bright enough to be paper. On the left and right edges it also requires that brightness to hold for 2 mm before it accepts the edge. That length requirement is what stops a scanner's own edge artifacts and its backing from being kept as part of the page, and on some devices it is worth several millimetres of width, or about 70 mm on a receipt scanned in a full-width window. The cost is that dense content sitting closer than 2 mm to a side edge of the paper, with only a thin white margin ahead of it, cannot be told apart from backing: it may be cropped away with it. Localized text and marks normally leave the column bright enough to be recognised as paper and are kept, as are alternating patterns such as a barcode reaching the edge; dense edge-adjacent content stays ambiguous. Top and bottom edges are unaffected.
+
+The remedy is to choose a fixed page size, for example `--page-size a4` (in the GUI, pick the size instead of "Automatic"). A fixed size never runs the edge detection at all, so the whole frame is preserved.
 
 
 ## Contributing<a id="contributing"></a>

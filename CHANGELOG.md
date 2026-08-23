@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Automatic page size no longer keeps scanner backing that happens to look like paper for a single scan line. The side edges now need 2 mm of sustained paper brightness before the walk stops, so a saturated sensor strip at the frame edge or backing noise touching the cutoff can no longer end it: measured against the private device corpus this recovers several millimetres of width on ScanSnap iX100 frames and about 70 mm on a receipt scanned in a full-width window, and changes nothing on the Brother ADS-4550W or ScanSnap iX500. As a documented consequence, dense content closer than 2 mm to the paper edge can be cropped with the backing; select a fixed page size to bypass edge detection entirely.
+
 ### Added
 
 - `--sheet-flow single|stack|collect`: how many physical sheets one run acquires. `stack` keeps today's behavior (drain the loaded feeder once), `single` scans exactly one sheet (both sides on a duplex source; the rest of a loaded stack stays in the tray), and `collect` keeps one run, and one PDF, open across scanner reloads: a feeder with a paper sensor continues automatically when the next sheet is inserted, flatbeds and sensorless devices continue on `next` via standard input or a fresh press of the scanner's own button, and `done` (or end of input) finishes the collection. The scanner is never started against an empty sensed feeder, waits are bounded by a 15 minute idle timeout, and a new additive `waiting` JSON event reports each actual wait with segment-aware sheet counts.
