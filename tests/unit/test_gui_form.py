@@ -61,6 +61,7 @@ def _form(
         on_choice_blocked=events.cb("blocked"),
         on_hardware_button_selected=events.cb("button_pref"),
         on_insert_to_scan=events.cb("insert_pref"),
+        on_open_settings=events.cb("open_settings"),
         device_for_preview=lambda: device,
         effective_resolution=lambda _dpi: effective,
     )
@@ -453,25 +454,76 @@ def test_scanner_trigger_rows_fire_and_round_trip() -> None:
     assert form.persisted_values()["insert_to_scan"] is False
 
 
+def _find_row(widget: Any, title: str) -> Any:
+    """The row carrying ``title`` anywhere under ``widget``."""
+    if widget.__class__.__name__ == "ActionRow" and widget.get_title() == title:
+        return widget
+    child = widget.get_first_child()
+    while child is not None:
+        found = _find_row(child, title)
+        if found is not None:
+            return found
+        child = child.get_next_sibling()
+    return None
+
+
+def _group_titles(group: Any) -> list[str]:
+    titles: list[str] = []
+    child = group.get_first_child()
+    while child is not None:  # walk into the group's list box
+        titles.extend(_row_titles(child))
+        child = child.get_next_sibling()
+    return titles
+
+
 def test_behaviour_group_holds_the_flow_and_trigger_rows_in_order() -> None:
     events = Events()
     form = _form(events)
 
-    titles = []
-    child = form.behaviour_group.get_first_child()
-    while child is not None:  # walk into the group's list box
-        titles.extend(_row_titles(child))
-        child = child.get_next_sibling()
-
-    assert titles == [
+    assert _group_titles(form.behaviour_group) == [
         "Combine scans",
-        "Scan all pages in feeder",
         "Auto-start when paper is inserted",
-        "Hardware scan button",
-        "Preferred paper sizes",
     ]
     # The Scanner group keeps the device, the source and the actions.
     assert form._scan_row.get_parent() is not None
+
+
+def test_the_advanced_group_opens_the_settings_dialog() -> None:
+    events = Events()
+    form = _form(events)
+
+    assert _group_titles(form.advanced_group) == ["Advanced settings"]
+    row = _find_row(form.advanced_group, "Advanced settings")
+    assert row is not None
+    row.get_activatable_widget().emit("clicked")
+
+    assert events.names() == ["open_settings"]
+
+
+def test_the_rarer_rows_wait_in_the_borrowed_settings_groups() -> None:
+    # They are still the form's rows, read for the request and written
+    # back from the saved settings; only where they are shown changed.
+    events = Events()
+    form = _form(events)
+
+    assert _group_titles(form.settings_processing_group) == [
+        "Deskew",
+        "Archival PDF/A",
+    ]
+    assert _group_titles(form.settings_behaviour_group) == [
+        "Scan all pages in feeder",
+        "Hardware scan button",
+        "Preferred paper sizes",
+    ]
+    # Neither group is on the page: the dialog puts them up while open.
+    assert form.settings_processing_group.get_parent() is None
+    assert form.settings_behaviour_group.get_parent() is None
+
+    form.apply_settings({"deskew": False, "scan_loaded_stack": False})
+    values = form.persisted_values()
+    assert values["deskew"] is False
+    assert values["scan_loaded_stack"] is False
+    assert form.scan_request("dev", Path("out")).deskew is False
 
 
 def _row_titles(widget: Any) -> list[str]:
@@ -491,20 +543,12 @@ def test_processing_group_orders_page_steps_before_the_ocr_chain() -> None:
     events = Events()
     form = _form(events)
 
-    titles = []
-    child = form.processing_group.get_first_child()
-    while child is not None:
-        titles.extend(_row_titles(child))
-        child = child.get_next_sibling()
-
-    # Page-level steps first, then the OCR chain and the archival output
-    # that its stage produces.
-    assert titles == [
+    # The page-level step first, then the OCR chain. Deskew and the
+    # archival output moved to the settings dialog.
+    assert _group_titles(form.processing_group) == [
         "Skip blank pages",
-        "Deskew",
         "OCR (Optical Character Recognition)",
         "OCR Language",
-        "Archival PDF/A",
     ]
 
 

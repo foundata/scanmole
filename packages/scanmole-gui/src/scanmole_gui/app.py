@@ -398,6 +398,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             on_choice_blocked=self._on_choice_blocked,
             on_hardware_button_selected=self._on_hardware_button_selected,
             on_insert_to_scan=self._on_insert_to_scan_toggled,
+            on_open_settings=self._on_settings_action,
             device_for_preview=self._selected_device,
             effective_resolution=self._effective_resolution,
         )
@@ -433,14 +434,19 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """Arrange the form sections in one column or two.
 
         Both arrangements keep the same reading order, most-changed
-        settings first: Scan, Output, Processing, Behaviour. The wide
-        layout splits that order into two independently packed columns.
+        settings first: Scan, Output, Processing, Behaviour, Advanced.
+        The wide layout splits that order into two independently packed
+        columns.
         """
         columns = (
             (self._left_column, (self._form.scan_group, self._form.output_group)),
             (
                 self._right_column,
-                (self._form.processing_group, self._form.behaviour_group),
+                (
+                    self._form.processing_group,
+                    self._form.behaviour_group,
+                    self._form.advanced_group,
+                ),
             ),
         )
         sections_narrow = (
@@ -448,6 +454,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._form.output_group,
             self._form.processing_group,
             self._form.behaviour_group,
+            self._form.advanced_group,
         )
         for section in sections_narrow:
             parent = section.get_parent()
@@ -1098,7 +1105,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         store_settings(CONFIG_FILE, self._settings)
 
     def _on_settings_action(self, *_args: object) -> None:
-        """Open the settings dialog (color scheme, language, reset)."""
+        """Open the settings dialog, with the form's advanced groups."""
         dialog = build_settings_dialog(
             current_scheme=str(self._settings.get("color_scheme") or ""),
             current_ui_language=str(self._settings.get("ui_language") or ""),
@@ -1115,6 +1122,10 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             on_reset=self._on_reset_clicked,
             on_install_desktop=install_desktop_entry,
             on_remove_desktop=remove_desktop_entry,
+            borrowed_groups=(
+                self._form.settings_processing_group,
+                self._form.settings_behaviour_group,
+            ),
         )
         self._settings_dialog = dialog
         dialog.connect("closed", lambda *_a: setattr(self, "_settings_dialog", None))

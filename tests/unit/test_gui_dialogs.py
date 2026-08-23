@@ -41,10 +41,11 @@ class Recorder:
         self.install_ok = install_ok
         self.remove_ok = remove_ok
 
-    def dialog(self, *, installed: bool = False) -> Any:
+    def dialog(self, *, installed: bool = False, borrowed: Any = ()) -> Any:
         from scanmole_gui.dialogs import build_settings_dialog
 
         return build_settings_dialog(
+            borrowed_groups=borrowed,
             current_scheme="",
             current_ui_language="",
             desktop_installed=installed,
@@ -189,3 +190,35 @@ def test_settings_rows_live_in_one_named_group() -> None:
         "Reset settings",
         "Restart now",
     } <= titles
+
+
+def test_borrowed_groups_lead_and_are_handed_back_on_close() -> None:
+    # The scan form owns these groups and keeps using their rows after the
+    # dialog is gone, so the page must let go of them: a preferences page
+    # owns what it holds.
+    Adw = _init_adw()
+
+    lent = Adw.PreferencesGroup(title="Processing")
+    row = Adw.SwitchRow(title="Deskew", active=True)
+    lent.add(row)
+    dialog = Recorder().dialog(borrowed=(lent,))
+
+    groups: list[Any] = []
+
+    def walk(widget: Any) -> None:
+        if isinstance(widget, Adw.PreferencesGroup):
+            groups.append(widget)
+        child = widget.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(dialog.get_visible_page())
+    assert [group.get_title() for group in groups] == ["Processing", "Application"]
+    assert lent.get_parent() is not None
+
+    dialog.emit("closed")
+
+    assert lent.get_parent() is None  # back with the form
+    assert row.get_title() == "Deskew"  # and still alive
+    assert row.get_active() is True

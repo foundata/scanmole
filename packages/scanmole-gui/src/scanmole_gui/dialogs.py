@@ -8,7 +8,7 @@ the widgets and forward the user's choices.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import gi
@@ -38,16 +38,26 @@ def build_settings_dialog(
     on_reset: Callable[[], None],
     on_install_desktop: Callable[[], bool],
     on_remove_desktop: Callable[[], bool],
+    borrowed_groups: Sequence[Adw.PreferencesGroup] = (),
 ) -> Adw.PreferencesDialog:
     """Build the settings dialog (color scheme, language, reset).
 
-    Everything here is named so further groups can join it: this one
-    holds what applies to the application itself, not to a scan. The
-    scanner-trigger preferences stay in the scan form's Scanner group,
-    next to the other per-device options.
+    ``borrowed_groups`` are scan-form groups shown here rather than on the
+    page. The form stays their owner, so they are handed back when the
+    dialog closes: a preferences page owns what it holds, and letting one
+    be destroyed with the dialog would take the form's rows with it. They
+    lead, because they are about scanning; the Application group that
+    follows is about ScanMole itself.
     """
     dialog = Adw.PreferencesDialog(title=_("Settings"))
     page = Adw.PreferencesPage()
+    for borrowed in borrowed_groups:
+        page.add(borrowed)
+    if borrowed_groups:
+        dialog.connect(
+            "closed",
+            lambda *_a: [page.remove(borrowed) for borrowed in borrowed_groups],
+        )
     group = Adw.PreferencesGroup(title=_("Application"))
 
     scheme_row = Adw.ComboRow(title=_("Color scheme"))

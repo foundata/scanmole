@@ -197,10 +197,11 @@ class ScanForm:
         on_choice_blocked: Callable[[str, str], None],
         on_hardware_button_selected: Callable[[str], None],
         on_insert_to_scan: Callable[[bool], None],
+        on_open_settings: Callable[[], None],
         device_for_preview: Callable[[], str | None],
         effective_resolution: Callable[[int], int | None],
     ) -> None:
-        """Build the four groups; ``apply_settings`` restores the values.
+        """Build the form's groups; ``apply_settings`` restores the values.
 
         ``device_for_preview`` supplies the selected device id for the
         filename preview; ``effective_resolution`` returns the dpi the
@@ -217,6 +218,7 @@ class ScanForm:
         self._on_choice_blocked = on_choice_blocked
         self._on_hardware_button_selected = on_hardware_button_selected
         self._on_insert_to_scan = on_insert_to_scan
+        self._on_open_settings = on_open_settings
         self._device_for_preview = device_for_preview
         self._effective_resolution = effective_resolution
 
@@ -229,9 +231,11 @@ class ScanForm:
         self._res_value = 300
 
         self._build_scan_group()
+        self._build_settings_groups()
         self._build_output_group()
         self._build_processing_group()
         self._build_behaviour_group()
+        self._build_advanced_group()
         # The initial hint/preview render happens via refresh_document_hints()
         # once the window finished wiring; the preview callback reaches back
         # into the controller, which must hold the form reference by then.
@@ -343,26 +347,33 @@ class ScanForm:
         )
         self.scan_group.add(self._cancel_row)
 
-    def _build_behaviour_group(self) -> None:
-        """Build the Behaviour group: what a scan covers and what starts it.
+    def _build_settings_groups(self) -> None:
+        """Build the groups the settings dialog borrows.
 
-        The two sheet-flow switches decide what one scan acquires:
-        combining wins over everything, and the feeder switch (which only
-        means something on a feeder source, so a flatbed grays it out and
-        ignores it) chooses between the whole stack and a single page.
-        The trigger rows below decide what may start a scan without the
-        Scan button; the window persists both immediately and
-        re-evaluates the idle sensor poller.
+        These rows belong to the form: it reads them for the request and
+        writes them back from the saved settings, exactly like the rows on
+        the page. Only their presentation moved, so the dialog takes them
+        in while it is open and hands them back when it closes (see
+        :func:`~scanmole_gui.dialogs.build_settings_dialog`). Keeping one
+        owner avoids mirroring five values across two objects.
         """
-        self.behaviour_group = Adw.PreferencesGroup(title=_("Behaviour"))
-        self._collect_row = Adw.SwitchRow(
-            title=_("Combine scans"),
-            subtitle=_(
-                "Add scans to the same document until you press Finish (status bar)"
-            ),
-            active=False,
+        self.settings_processing_group = Adw.PreferencesGroup(title=_("Processing"))
+        self._deskew_row = Adw.SwitchRow(
+            title=_("Deskew"),
+            subtitle=_("Correct skewed scanned pages"),
+            active=True,
         )
-        self.behaviour_group.add(self._collect_row)
+        self.settings_processing_group.add(self._deskew_row)
+        # Archival output is produced by the OCR stage, so like the
+        # language it only means something while OCR runs.
+        self._pdfa_row = Adw.SwitchRow(
+            title=_("Archival PDF/A"),
+            subtitle=_("Long-term preservation format; needs OCR"),
+            active=True,
+        )
+        self.settings_processing_group.add(self._pdfa_row)
+
+        self.settings_behaviour_group = Adw.PreferencesGroup(title=_("Behaviour"))
         self._stack_row = Adw.SwitchRow(
             title=_("Scan all pages in feeder"),
             subtitle=_(
@@ -370,18 +381,8 @@ class ScanForm:
             ),
             active=True,
         )
-        self.behaviour_group.add(self._stack_row)
+        self.settings_behaviour_group.add(self._stack_row)
         self._update_stack_row()
-        self._insert_row = Adw.SwitchRow(
-            title=_("Auto-start when paper is inserted"),
-            subtitle=_("Scan when a sheet is loaded into the idle scanner"),
-            active=False,
-        )
-        self._insert_row.connect(
-            "notify::active",
-            lambda *_a: self._on_insert_to_scan(bool(self._insert_row.get_active())),
-        )
-        self.behaviour_group.add(self._insert_row)
         self._button_row = Adw.ComboRow(
             title=_("Hardware scan button"),
             subtitle=_("What a press of the scanner's button starts"),
@@ -390,7 +391,7 @@ class ScanForm:
             Gtk.StringList.new([label for label, _value in HARDWARE_BUTTON_ACTIONS])
         )
         self._button_row.connect("notify::selected", self._on_button_pref_changed)
-        self.behaviour_group.add(self._button_row)
+        self.settings_behaviour_group.add(self._button_row)
         # Only automatic page sizes can be ambiguous, so the row grays out
         # for a fixed size and says as much in its own words.
         self._size_pref_row = Adw.ComboRow(
@@ -402,7 +403,55 @@ class ScanForm:
             Gtk.StringList.new([label for label, _value in AUTO_SIZE_PREFERENCES])
         )
         self._size_pref_row.connect("notify::selected", self._on_document_changed)
-        self.behaviour_group.add(self._size_pref_row)
+        self.settings_behaviour_group.add(self._size_pref_row)
+
+    def _build_behaviour_group(self) -> None:
+        """Build the Behaviour group: what a scan covers and what starts it.
+
+        Combining wins over everything else a scan could acquire, and
+        auto-start decides whether inserting paper is enough to begin. The
+        rarer companions of both (the feeder switch, the hardware button
+        mapping) live in the settings dialog.
+        """
+        self.behaviour_group = Adw.PreferencesGroup(title=_("Behaviour"))
+        self._collect_row = Adw.SwitchRow(
+            title=_("Combine scans"),
+            subtitle=_(
+                "Add scans to the same document until you press Finish (status bar)"
+            ),
+            active=False,
+        )
+        self.behaviour_group.add(self._collect_row)
+        self._insert_row = Adw.SwitchRow(
+            title=_("Auto-start when paper is inserted"),
+            subtitle=_("Scan when a sheet is loaded into the idle scanner"),
+            active=False,
+        )
+        self._insert_row.connect(
+            "notify::active",
+            lambda *_a: self._on_insert_to_scan(bool(self._insert_row.get_active())),
+        )
+        self.behaviour_group.add(self._insert_row)
+
+    def _build_advanced_group(self) -> None:
+        """Build the Advanced group: the way into the settings dialog.
+
+        The page keeps what a scan usually needs; everything rarer is one
+        click away rather than in the way.
+        """
+        self.advanced_group = Adw.PreferencesGroup(title=_("Advanced"))
+        row = Adw.ActionRow(
+            title=_("Advanced settings"),
+            subtitle=_("Behaviour and application options"),
+        )
+        button = Gtk.Button(valign=Gtk.Align.CENTER)
+        button.set_child(
+            Adw.ButtonContent(icon_name="emblem-system-symbolic", label=_("Advanced…"))
+        )
+        button.connect("clicked", lambda *_a: self._on_open_settings())
+        row.add_suffix(button)
+        row.set_activatable_widget(button)
+        self.advanced_group.add(row)
 
     def _on_button_pref_changed(self, *_args: object) -> None:
         """Forward the button-mapping choice to the window."""
@@ -629,7 +678,11 @@ class ScanForm:
         self.scan_group.add(self._chips_row)
 
     def _build_processing_group(self) -> None:
-        """Build the Processing group (blank pages, OCR, language)."""
+        """Build the Processing group (blank pages, OCR, language).
+
+        Deskew and archival output moved to the settings dialog; they are
+        still form rows (see :meth:`_build_settings_groups`).
+        """
         self.processing_group = Adw.PreferencesGroup(title=_("Processing"))
         self._blank_row = Adw.SwitchRow(
             title=_("Skip blank pages"),
@@ -637,12 +690,6 @@ class ScanForm:
             active=True,
         )
         self.processing_group.add(self._blank_row)
-        self._deskew_row = Adw.SwitchRow(
-            title=_("Deskew"),
-            subtitle=_("Correct skewed scanned pages"),
-            active=True,
-        )
-        self.processing_group.add(self._deskew_row)
         self._ocr_row = Adw.SwitchRow(
             title=_("OCR (Optical Character Recognition)"),
             subtitle=_("Make the PDF text-searchable"),
@@ -657,14 +704,6 @@ class ScanForm:
         self._set_language_model()
         self._lang_row.connect("notify::selected", self._on_language_selected)
         self.processing_group.add(self._lang_row)
-        # Archival output is produced by the OCR stage, so like the
-        # language it only means something while OCR runs.
-        self._pdfa_row = Adw.SwitchRow(
-            title=_("Archival PDF/A"),
-            subtitle=_("Long-term preservation format; needs OCR"),
-            active=True,
-        )
-        self.processing_group.add(self._pdfa_row)
 
     # ------------------------------------------------------------- devices
 
@@ -1084,6 +1123,7 @@ class ScanForm:
         self._refresh_btn.set_sensitive(not running)
         for group in (
             self.behaviour_group,
+            self.advanced_group,
             self.processing_group,
             self.output_group,
         ):
