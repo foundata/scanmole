@@ -209,6 +209,12 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
 
+        def _request_preview(self) -> None:
+            self.previews = getattr(self, "previews", 0) + 1
+
+        def _stop_preview(self) -> None:
+            self.preview_stopped = True
+
         def _stop_sensor_polling(self) -> None:
             order.append("stop-poller")
 
@@ -310,6 +316,12 @@ def test_no_advisory_child_survives_into_the_runner(
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
 
+        def _request_preview(self) -> None:
+            self.previews = getattr(self, "previews", 0) + 1
+
+        def _stop_preview(self) -> None:
+            self.preview_stopped = True
+
         def _stop_sensor_polling(self) -> None:
             pass
 
@@ -401,6 +413,9 @@ def test_scan_exit_starts_a_fresh_negotiation() -> None:
 
     class Window:
         _on_process_exit = MainWindow._on_process_exit
+
+        def _request_preview(self) -> None:
+            self.previews = getattr(self, "previews", 0) + 1
 
         def __init__(self, runner: object) -> None:
             self._runner = runner

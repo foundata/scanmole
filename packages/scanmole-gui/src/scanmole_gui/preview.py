@@ -17,7 +17,11 @@ import os
 import stat as stat_module
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+
+from scanmole.naming import output_candidates
+from scanmole_gui.i18n import _
 
 CANDIDATE_LIMIT = 500
 """How many names one look inspects before giving up.
@@ -110,3 +114,32 @@ def _directory_problem(parent: Path, stat: Stat, cache: dict[Path, str]) -> str:
         problem = "" if stat_module.S_ISDIR(mode) else "not-a-directory"
     cache[parent] = problem
     return problem
+
+
+def preview_outcome(template: str, device: str | None) -> PreviewOutcome:
+    """One complete advisory look, from template to a renderable result.
+
+    Runs off the main thread. The timestamp is the moment of this look,
+    which is what the date and time placeholders show; the CLI expands
+    its own when the scan starts, so a preview is never a promise about
+    the clock either.
+    """
+    try:
+        candidates = output_candidates(
+            template, when=datetime.now().astimezone(), device=device
+        )
+        return first_free_candidate(candidates)
+    except ValueError:
+        return PreviewOutcome(reason="needs-device")
+
+
+def preview_text(outcome: PreviewOutcome) -> str:
+    """The label for one preview result, unavailable states included."""
+    if outcome.path is not None:
+        return outcome.path.name
+    return {
+        "missing-directory": _("folder not found"),
+        "not-a-directory": _("not a folder"),
+        "unreadable": _("folder not readable"),
+        "needs-device": _("select a scanner"),
+    }.get(outcome.reason, _("unavailable"))

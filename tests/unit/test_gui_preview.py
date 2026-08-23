@@ -6,10 +6,14 @@ start stays the authoritative choice of an output name.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from scanmole.naming import output_candidates
 from scanmole_gui.preview import (
@@ -19,6 +23,13 @@ from scanmole_gui.preview import (
 )
 
 WHEN = datetime(2026, 8, 23, 14, 5, 9)
+
+pytestmark = [
+    # gi's own import noise, exactly like the other GTK-bound tests.
+    pytest.mark.filterwarnings("ignore::RuntimeWarning"),
+    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
+    pytest.mark.filterwarnings("ignore::UserWarning"),
+]
 
 
 def _look(
@@ -197,6 +208,8 @@ def test_the_preview_stops_at_its_bound_without_claiming_more(
 ) -> None:
     # Reaching the bound says the preview has no answer. Whether a free
     # name exists further along is the reservation's business.
+    from scanmole_gui.preview import preview_text
+
     seen: list[Path] = []
 
     def taken(path: Path) -> os.stat_result:
@@ -214,6 +227,7 @@ def test_the_preview_stops_at_its_bound_without_claiming_more(
     assert [path.name for path in candidates] == [
         f"scan_{index:03d}.pdf" for index in range(1, 6)
     ]
+    assert "no free" not in preview_text(outcome)
 
 
 def test_the_cli_reserves_past_the_previews_bound(tmp_path: Path) -> None:
@@ -247,3 +261,580 @@ def test_the_preview_and_the_reservation_walk_the_same_sequence(
 
     assert previewed.path == reserved == tmp_path / "doc_02.pdf"
     assert reserved.stat().st_size == 0  # reserved, not written
+
+
+_NEEDS_GI = pytest.mark.skipif(
+    importlib.util.find_spec("gi") is None,
+    reason="needs PyGObject (scanmole_gui.app imports gi)",
+)
+
+
+class _Loop:
+    """A stand-in for the GLib sources the preview lifecycle uses."""
+
+    def __init__(self) -> None:
+        self.timeouts: dict[int, Callable[[], bool]] = {}
+        self.idles: list[Callable[..., bool]] = []
+        self.removed: list[int] = []
+        self._next = 1
+
+    def timeout_add(self, _ms: int, callback: Callable[[], bool]) -> int:
+        token = self._next
+        self._next += 1
+        self.timeouts[token] = callback
+        return token
+
+    def source_remove(self, token: int) -> None:
+        self.removed.append(token)
+        self.timeouts.pop(token, None)
+
+    def idle_add(self, callback: Callable[..., bool], *args: object) -> int:
+        self.idles.append(lambda: callback(*args))
+        return 0
+
+    def fire_timeouts(self) -> None:
+        """Run every armed timeout, dropping the one-shot ones as GLib does."""
+        for token, callback in list(self.timeouts.items()):
+            if not callback():  # GLib.SOURCE_REMOVE
+                self.timeouts.pop(token, None)
+
+    def fire_idles(self) -> None:
+        pending, self.idles = self.idles, []
+        for callback in pending:
+            callback()
+
+
+def _preview_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, loop: _Loop, *, hold: bool = False
+) -> Any:
+    """A window stub carrying only the preview lifecycle, no GTK loop.
+
+    With ``hold``, a started worker waits for an explicit ``release()``
+    before reporting, so a test can order two workers against each other
+    without any timing.
+    """
+    from scanmole_gui.app import MainWindow
+
+    monkeypatch.setattr("scanmole_gui.app.GLib.timeout_add", loop.timeout_add)
+    monkeypatch.setattr("scanmole_gui.app.GLib.source_remove", loop.source_remove)
+    monkeypatch.setattr("scanmole_gui.app.GLib.idle_add", loop.idle_add)
+
+    class Monitor:
+        def __init__(self, folder: Path) -> None:
+            self.folder = folder
+            self.cancelled = False
+            self.handler: Callable[..., None] | None = None
+
+        def connect(self, _signal: str, handler: Callable[..., None]) -> None:
+            self.handler = handler
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    monitors: list[Monitor] = []
+
+    class Window:
+        _request_preview = MainWindow._request_preview
+        _preview_debounce_fired = MainWindow._preview_debounce_fired
+        _start_preview = MainWindow._start_preview
+        _apply_preview = MainWindow._apply_preview
+        _watch_output_folder = MainWindow._watch_output_folder
+        _on_output_folder_changed = MainWindow._on_output_folder_changed
+        _stop_preview_monitor = MainWindow._stop_preview_monitor
+        _suspend_preview = MainWindow._suspend_preview
+        _stop_preview = MainWindow._stop_preview
+        _on_visible_changed = MainWindow._on_visible_changed
+        _on_active_changed = MainWindow._on_active_changed
+
+        @staticmethod
+        def _create_directory_monitor(folder: Path) -> Monitor:
+            monitor = Monitor(folder)
+            monitors.append(monitor)
+            return monitor
+
+        def __init__(self) -> None:
+            self._released = False
+            self._closing = False
+            self._preview_generation = 0
+            self._preview_busy = False
+            self._preview_again = False
+            self._preview_debounce_id: int | None = None
+            self._preview_monitor: Any = None
+            self._preview_watched: Path | None = None
+            self.device: str | None = "test:0"
+            self.visible = True
+            self.active = True
+            self.rendered: list[str] = []
+            self.monitors = monitors
+            self.started = 0
+            self._pending_work: list[Callable[[], None]] = []
+
+            window = self
+
+            class Form:
+                folder = staticmethod(lambda: str(tmp_path))
+                preview_template = staticmethod(lambda: "scan_{NNN}.pdf")
+
+                @staticmethod
+                def set_preview(text: str) -> None:
+                    window.rendered.append(text)
+
+            self._form = Form()
+
+        def _selected_device(self) -> str | None:
+            return self.device
+
+        def get_visible(self) -> bool:
+            return self.visible
+
+        def is_active(self) -> bool:
+            return self.active
+
+        @property
+        def held(self) -> bool:
+            return bool(self._pending_work)
+
+        def release(self) -> None:
+            """Let the oldest held worker report its result."""
+            self._pending_work.pop(0)()
+
+    window: Any = Window()
+
+    # The worker body runs inline so the lifecycle stays deterministic;
+    # the production path only differs in which thread computes it.
+    def inline(target: Callable[[], None], **_kwargs: object) -> Any:
+        def start() -> None:
+            window.started += 1
+            if hold:
+                window._pending_work.append(target)
+            else:
+                target()
+
+        return type("Thread", (), {"start": staticmethod(start)})()
+
+    monkeypatch.setattr("scanmole_gui.app.threading.Thread", inline)
+
+    return window
+
+
+def _settle(window: Any, loop: _Loop) -> None:
+    """Run the debounce and the worker completion to quiescence."""
+    loop.fire_timeouts()
+    loop.fire_idles()
+
+
+@_NEEDS_GI
+def test_the_preview_reflects_what_is_already_in_the_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+    (tmp_path / "scan_001.pdf").touch()
+
+    window._request_preview()
+    _settle(window, loop)
+
+    assert window.rendered == ["scan_002.pdf"]
+    # Looking never reserves: only the file the test created is there.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["scan_001.pdf"]
+
+
+@_NEEDS_GI
+def test_a_burst_of_events_collapses_into_one_look(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+
+    for _ in range(5):  # an atomic replace emits several monitor events
+        window._request_preview()
+
+    assert len(loop.timeouts) == 1  # four were cancelled again
+    assert len(loop.removed) == 4
+    _settle(window, loop)
+    assert window.rendered == ["scan_001.pdf"]
+
+
+@_NEEDS_GI
+def test_a_monitor_event_advances_the_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+    window._request_preview()
+    _settle(window, loop)
+    assert window.rendered == ["scan_001.pdf"]
+
+    (tmp_path / "scan_001.pdf").touch()  # another process took the name
+    monitor = window._preview_monitor
+    assert monitor.handler is not None
+    monitor.handler(monitor)
+    _settle(window, loop)
+
+    assert window.rendered[-1] == "scan_002.pdf"
+
+
+@_NEEDS_GI
+def test_a_worker_finishing_after_its_inputs_changed_never_renders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The real ordering: A is still inspecting the old folder when the
+    # user picks a new one, and A finishes before B's debounce fires.
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
+    (tmp_path / "scan_001.pdf").touch()
+    other = tmp_path / "other"
+    other.mkdir()
+
+    window._request_preview()
+    loop.fire_timeouts()  # A starts and is held before it reports
+    assert window.held, "worker A should be in flight"
+
+    window._form.folder = staticmethod(lambda: str(other))
+    window._request_preview()  # B is debounced; A is now stale
+
+    window.release()  # A completes first
+    loop.fire_idles()
+    assert window.rendered == []  # A described a folder nobody selected
+
+    loop.fire_timeouts()  # B starts
+    window.release()
+    loop.fire_idles()
+
+    assert window.rendered == ["scan_001.pdf"]  # only B, against the new folder
+
+
+@_NEEDS_GI
+def test_changes_during_one_look_collapse_into_a_single_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
+
+    window._request_preview()
+    loop.fire_timeouts()  # A is in flight
+    for _ in range(3):  # three changes while A works
+        window._request_preview()
+        loop.fire_timeouts()  # each debounce fires into the busy worker
+    assert window._preview_again is True
+    assert window.started == 1  # no second worker was ever launched
+
+    window.release()  # A completes, stale, and hands over to the rerun
+    loop.fire_idles()
+
+    assert window.started == 2  # exactly one rerun, with the newest inputs
+    window.release()
+    loop.fire_idles()
+    assert window.rendered == ["scan_001.pdf"]
+
+
+@_NEEDS_GI
+def test_teardown_invalidates_an_active_worker_without_a_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
+    window._request_preview()
+    loop.fire_timeouts()
+    window._request_preview()  # a rerun would be pending
+    loop.fire_timeouts()
+    assert window._preview_again is True
+
+    window._stop_preview()
+    window.release()
+    loop.fire_idles()
+
+    assert window.rendered == []
+    assert window.started == 1  # the pending rerun was dropped too
+
+
+@_NEEDS_GI
+def test_hiding_the_window_stops_watching_and_starts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
+    window._request_preview()
+    loop.fire_timeouts()  # A is in flight
+    monitor = window._preview_monitor
+    assert monitor is not None
+
+    window.visible = False
+    window._on_visible_changed()
+
+    assert monitor.cancelled is True
+    assert window._preview_monitor is None
+    assert loop.timeouts == {}  # no worker, no debounce armed
+    monitor.handler(monitor)  # a late event from the dropped monitor
+    assert loop.timeouts == {}
+
+    window.release()  # A finishes for a window nobody is looking at
+    loop.fire_idles()
+    assert window.rendered == []
+
+    window.visible = True
+    window._on_visible_changed()
+    loop.fire_timeouts()
+    window.release()
+    loop.fire_idles()
+
+    assert window.rendered == ["scan_001.pdf"]
+    assert window._preview_monitor is not monitor  # a fresh one
+
+
+@_NEEDS_GI
+def test_focus_alone_neither_refreshes_nor_drops_the_monitor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+    window._request_preview()
+    _settle(window, loop)
+    monitor = window._preview_monitor
+
+    window.active = False
+    window._on_active_changed()
+
+    assert loop.timeouts == {}  # losing focus asks for no filesystem work
+    assert window._preview_monitor is monitor  # still the right folder
+
+    window.active = True
+    window._on_active_changed()
+
+    assert loop.timeouts != {}  # regaining it does ask
+
+
+@_NEEDS_GI
+def test_replacing_the_folder_stops_the_previous_monitor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+    window._request_preview()
+    _settle(window, loop)
+    first = window._preview_monitor
+    assert first is not None
+
+    other = tmp_path / "other"
+    other.mkdir()
+    window._form.folder = staticmethod(lambda: str(other))
+    window._request_preview()
+    _settle(window, loop)
+
+    assert first.cancelled is True
+    assert window._preview_monitor is not first
+    # An event from the old monitor is not this folder's news.
+    before = list(window.rendered)
+    window._on_output_folder_changed(first)
+    assert window._preview_debounce_id is None
+    assert window.rendered == before
+
+
+@_NEEDS_GI
+def test_teardown_stops_the_monitor_and_the_pending_debounce(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+    window._request_preview()
+    _settle(window, loop)
+    monitor = window._preview_monitor
+    window._request_preview()  # a debounce is armed again
+    assert window._preview_debounce_id is not None
+
+    window._stop_preview()
+
+    assert monitor.cancelled is True
+    assert window._preview_monitor is None
+    assert window._preview_debounce_id is None
+    assert loop.timeouts == {}
+    # Anything still in flight is now stale by generation.
+    window._released = True
+    window._request_preview()
+    assert loop.timeouts == {}
+
+
+@_NEEDS_GI
+def test_an_unavailable_folder_renders_a_state_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+    missing = tmp_path / "not-there"
+    window._form.folder = staticmethod(lambda: str(missing))
+
+    window._request_preview()
+    _settle(window, loop)
+
+    assert window.rendered == ["folder not found"]
+    assert not missing.exists()  # previewing never creates the folder
+
+    missing.mkdir()  # the user corrects it
+    window._request_preview()
+    _settle(window, loop)
+    assert window.rendered[-1] == "scan_001.pdf"
+
+
+@_NEEDS_GI
+def test_the_preview_arms_no_repeating_timer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The debounce fires once and removes itself; nothing polls the
+    # filesystem on a clock, so {ss} does not tick either.
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop)
+
+    window._request_preview()
+    token = window._preview_debounce_id
+    assert token is not None
+    assert loop.timeouts[token]() is False  # GLib.SOURCE_REMOVE
+    loop.fire_idles()
+
+    assert window._preview_debounce_id is None
+    assert len(window.rendered) == 1
+
+
+def _scan_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, start: Callable[..., None]
+) -> Any:
+    """A window stub carrying only the scan-start folder handling."""
+    from scanmole_gui.app import MainWindow
+
+    class Window:
+        _on_scan_clicked = MainWindow._on_scan_clicked
+
+        def __init__(self) -> None:
+            self._runner = None
+            self._searching = False
+            self._advisory = type("A", (), {"cancel_pending": lambda *_a: True})()
+            self._flow = type("F", (), {"reset": lambda *_a: None})()
+            self._scanmole = "scanmole"
+            self.alerts: list[tuple[str, str]] = []
+            self.logs: list[str] = []
+            self.folder = tmp_path / "out"
+
+            window = self
+
+            class Form:
+                def folder(self) -> str:
+                    return str(window.folder)
+
+                @staticmethod
+                def sheet_flow_value() -> str:
+                    return "stack"
+
+                @staticmethod
+                def scan_request(device: object, folder: Path, **_kw: object) -> Any:
+                    return type(
+                        "Request",
+                        (),
+                        {"drop_blanks": True, "output": str(folder / "out.pdf")},
+                    )()
+
+                @staticmethod
+                def set_running(_running: bool) -> None:
+                    pass
+
+            self._form = Form()
+
+        def _stop_sensor_polling(self) -> None:
+            pass
+
+        def _save_settings(self) -> None:
+            pass
+
+        def _selected_device(self) -> str | None:
+            return "test:0"
+
+        def _alert(self, heading: str, body: str) -> None:
+            self.alerts.append((heading, body))
+
+        def _append_log(self, text: str) -> None:
+            self.logs.append(text)
+
+        def _set_result_bar(self, *_args: object, **_kw: object) -> None:
+            pass
+
+        # Runner callbacks: the stub runner never invokes them.
+        _schedule = staticmethod(lambda _cb: None)
+        _after_seconds = staticmethod(lambda _s, _cb: None)
+        _on_stdout_line = staticmethod(lambda *_a: None)
+        _on_stderr_line = staticmethod(lambda *_a: None)
+        _on_process_exit = staticmethod(lambda *_a: None)
+        _on_kill_escalated = staticmethod(lambda *_a: None)
+
+    from scanmole_gui import app as app_module
+
+    monkeypatch.setattr(
+        app_module, "ScanRunner", lambda **_kw: type("R", (), {"start": start})()
+    )
+    monkeypatch.setattr(app_module, "request_argv", lambda _r, _c: ["scanmole"])
+    monkeypatch.setattr(app_module, "SessionState", lambda **_kw: object())
+    return Window()
+
+
+@_NEEDS_GI
+def test_a_missing_output_folder_is_created_before_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[Path] = []
+    window = _scan_window(
+        tmp_path, monkeypatch, start=lambda _self, _argv, cwd: started.append(cwd)
+    )
+    assert not window.folder.exists()
+
+    window._on_scan_clicked()
+
+    assert window.folder.is_dir()  # created as before
+    assert started == [window.folder]
+    assert window.alerts == []
+
+
+@_NEEDS_GI
+def test_an_uncreatable_output_folder_still_alerts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window = _scan_window(tmp_path, monkeypatch, start=lambda *_a: None)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the folder should be")
+    window.folder = blocker / "out"
+
+    window._on_scan_clicked()
+
+    assert [heading for heading, _body in window.alerts] == [
+        "Cannot Create Output Folder"
+    ]
+
+
+@_NEEDS_GI
+def test_a_folder_deleted_before_the_spawn_is_not_an_installation_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The folder existed a moment ago, so pointing the user at the CLI
+    # installation would send them after entirely the wrong thing.
+    def vanish(_self: object, _argv: list[str], cwd: Path) -> None:
+        cwd.rmdir()
+        raise FileNotFoundError(2, "No such file or directory", str(cwd))
+
+    window = _scan_window(tmp_path, monkeypatch, start=vanish)
+
+    window._on_scan_clicked()
+
+    headings = [heading for heading, _body in window.alerts]
+    assert headings == ["Cannot Create Output Folder"]
+    assert not any("Install the scanmole CLI" in body for _h, body in window.alerts)
+
+
+@_NEEDS_GI
+def test_a_missing_cli_still_points_at_the_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_executable(_self: object, _argv: list[str], _cwd: Path) -> None:
+        raise FileNotFoundError(2, "No such file or directory", "scanmole")
+
+    window = _scan_window(tmp_path, monkeypatch, start=no_executable)
+
+    window._on_scan_clicked()
+
+    assert [heading for heading, _body in window.alerts] == ["Could Not Start scanmole"]
+    assert any("Install the scanmole CLI" in body for _h, body in window.alerts)

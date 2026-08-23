@@ -783,6 +783,7 @@ def test_the_button_starts_the_configured_sheet_mode_without_saving_one(
         on_hardware_button_selected=noop,
         on_insert_to_scan=noop,
         on_open_settings=noop,
+        on_preview_stale=noop,
         device_for_preview=lambda: "test:0",
         effective_resolution=lambda _dpi: None,
     )

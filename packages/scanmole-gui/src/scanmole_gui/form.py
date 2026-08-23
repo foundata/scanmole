@@ -14,7 +14,6 @@ instead of engine imports.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -30,7 +29,7 @@ from scanmole.config import (  # noqa: E402  # pure type aliases
     AutoSizePreference,
     SheetFlow,
 )
-from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template  # noqa: E402
+from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE  # noqa: E402
 from scanmole_gui.i18n import _  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES  # noqa: E402
 from scanmole_gui.probing import SOURCE_VALUES  # noqa: E402
@@ -220,6 +219,7 @@ class ScanForm:
         on_hardware_button_selected: Callable[[str], None],
         on_insert_to_scan: Callable[[bool], None],
         on_open_settings: Callable[[], None],
+        on_preview_stale: Callable[[], None],
         device_for_preview: Callable[[], str | None],
         effective_resolution: Callable[[int], int | None],
     ) -> None:
@@ -241,6 +241,7 @@ class ScanForm:
         self._on_hardware_button_selected = on_hardware_button_selected
         self._on_insert_to_scan = on_insert_to_scan
         self._on_open_settings = on_open_settings
+        self._on_preview_stale = on_preview_stale
         self._device_for_preview = device_for_preview
         self._effective_resolution = effective_resolution
 
@@ -598,8 +599,10 @@ class ScanForm:
         hint_row.add_css_class("joined-above")
         self.output_group.add(hint_row)
 
+        # Advisory: the name is whatever looked free at the last refresh,
+        # while the CLI reserves the real one when the scan starts.
         preview_row = Adw.ActionRow(
-            title=_("Preview"), subtitle=_("Next file that will be written")
+            title=_("Preview"), subtitle=_("Expected output filename")
         )
         self._name_preview = Gtk.Label(xalign=1.0, valign=Gtk.Align.CENTER)
         self._name_preview.add_css_class("monospace")
@@ -1002,14 +1005,21 @@ class ScanForm:
             self._name_entry.set_position(-1)
 
     def _update_name_preview(self, *_args: object) -> None:
-        """Render the template with the current form values as an example."""
-        example = expand_template(
-            self._current_template(),
-            when=datetime.now().astimezone(),
-            counter=1,
-            device=self._device_for_preview() or "device",
-        )
-        self._name_preview.set_text(example)
+        """Ask the controller for a fresh preview; it owns the lookup.
+
+        The name depends on what is already in the output folder, which
+        the form must not go and read: that is filesystem work with its
+        own monitoring, debouncing and worker lifecycle.
+        """
+        self._on_preview_stale()
+
+    def set_preview(self, text: str) -> None:
+        """Render a finished preview result."""
+        self._name_preview.set_text(text)
+
+    def preview_template(self) -> str:
+        """The filename template a preview or a scan would use."""
+        return self._current_template()
 
     def _current_template(self) -> str:
         """Return the filename template from the form, with .pdf ensured."""
@@ -1032,6 +1042,9 @@ class ScanForm:
                 icon_name="folder-symbolic", label=abbreviate_home(self._folder)
             )
         )
+        # Which names are free is a property of the folder, so the
+        # preview and its directory monitor both follow it.
+        self._on_preview_stale()
 
     # ----------------------------------------------------------- snapshots
 

@@ -126,6 +126,12 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
         def _persist_ui_state(self) -> None:
             self.persisted += 1
 
+        def _request_preview(self) -> None:
+            self.previews = getattr(self, "previews", 0) + 1
+
+        def _stop_preview(self) -> None:
+            self.preview_stopped = True
+
         def _stop_sensor_polling(self) -> None:
             pass
 
@@ -297,6 +303,12 @@ def test_shutdown_after_a_close_never_persists_again() -> None:
 
         def _persist_ui_state(self) -> None:
             self.persisted += 1
+
+        def _request_preview(self) -> None:
+            self.previews = getattr(self, "previews", 0) + 1
+
+        def _stop_preview(self) -> None:
+            self.preview_stopped = True
 
         def _stop_sensor_polling(self) -> None:
             pass

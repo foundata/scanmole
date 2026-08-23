@@ -62,6 +62,7 @@ def _form(
         on_hardware_button_selected=events.cb("button_pref"),
         on_insert_to_scan=events.cb("insert_pref"),
         on_open_settings=events.cb("open_settings"),
+        on_preview_stale=events.cb("preview"),
         device_for_preview=lambda: device,
         effective_resolution=lambda _dpi: effective,
     )
@@ -224,12 +225,14 @@ def test_filename_defaulting_and_preview() -> None:
     from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE
 
     assert form.persisted_values()["filename_template"] == DEFAULT_OUTPUT_TEMPLATE
-    preview = form._name_preview.get_text()
-    assert "scan_001.pdf" in preview  # the {NNN} counter, zero-padded
+    assert form.preview_template() == DEFAULT_OUTPUT_TEMPLATE
+    # Which name is free depends on the folder, so the form asks rather
+    # than answering: it renders whatever comes back.
+    assert ("preview", ()) in events.calls
 
     form._name_entry.set_text("receipt_{device}")
     assert form.persisted_values()["filename_template"] == "receipt_{device}.pdf"
-    assert "epsonds" in form._name_preview.get_text()
+    assert form.preview_template() == "receipt_{device}.pdf"
 
 
 def test_running_state_toggles_the_form() -> None:
@@ -559,9 +562,12 @@ def test_the_preview_row_shows_the_bare_next_file_name() -> None:
 
     # The row carries the wording; the value is the file name alone, so
     # it reads as a monospace value next to its label.
-    assert form._name_preview.get_text().endswith(".pdf")
-    assert "Preview" not in form._name_preview.get_text()
+    form.set_preview("2026-08-23_scan_003.pdf")
+    assert form._name_preview.get_text() == "2026-08-23_scan_003.pdf"
     assert "monospace" in form._name_preview.get_css_classes()
+    row = _find_row(form.output_group, "Preview")
+    assert row is not None
+    assert row.get_subtitle() == "Expected output filename"
 
 
 def test_archival_toggle_round_trips_and_follows_ocr() -> None:
