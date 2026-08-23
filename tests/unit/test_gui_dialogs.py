@@ -155,3 +155,37 @@ def test_more_languages_dialog_uses_the_entered_code() -> None:
     entry.set_text("ignored")
     dialog.emit("response", "cancel")
     assert used == ["spa+fra"]  # cancel never adopts
+
+
+def test_settings_rows_live_in_one_named_group() -> None:
+    # The rows are named as a group so a later group can join them without
+    # the existing ones reading as loose, untitled preferences.
+    _init_adw()
+    import gi
+
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw
+
+    dialog = Recorder().dialog()
+    groups: list[Any] = []
+
+    def walk(widget: Any) -> None:
+        if isinstance(widget, Adw.PreferencesGroup):
+            groups.append(widget)
+        child = widget.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(dialog.get_visible_page())
+
+    assert [group.get_title() for group in groups] == ["Application"]
+    # Every row still sits inside it.
+    titles = set(_rows(dialog))
+    assert {
+        "Color scheme",
+        "Interface language",
+        "Desktop entry",
+        "Reset settings",
+        "Restart now",
+    } <= titles

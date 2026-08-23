@@ -41,12 +41,14 @@ def build_settings_dialog(
 ) -> Adw.PreferencesDialog:
     """Build the settings dialog (color scheme, language, reset).
 
-    The scanner-trigger preferences live in the scan form's Scanner
-    group, next to the other per-device options.
+    Everything here is named so further groups can join it: this one
+    holds what applies to the application itself, not to a scan. The
+    scanner-trigger preferences stay in the scan form's Scanner group,
+    next to the other per-device options.
     """
     dialog = Adw.PreferencesDialog(title=_("Settings"))
     page = Adw.PreferencesPage()
-    group = Adw.PreferencesGroup()
+    group = Adw.PreferencesGroup(title=_("Application"))
 
     scheme_row = Adw.ComboRow(title=_("Color scheme"))
     scheme_row.set_model(Gtk.StringList.new([label for label, _value in COLOR_SCHEMES]))
