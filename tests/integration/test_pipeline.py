@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 import scanmole.pipeline as pipeline_module
-from scanmole.config import ScanConfig
+from scanmole.config import AutoSizePreference, ScanConfig
 from scanmole.errors import (
     DeviceError,
     NoPagesError,
@@ -31,12 +31,14 @@ from scanmole.events import EventWriter
 from scanmole.negotiation import negotiate, resolve_faint_plan
 from scanmole.options import Capability, parse_capabilities
 from scanmole.pipeline import analyze_page, publish_pdf, run_pipeline
+from scanmole.pnm import autocrop_image
 from scanmole.scanner import (
     EffectiveSettings,
     ScanResult,
     build_scan_command,
 )
 from scanmole.sheetflow import PageOrigin
+from scanmole.sizing import PageContent, choose_crops
 
 pytestmark = pytest.mark.integration
 
@@ -2748,6 +2750,8 @@ def test_an_engaged_read_only_enhancement_carries_its_p4_frames_through(
     # pipeline must accept it instead of refusing it as plain 1-bit.
     effective = _negotiated_faint(_read_only_lineart_caps(engaged=True), tmp_path)
     assert effective.faint_native is True
+    # The mode was never emitted, but the device is in it and says so.
+    assert effective.mode == "Lineart"
 
     native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
     keep_dir = tmp_path / "kept"
@@ -2765,6 +2769,7 @@ def test_an_unengaged_read_only_enhancement_still_refuses_plain_p4(
     # fails while preserving the page.
     effective = _negotiated_faint(_read_only_lineart_caps(engaged=False), tmp_path)
     assert effective.faint_native is False
+    assert effective.mode is None  # no native verdict, no established mode
 
     native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
@@ -2847,3 +2852,163 @@ def test_a_read_only_window_arms_content_sizing(
     # Content-sized (444 x 477 px), not the 592 x 892 px the frame keeps
     # when the window is unknown and the sizing pass never arms.
     assert width < 500 and height < 600
+
+
+def _read_only_source_settings(
+    listing: str, tmp_path: Path, **overrides: object
+) -> tuple[list[str], EffectiveSettings]:
+    """Negotiate and build a command over a read-only listing."""
+    caps = parse_capabilities(listing)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        source="adf-duplex",
+        mode="gray",
+        resolution=300,
+        **overrides,  # type: ignore[arg-type]
+    )
+    return build_scan_command(config, "test:0", caps, str(tmp_path / "page_%04d.pnm"))
+
+
+def test_a_read_only_flatbed_places_pages_as_a_flatbed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The request asked for a duplex feeder; the device is fixed to the
+    # flatbed. Sizing must follow the device, and before this it fell back
+    # to the request and placed pages as feeder frames.
+    command, effective = _read_only_source_settings(
+        "    --source Flatbed [Flatbed] [read-only]\n"
+        "    --resolution 300 [300]\n"
+        # A small declared window so the test frame fills it and both
+        # axes read as unresolved, which is what feeds the size decision.
+        "    -x 0..50.8mm [50.8] [read-only]\n"
+        "    -y 0..76.2mm [76.2] [read-only]\n",
+        tmp_path,
+    )
+    assert "--source" not in command
+    assert "--batch-count=1" in command
+    assert effective.source == "Flatbed"
+
+    seen: list[bool] = []
+
+    def record_placement(
+        measured: list[PageContent],
+        dpi: int,
+        flatbed: bool,
+        duplex: bool,
+        preference: AutoSizePreference,
+    ) -> object:
+        seen.append(flatbed)
+        return choose_crops(measured, dpi, flatbed, duplex, preference)
+
+    monkeypatch.setattr("scanmole.pipeline.choose_crops", record_placement)
+    _run_frame_with_settings(tmp_path, monkeypatch, effective, _window_frame(600, 900))
+
+    assert seen == [True]
+
+
+def test_a_read_only_feeder_enables_the_leading_band_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The band fallback is feeder-only and never inferred from pixels or
+    # from the request. A conclusively read-only feeder is exactly the
+    # positive evidence it asks for.
+    _command, feeder = _read_only_source_settings(
+        "    --source ADF Front [ADF Front] [read-only]\n"
+        "    --resolution 300 [300]\n"
+        # A small declared window so the test frame fills it and both
+        # axes read as unresolved, which is what feeds the size decision.
+        "    -x 0..50.8mm [50.8] [read-only]\n"
+        "    -y 0..76.2mm [76.2] [read-only]\n",
+        tmp_path,
+    )
+    assert feeder.source == "ADF Front"
+
+    bands: list[int | None] = []
+
+    def record_band(page: Path, trim_px: int, band_px: int | None, dpi: int) -> object:
+        bands.append(band_px)
+        return autocrop_image(page, trim_px, band_px, dpi=dpi)
+
+    monkeypatch.setattr("scanmole.pipeline.autocrop_image", record_band)
+    _run_frame_with_settings(tmp_path, monkeypatch, feeder, _window_frame(600, 900))
+
+    assert bands == [max(1, round(50.0 * 300 / 25.4))]
+
+
+def test_an_unknown_source_keeps_the_conservative_full_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same request, no source evidence at all: the fallback must stay off,
+    # because a request is not the positive feeder evidence it needs.
+    _command, unknown = _read_only_source_settings(
+        "    --resolution 300 [300]\n"
+        # A small declared window so the test frame fills it and both
+        # axes read as unresolved, which is what feeds the size decision.
+        "    -x 0..50.8mm [50.8] [read-only]\n"
+        "    -y 0..76.2mm [76.2] [read-only]\n",
+        tmp_path,
+    )
+    assert unknown.source is None
+
+    bands: list[int | None] = []
+
+    def record_band(page: Path, trim_px: int, band_px: int | None, dpi: int) -> object:
+        bands.append(band_px)
+        return autocrop_image(page, trim_px, band_px, dpi=dpi)
+
+    monkeypatch.setattr("scanmole.pipeline.autocrop_image", record_band)
+    _run_frame_with_settings(tmp_path, monkeypatch, unknown, _window_frame(600, 900))
+
+    assert bands == [None]
+
+
+def _window_frame(width: int, height: int) -> bytes:
+    """A paper-bright frame filling the window, with one dense block."""
+    rows = []
+    for y in range(height):
+        row = bytearray([235] * width)
+        if 100 <= y < 300:
+            row[100:300] = bytes(200)
+        rows.append(bytes(row))
+    return b"P5\n%d %d\n255\n" % (width, height) + b"".join(rows)
+
+
+def _run_frame_with_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: EffectiveSettings,
+    frame: bytes,
+) -> None:
+    """Run the pipeline over one frame with pre-negotiated settings."""
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        source="adf-duplex",
+        resolution=300,
+    )
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0

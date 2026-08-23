@@ -20,7 +20,13 @@ import pytest
 from scanmole.config import ScanConfig
 from scanmole.errors import DeviceError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
-from scanmole.options import Capability, parse_capabilities
+from scanmole.negotiation import negotiate, resolve_faint_plan
+from scanmole.options import (
+    Capability,
+    is_feeder_source,
+    is_flatbed_source,
+    parse_capabilities,
+)
 from scanmole.scanner import (
     EffectiveSettings,
     build_scan_command,
@@ -2264,3 +2270,209 @@ def test_an_unknown_source_collect_run_bounds_every_segment(
     events = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert [event["event"] for event in events] == ["settings"]
     assert set(events[0]) == {"event", "device", "source", "mode", "resolution"}
+
+
+def test_a_read_only_source_is_state_without_being_emitted(tmp_path: Path) -> None:
+    # The device is fixed to ADF Front. Nothing may be written for it, but
+    # the scan still runs from that source, and the pipeline sizes pages
+    # by it, so the settings must say so.
+    command, effective = build_scan_command(
+        _config(source="adf-duplex", mode="lineart"),
+        "test:0",
+        parse_capabilities(
+            "    --source ADF Front [ADF Front] [read-only]\n"
+            "    --mode Lineart|Gray [Lineart] [read-only]\n"
+            "    --resolution 300 [300]\n"
+        ),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "--source" not in command and "--mode" not in command
+    assert effective.source == "ADF Front"
+    assert effective.mode == "Lineart"
+    # Degraded from the duplex request, and pairing still needs the
+    # abstract verdict rather than the backend string.
+    assert effective.duplex is False
+
+
+def test_a_read_only_flatbed_is_recognized_as_a_flatbed(tmp_path: Path) -> None:
+    # A duplex request on a device fixed to the flatbed: the request says
+    # feeder, the device says otherwise, and the device is right. It also
+    # never reports "feeder empty", so the frame limit applies.
+    command, effective = build_scan_command(
+        _config(source="adf-duplex", mode="gray"),
+        "test:0",
+        parse_capabilities(
+            "    --source Flatbed [Flatbed] [read-only]\n    --resolution 300 [300]\n"
+        ),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "--source" not in command
+    assert "--batch-count=1" in command
+    assert effective.source == "Flatbed"
+    assert is_flatbed_source(effective.source)
+    assert is_feeder_source(effective.source) is False
+
+
+def test_unknown_source_and_mode_never_borrow_the_request(tmp_path: Path) -> None:
+    # The listing establishes nothing. The requested values describe what
+    # was asked for, not what the device does, so they must not travel as
+    # if they had been confirmed.
+    command, effective = build_scan_command(
+        _config(source="adf-duplex", mode="color"),
+        "test:0",
+        {"resolution": Capability(kind="range", minimum=50, maximum=600)},
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "--source" not in command and "--mode" not in command
+    assert effective.source is None
+    assert effective.mode is None
+    assert effective.duplex is False
+    assert "--batch-count=1" in command  # the bounded batch still applies
+
+
+def test_writable_source_and_mode_are_emitted_and_reported(tmp_path: Path) -> None:
+    # Unchanged where the option is settable: the emitted value and the
+    # state are the same string.
+    command, effective = build_scan_command(
+        _config(source="adf-duplex", mode="gray"),
+        "test:0",
+        parse_capabilities(
+            "    --source ADF Duplex|ADF Front|Flatbed [ADF Front]\n"
+            "    --mode Lineart|Gray|Color [Lineart]\n"
+            "    --resolution 300 [300]\n"
+        ),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert command[command.index("--source") + 1] == "ADF Duplex"
+    assert command[command.index("--mode") + 1] == "Gray"
+    assert effective.source == "ADF Duplex"
+    assert effective.mode == "Gray"
+    assert effective.duplex is True
+
+
+@pytest.mark.parametrize(
+    ("enhancement", "expected"),
+    [
+        (
+            "    --halftoning Text Enhanced Technology|Halftone A [Halftone A]\n",
+            [("--halftoning", "Text Enhanced Technology")],
+        ),
+        (
+            "    --threshold 0..255 [128]\n    --variance 0..255 [0]\n",
+            [("--threshold", "0"), ("--variance", "0")],
+        ),
+    ],
+)
+def test_a_read_only_mode_still_emits_a_writable_enhancement(
+    tmp_path: Path, enhancement: str, expected: list[tuple[str, str]]
+) -> None:
+    # The device is fixed in Lineart but its enhancement can be set. Only
+    # the writable half reaches argv; --mode never does.
+    caps = parse_capabilities(
+        "    --source ADF [ADF]\n"
+        "    --mode Lineart|Gray [Lineart] [read-only]\n"
+        f"{enhancement}"
+        "    --resolution 300 [300]\n"
+    )
+    config = _config(source="adf", mode="lineart", lineart_threshold="auto")
+    plan = negotiate(
+        caps,
+        source=config.source,
+        mode=config.mode,
+        resolution=config.resolution,
+        lineart_threshold=config.lineart_threshold,
+    )
+    plan = resolve_faint_plan(plan, caps, lambda _settings: caps)
+
+    command, effective = build_scan_command(
+        config, "test:0", caps, str(tmp_path / "page_%04d.pnm"), plan
+    )
+
+    assert "--mode" not in command
+    for option, value in expected:
+        assert command[command.index(option) + 1] == value
+    assert effective.mode == "Lineart"
+    assert effective.faint_native is True
+
+
+def test_the_settings_event_reports_read_only_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End to end through the engine: what the frontend is told about the
+    # scan is the device's actual state, not the subset that was emitted.
+    caps = parse_capabilities(
+        "    --source ADF Front [ADF Front] [read-only]\n"
+        "    --mode Lineart|Gray [Lineart] [read-only]\n"
+        "    --resolution 300 [300] [read-only]\n"
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
+    issued: list[list[str]] = []
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        issued.append(cmd)
+        page = tmp_path / "page_0001.pnm"
+        page.write_bytes(b"P4\n1 1\n\x00")
+        on_page(page)
+        return 0, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    scan_to_files(
+        _config(source="adf-duplex", mode="lineart"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=True, stream=stream),
+        lambda p, o: None,
+    )
+
+    assert "--source" not in issued[0] and "--mode" not in issued[0]
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    settings = next(event for event in events if event["event"] == "settings")
+    # The frozen key set, unchanged.
+    assert set(settings) == {"event", "device", "source", "mode", "resolution"}
+    assert settings["source"] == "ADF Front"
+    assert settings["mode"] == "Lineart"
+    assert settings["resolution"] == 300
+
+
+def test_the_settings_event_stays_null_without_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The counterpart: nothing established, so nothing claimed. The
+    # requested source and mode must not appear here.
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
+    )
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        page = tmp_path / "page_0001.pnm"
+        page.write_bytes(b"P4\n1 1\n\x00")
+        on_page(page)
+        return 0, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    scan_to_files(
+        _config(source="adf-duplex", mode="color"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=True, stream=stream),
+        lambda p, o: None,
+    )
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    settings = next(event for event in events if event["event"] == "settings")
+    assert set(settings) == {"event", "device", "source", "mode", "resolution"}
+    assert settings["source"] is None
+    assert settings["mode"] is None

@@ -69,21 +69,28 @@ _NO_DOCS_EXIT = 7
 
 @dataclass(frozen=True)
 class EffectiveSettings:
-    """The values actually negotiated with the backend for a scan.
+    """The backend state the scan will actually run in.
 
-    A field is ``None`` when the device does not expose the option at all.
-    ``resolution`` is the dpi actually requested after capability snapping,
-    which may differ from the dpi the user asked for.
+    ``source`` and ``mode`` are the values the device will really be on,
+    which is not the same as the values the command emits: a read-only
+    option is never written yet still reports what it is set to, and that
+    is what lands here. ``None`` therefore means no backend value could
+    be established, never merely that nothing was emitted; a request the
+    capabilities could not confirm stays ``None`` rather than passing
+    itself off as evidence. ``resolution`` is the dpi the scan will use
+    after capability snapping, which may differ from the requested one.
     """
 
     source: str | None
     mode: str | None
     resolution: int | None
     window_mm: tuple[float, float] | None = None
-    """The clamped ``-x``/``-y`` scan window actually requested, if known.
+    """The ``-x``/``-y`` scan window the acquisition will use, if known.
 
-    Lets the pipeline recognize frames that came back at the full window:
-    the proof that no hardware paper-length detection took place.
+    Either the clamped values the command requested, or the current ones
+    a read-only axis reports. Lets the pipeline recognize frames that came
+    back at the full window: the proof that no hardware paper-length
+    detection took place.
     """
     deskew_applied: bool = False
     """Whether a backend deskew option took the deskew request.
@@ -212,12 +219,15 @@ def build_scan_command(
     require_supported(plan)
     command = ["scanimage", "-d", device]
 
-    source = plan.source.backend_value
-    if source is not None:
-        command += ["--source", source]
-    mode = plan.mode.backend_value
-    if mode is not None:
-        command += ["--mode", mode]
+    # Emission and state are two different questions: a read-only option
+    # must not be written, yet the device is still on a known value, and
+    # the pipeline sizes pages by it.
+    if plan.source.backend_value is not None:
+        command += ["--source", plan.source.backend_value]
+    if plan.mode.backend_value is not None:
+        command += ["--mode", plan.mode.backend_value]
+    source = plan.source.actual
+    mode = plan.mode.actual
     # A native faint-text enhancement's ordered settings follow the mode
     # they were verified against; the adaptive faint path pins the 8-bit
     # depth the guarded threshold needs.

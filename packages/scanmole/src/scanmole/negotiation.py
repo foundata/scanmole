@@ -78,6 +78,15 @@ class Assessment:
         consequence: Human-readable consequence for non-NATIVE outcomes.
         backend_value: The backend value the command will carry, or ``None``
             when the option is not passed at all.
+        actual: The backend value the device will really be on, whether or
+            not the command emits it. Equal to ``backend_value`` for a
+            writable option; for a read-only one the command emits nothing
+            yet the device still sits on a known value, and that is this.
+            ``None`` means nothing was established, which is what an
+            UNKNOWN verdict always yields: the request echoed back is not
+            evidence of anything. Only options whose backend value is a
+            distinct string (source and mode) carry one; the resolution's
+            established value is its ``effective``.
         effective: The ScanMole-level semantics that will actually result.
     """
 
@@ -86,6 +95,7 @@ class Assessment:
     reason: str
     consequence: str = ""
     backend_value: str | None = None
+    actual: str | None = None
     effective: str = ""
 
     @property
@@ -152,9 +162,21 @@ def _state_choices(capability: Capability | None) -> list[str]:
     return [current] if current else []
 
 
+def _settable(assessment: Assessment) -> Assessment:
+    """Record an emitted value as the state the scan will run in."""
+    return replace(assessment, actual=assessment.backend_value)
+
+
 def _unsettable(assessment: Assessment) -> Assessment:
-    """Keep an assessment's verdict while forbidding its emission."""
-    return replace(assessment, backend_value=None)
+    """Keep an assessment's verdict and state while forbidding emission.
+
+    A read-only option cannot be written, so nothing may be produced for
+    it, but the value the match landed on is the one the device is on. It
+    survives as ``actual`` only where the verdict rests on evidence: an
+    UNKNOWN match would carry the request back rather than a fact.
+    """
+    matched = assessment.backend_value if assessment.conclusive else None
+    return replace(assessment, backend_value=None, actual=matched)
 
 
 def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
@@ -184,7 +206,7 @@ def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
         # ordinary matching runs against it alone and establishes effective
         # behaviour, but nothing may be emitted for it.
         return _unsettable(_match_source(choices, want))
-    return _match_source(choices, want)
+    return _settable(_match_source(choices, want))
 
 
 def _match_source(choices: list[str], want: str) -> Assessment:
@@ -275,7 +297,7 @@ def assess_mode(
         # Read-only: match against the current value alone and keep the
         # verdict, but never emit a value for it.
         return _unsettable(_match_mode(choices, want, base, lineart_threshold))
-    return _match_mode(choices, want, base, lineart_threshold)
+    return _settable(_match_mode(choices, want, base, lineart_threshold))
 
 
 def _match_mode(
@@ -502,6 +524,7 @@ def _native_faint_assessment(
         reason=enhancement.reason,
         consequence=enhancement.notice,
         backend_value=candidate.backend_value,
+        actual=candidate.effective,
         effective="lineart-auto",
     )
 
@@ -547,6 +570,7 @@ def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
                     "faint-originals threshold in software"
                 ),
                 backend_value=got,
+                actual=got,
                 effective="lineart-auto",
             )
     if _pick(capability.choices, _MODE_PREDICATES["lineart"]) is not None:
