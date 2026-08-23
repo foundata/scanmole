@@ -486,17 +486,18 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """Arrange the form sections in one column or two.
 
         Both arrangements keep the same reading order, most-changed
-        settings first: Scan, Output, Processing, Behaviour, Advanced.
-        The wide layout splits that order into two independently packed
-        columns.
+        settings first: Scan, Output, Processing, Advanced. The wide
+        layout splits that order after the Scan card, which is the tall
+        one and now carries the whole of a single scan; everything that
+        happens to the result afterwards goes beside it.
         """
         columns = (
-            (self._left_column, (self._form.scan_group, self._form.output_group)),
+            (self._left_column, (self._form.scan_group,)),
             (
                 self._right_column,
                 (
+                    self._form.output_group,
                     self._form.processing_group,
-                    self._form.behaviour_group,
                     self._form.advanced_group,
                 ),
             ),
@@ -505,7 +506,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._form.scan_group,
             self._form.output_group,
             self._form.processing_group,
-            self._form.behaviour_group,
             self._form.advanced_group,
         )
         for section in sections_narrow:

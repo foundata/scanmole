@@ -249,7 +249,6 @@ def test_running_state_toggles_the_form() -> None:
     assert [row.get_sensitive() for row in form._scan_setting_rows] == [False] * len(
         form._scan_setting_rows
     )
-    assert form.behaviour_group.get_sensitive() is False
     assert form.processing_group.get_sensitive() is False
 
     form.set_running(False)
@@ -258,7 +257,7 @@ def test_running_state_toggles_the_form() -> None:
     assert [row.get_sensitive() for row in form._scan_setting_rows] == [True] * len(
         form._scan_setting_rows
     )
-    assert form.behaviour_group.get_sensitive() is True
+    assert form.processing_group.get_sensitive() is True
 
 
 def test_source_changes_carry_the_manual_context() -> None:
@@ -479,16 +478,18 @@ def _group_titles(group: Any) -> list[str]:
     return titles
 
 
-def test_behaviour_group_holds_the_flow_and_trigger_rows_in_order() -> None:
+def test_the_scan_group_puts_the_flow_rows_above_the_action() -> None:
     events = Events()
     form = _form(events)
 
-    assert _group_titles(form.behaviour_group) == [
-        "Combine scans",
-        "Auto-start when paper is inserted",
-    ]
-    # The Scanner group keeps the device, the source and the actions.
+    titles = _group_titles(form.scan_group)
+    assert titles[-2:] == ["Combine scans", "Auto-start when paper is inserted"]
+    # Both qualify the button they sit above, and both lock with the
+    # rest of the card's settings while a scan runs.
     assert form._scan_row.get_parent() is not None
+    assert form._collect_row in form._scan_setting_rows
+    assert form._insert_row in form._scan_setting_rows
+    assert not hasattr(form, "behaviour_group")
 
 
 def test_the_advanced_group_opens_the_settings_dialog() -> None:

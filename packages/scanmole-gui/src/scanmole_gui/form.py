@@ -1,6 +1,6 @@
 """The scan form: widgets and form-local behavior, no orchestration.
 
-Owns the Scan, Output, Processing and Behaviour groups, their local
+Owns the Scan, Output, Processing and Advanced groups, their local
 consequences (dependent sensitivity, the resolution control, the live
 filename preview, the OCR language list) and the snapshotting of form
 values for persistence and the immutable :class:`ScanRequest`. Events
@@ -196,9 +196,9 @@ class ScanForm:
     """The scan form component: four preference groups plus Scan/Cancel.
 
     The Scan group carries one whole scan (device, source, document
-    settings, the primary action); Output names the file, Processing
-    covers the PDF stages and Behaviour holds what a scan spans and what
-    may trigger it.
+    settings, what the run spans and what may start it, the primary
+    action); Output names the file and Processing covers the PDF
+    stages.
 
     The window composes the group widgets into its responsive layout and
     receives orchestration events through the constructor callbacks; all
@@ -257,7 +257,6 @@ class ScanForm:
         self._build_settings_groups()
         self._build_output_group()
         self._build_processing_group()
-        self._build_behaviour_group()
         self._build_advanced_group()
         # The initial hint/preview render happens via refresh_document_hints()
         # once the window finished wiring; the preview callback reaches back
@@ -275,6 +274,7 @@ class ScanForm:
         self.scan_group = Adw.PreferencesGroup(title=_("Scan"))
         self._add_device_rows()
         self._add_document_rows()
+        self._add_flow_rows()
         self._add_scan_actions()
         # The card's settings rows, disabled one by one while a scan
         # runs so the Cancel action inside the same card stays usable.
@@ -285,6 +285,8 @@ class ScanForm:
             self._mode_row.row,
             self._res_row,
             self._chips_row,
+            self._collect_row,
+            self._insert_row,
         )
 
     def _add_device_rows(self) -> None:
@@ -436,15 +438,17 @@ class ScanForm:
         self._size_pref_row.connect("notify::selected", self._on_document_changed)
         self.settings_behaviour_group.add(self._size_pref_row)
 
-    def _build_behaviour_group(self) -> None:
-        """Build the Behaviour group: what a scan covers and what starts it.
+    def _add_flow_rows(self) -> None:
+        """Add what a scan covers and what may start it, above the action.
 
-        Combining wins over everything else a scan could acquire, and
-        auto-start decides whether inserting paper is enough to begin. The
-        rarer companions of both (the feeder switch, the hardware button
-        mapping) live in the settings dialog.
+        Both answer "what happens when I press Scan", so they sit in the
+        Scan card immediately above the button they qualify rather than
+        in a group of their own: combining wins over everything else a
+        scan could acquire, and auto-start decides whether inserting
+        paper is enough to begin. The rarer companions of both (the
+        feeder switch, the hardware button mapping) live in the settings
+        dialog.
         """
-        self.behaviour_group = Adw.PreferencesGroup(title=_("Behaviour"))
         self._collect_row = Adw.SwitchRow(
             title=_("Combine scans"),
             subtitle=_(
@@ -452,7 +456,7 @@ class ScanForm:
             ),
             active=False,
         )
-        self.behaviour_group.add(self._collect_row)
+        self.scan_group.add(self._collect_row)
         self._insert_row = Adw.SwitchRow(
             title=_("Auto-start when paper is inserted"),
             subtitle=_("Scan when a sheet is loaded into the idle scanner"),
@@ -462,7 +466,7 @@ class ScanForm:
             "notify::active",
             lambda *_a: self._on_insert_to_scan(bool(self._insert_row.get_active())),
         )
-        self.behaviour_group.add(self._insert_row)
+        self.scan_group.add(self._insert_row)
 
     def _build_advanced_group(self) -> None:
         """Build the Advanced group: the way into the settings dialog.
@@ -960,8 +964,8 @@ class ScanForm:
         """Gate the family preference: it only applies in automatic mode."""
         automatic = combo_value(self._size_row, PAGE_SIZES) == "auto"
         if hasattr(self, "_size_pref_row"):
-            # The Scan group is built before Behaviour, so an early
-            # selection change can precede the row it gates.
+            # The Scan group is built before the settings groups, so an
+            # early selection change can precede the row it gates.
             self._size_pref_row.set_sensitive(automatic)
         self._on_document_changed()
 
@@ -1153,7 +1157,6 @@ class ScanForm:
         self._cancel_btn.set_sensitive(True)
         self._refresh_btn.set_sensitive(not running)
         for group in (
-            self.behaviour_group,
             self.advanced_group,
             self.processing_group,
             self.output_group,
