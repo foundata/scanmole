@@ -166,8 +166,30 @@ list.boxed-list > row.joined-below { border-bottom: none; box-shadow: none; }
 
 
 def find_scanmole() -> str:
-    """Return the ``scanmole`` executable on ``PATH``, or the bare name."""
-    return shutil.which("scanmole") or "scanmole"
+    """Return the ``scanmole`` executable this GUI should drive.
+
+    ``PATH`` decides where it answers, so an explicitly placed engine
+    still wins. Where it does not, the console script installed beside
+    this GUI or beside the interpreter running it does: a desktop
+    launcher passes the session's environment rather than the shell's,
+    so a GUI installed into a virtual environment sees no ``PATH`` entry
+    for the engine sitting right next to it. That fallback only ever
+    acts where the search would otherwise have come up empty.
+    """
+    found = shutil.which("scanmole")
+    if found is not None:
+        return found
+    neighbours = []
+    if os.sep in sys.argv[0]:
+        # A launcher starts the GUI by absolute path; resolving a bare
+        # name would only point into the working directory.
+        neighbours.append(Path(sys.argv[0]).resolve().parent)
+    neighbours.append(Path(sys.executable).parent)
+    for directory in neighbours:
+        candidate = directory / "scanmole"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return "scanmole"
 
 
 # Thin XDG adapters: GLib knows the platform directories, the GTK-free
