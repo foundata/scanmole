@@ -459,10 +459,10 @@ def test_build_scan_command_uses_batch_print(tmp_path: Path) -> None:
     )
 
     assert "--batch-print" in command
-    # An empty listing proves nothing, so the duplex request stands: the
-    # pipeline pairs the frames it would then get exactly the same way.
+    # An empty listing proves nothing, so the duplex request does not
+    # survive into the pairing verdict: unrelated frames stay independent.
     assert effective == EffectiveSettings(
-        source=None, mode=None, resolution=None, duplex=True
+        source=None, mode=None, resolution=None, duplex=False
     )
 
 
@@ -1693,17 +1693,16 @@ def test_collect_emits_settings_once_and_reads_sensors_with_them(
 def test_collect_counts_sheets_the_way_the_pipeline_pairs_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A device that advertises no usable sources leaves the duplex request
-    # standing, and that is what the pipeline pairs front and back frames
-    # by. The waiting status must agree: two frames of one duplex sheet
-    # are one sheet, never two.
+    # On a conclusively duplex source the waiting status and the pipeline
+    # must agree: two frames of one physical sheet are one sheet.
     commands = CollectCommands()
     monkeypatch.setattr("scanmole.scanner._collect_commands", lambda: commands)
     monkeypatch.setattr("scanmole.scanner.COLLECT_IDLE_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(
         "scanmole.scanner.probe_capabilities",
         lambda device, settings=(): {
-            "resolution": Capability(kind="range", minimum=50, maximum=600)
+            "source": Capability(kind="enum", choices=["ADF Duplex"]),
+            "resolution": Capability(kind="range", minimum=50, maximum=600),
         },
     )
     monkeypatch.setattr(
@@ -1970,3 +1969,65 @@ def test_collect_scans_the_first_sheet_on_a_sensorless_source(
     assert len(result.pages) == 1
     events = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
     assert "waiting" not in events  # the scan start was the trigger
+
+
+def test_unknown_source_evidence_never_claims_duplex(tmp_path: Path) -> None:
+    # An UNKNOWN source echoes the request back, which is not proof. Both
+    # the absent and the inactive listing must leave frames independent.
+    for caps in (
+        {"resolution": Capability(kind="range", minimum=50, maximum=600)},
+        {"source": Capability(kind="enum", choices=["ADF Duplex"], active=False)},
+    ):
+        _command, effective = build_scan_command(
+            _config(source="adf-duplex"),
+            "test:0",
+            caps,
+            str(tmp_path / "page_%04d.pnm"),
+        )
+        assert effective.duplex is False
+
+
+def test_conclusive_sources_keep_their_duplex_verdict(tmp_path: Path) -> None:
+    _command, duplex_settings = build_scan_command(
+        _config(source="adf-duplex"),
+        "test:0",
+        {"source": Capability(kind="enum", choices=["ADF Duplex"])},
+        str(tmp_path / "page_%04d.pnm"),
+    )
+    assert duplex_settings.duplex is True
+
+    # A duplex request degraded to a simplex feeder is conclusive and not
+    # duplex; a flatbed likewise.
+    for choice in ("ADF Front", "Flatbed"):
+        _cmd, settings = build_scan_command(
+            _config(source="adf-duplex"),
+            "test:0",
+            {"source": Capability(kind="enum", choices=[choice])},
+            str(tmp_path / "page_%04d.pnm"),
+        )
+        assert settings.duplex is False, choice
+
+
+def test_unknown_source_still_refuses_a_single_sheet_scan(tmp_path: Path) -> None:
+    # The single-sheet flow keeps its refusal: without proof it cannot
+    # promise one sheet is one frame or two.
+    with pytest.raises(DeviceError, match="could not be negotiated"):
+        build_scan_command(
+            _config(source="adf-duplex", sheet_flow="single"),
+            "test:0",
+            {"resolution": Capability(kind="range", minimum=50, maximum=600)},
+            str(tmp_path / "page_%04d.pnm"),
+        )
+
+
+def test_unknown_source_keeps_the_flatbed_frame_limit(tmp_path: Path) -> None:
+    # Deliberately asymmetric to the duplex verdict: a flatbed never
+    # reports "feeder empty", so dropping the limit on an unproven listing
+    # would batch forever. Trusting the request is the bounded choice.
+    command, _settings = build_scan_command(
+        _config(source="flatbed"),
+        "test:0",
+        {"resolution": Capability(kind="range", minimum=50, maximum=600)},
+        str(tmp_path / "page_%04d.pnm"),
+    )
+    assert "--batch-count=1" in command

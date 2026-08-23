@@ -144,7 +144,7 @@ def _single_sheet_count(plan: Plan) -> int:
             cannot promise one physical sheet, so it refuses before feeding
             paper.
     """
-    if plan.source.support is Support.UNKNOWN:
+    if not plan.source.conclusive:
         raise DeviceError(
             "cannot scan a single sheet: the paper source could not be "
             "negotiated conclusively, so one sheet may be one frame or two "
@@ -300,7 +300,12 @@ def build_scan_command(
             plan.mode.requested == "lineart-auto"
             and plan.mode.support is Support.NATIVE
         ),
-        duplex=plan.source.effective == "adf-duplex",
+        # Pairing needs proof, not a request: an UNKNOWN source echoes the
+        # requested value back, and pairing on that would fuse unrelated
+        # simplex pages into one sheet for sizing and undercount a
+        # collection. The flatbed frame limit below deliberately keeps
+        # trusting the request, because guessing wrong there is unbounded.
+        duplex=plan.source.conclusive and plan.source.effective == "adf-duplex",
     )
 
 
@@ -763,7 +768,7 @@ def scan_to_files(
                 raise DeviceError(f"scan failed: {stderr_tail(exit_code, stderr_text)}")
             return len(delivered) - before
 
-        conclusive = plan.source.support is not Support.UNKNOWN
+        conclusive = plan.source.conclusive
         controller = CollectController(
             commands=_collect_commands(),
             # The final acquisition settings make the sensor snapshot

@@ -30,7 +30,12 @@ from scanmole.errors import (
 from scanmole.events import EventWriter
 from scanmole.options import Capability
 from scanmole.pipeline import analyze_page, publish_pdf, run_pipeline
-from scanmole.scanner import EffectiveSettings, ScanResult
+from scanmole.scanner import (
+    EffectiveSettings,
+    ScanResult,
+    build_scan_command,
+)
+from scanmole.sheetflow import PageOrigin
 
 pytestmark = pytest.mark.integration
 
@@ -2609,3 +2614,82 @@ def test_the_resolution_applied_window_arms_content_sizing(
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("sized" in text and "by content" in text for text in messages)
+
+
+@_NEEDS_IMG2PDF
+def test_unknown_source_evidence_keeps_unrelated_pages_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two consecutive simplex pages of different sizes on a device whose
+    # source listing proves nothing. Pairing them would force one size on
+    # both; each must keep its own.
+    dpi = 100
+    scale = dpi / 25.4
+    window = (215.9, 393.7)
+
+    def white_frame(width_mm: float, height_mm: float, ink: float) -> bytes:
+        width, height = round(window[0] * scale), round(window[1] * scale)
+        row_bytes = (width + 7) // 8
+        raster = bytearray(row_bytes * height)
+        for y in range(round(5 * scale), round(height_mm * scale)):
+            for x in range(round(5 * scale), round(width_mm * ink)):
+                raster[y * row_bytes + x // 8] |= 0x80 >> (x % 8)
+        return b"P4\n%d %d\n" % (width, height) + bytes(raster)
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        # Derived from the real negotiation over a listing that proves
+        # nothing about the source, so this exercises the actual verdict
+        # rather than restating it.
+        _command, negotiated = build_scan_command(
+            config,
+            device,
+            {"resolution": Capability(kind="range", minimum=50, maximum=600)},
+            str(work_dir / "page_%04d.pnm"),
+        )
+        assert negotiated.duplex is False
+        settings = dataclasses.replace(
+            negotiated, mode="Lineart", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        pages = []
+        for index, (width_mm, height_mm) in enumerate(
+            ((200.0, 280.0), (140.0, 200.0)), 1
+        ):
+            page = work_dir / f"page_{index:04d}.pnm"
+            page.write_bytes(white_frame(width_mm, height_mm, scale))
+            pages.append(page)
+            assert callable(on_page)
+            on_page(page, PageOrigin(segment=1, frame=index))
+        return ScanResult(pages=pages, settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        source="adf-duplex",
+        resolution=dpi,
+        keep_images=keep_dir,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    sizes = []
+    for name in ("page_0001.pnm", "page_0002.pnm"):
+        header = (keep_dir / "out" / name).read_bytes().split(b"\n", 2)
+        sizes.append(tuple(map(int, header[1].split())))
+    assert sizes[0] != sizes[1], "unrelated pages were fused into one sheet size"

@@ -88,6 +88,16 @@ class Assessment:
     backend_value: str | None = None
     effective: str = ""
 
+    @property
+    def conclusive(self) -> bool:
+        """Whether real capability evidence backs this verdict.
+
+        UNKNOWN means the listing proved nothing, so ``effective`` is only
+        the request echoed back. Any decision that must not be taken on an
+        unproven assumption asks this first.
+        """
+        return self.support is not Support.UNKNOWN
+
 
 @dataclass(frozen=True)
 class Plan:
