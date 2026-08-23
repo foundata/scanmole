@@ -716,6 +716,7 @@ class ScanForm:
         # setting instead of two.
         self._chips_row = Adw.ActionRow()
         self._chips_row.add_css_class("joined-above")
+        self._chips_row.add_css_class("presets")
         # The presets are bare numbers, so the row says what they are for.
         # A prefix label rather than the row title: the title style would
         # read as a setting of its own, and dimming the row would take the

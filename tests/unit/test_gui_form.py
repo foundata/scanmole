@@ -469,6 +469,25 @@ def _find_row(widget: Any, title: str) -> Any:
     return None
 
 
+def _group_row_classes(group: Any) -> list[str]:
+    """Every CSS class on every row of a preferences group."""
+    from gi.repository import Adw
+
+    found: list[str] = []
+
+    def walk(widget: Any) -> None:
+        if isinstance(widget, Adw.PreferencesRow):
+            found.extend(widget.get_css_classes())
+            return
+        child = widget.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(group)
+    return found
+
+
 def _labels(widget: Any) -> list[Any]:
     """Every label in a widget subtree, in order."""
     from gi.repository import Gtk
@@ -518,6 +537,22 @@ def test_the_resolution_presets_carry_their_recommendation() -> None:
     assert hints == [
         "Recommended for small files: 300 dpi for B/W, 200 for Gray and Color"
     ]
+
+
+def test_the_presets_row_carries_its_own_spacing_class() -> None:
+    # The Scan card needs a little more height to meet the other
+    # column's, and the presets are the right place to take it. It has to
+    # be its own class: "joined-above" is on the output group's hint row
+    # too, so padding that would grow both columns and cancel out.
+    from scanmole_gui.app import _APP_CSS
+
+    events = Events()
+    form = _form(events)
+
+    classes = form._chips_row.get_css_classes()
+    assert "presets" in classes and "joined-above" in classes
+    assert "row.presets" in _APP_CSS
+    assert "presets" not in _group_row_classes(form.output_group)
 
 
 def test_the_one_shot_menu_names_the_switches_it_stands_in_for() -> None:

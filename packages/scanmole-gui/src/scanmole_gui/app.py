@@ -157,12 +157,16 @@ DEFAULT_WINDOW_SIZE = (1010, 879)
 # its digits, and no separator between the .joined-below/.joined-above row
 # pair (the preset row reads as the continuation of the Resolution row, not
 # a new setting); both border directions covered, themes differ in which
-# side they draw the hairline on.
+# side they draw the hairline on. The presets get a little air above them
+# on top of that, which both loosens the pair and lets the Scan card meet
+# the other column's height. Its own class, because .joined-above is on
+# the output group's hint row too and padding both would cancel out.
 _APP_CSS = """
 button.chip { min-height: 24px; padding: 0px 8px; font-size: 0.85em; }
 entry.dpi { min-width: 0px; padding-left: 8px; padding-right: 8px; }
 list.boxed-list > row.joined-above { border-top: none; box-shadow: none; }
 list.boxed-list > row.joined-below { border-bottom: none; box-shadow: none; }
+list.boxed-list > row.presets { padding-top: 6px; }
 """
 
 
