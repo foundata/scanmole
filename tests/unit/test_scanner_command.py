@@ -741,3 +741,81 @@ def test_a_read_only_mode_still_emits_a_writable_enhancement(
         assert command[command.index(option) + 1] == value
     assert effective.mode == "Lineart"
     assert effective.faint_native is True
+
+
+# Which mechanism straightens a page is settled here and travels as one
+# boolean. Downstream code reads EffectiveSettings.deskew_applied and
+# never the option names, so moving the policy later stays a change to
+# negotiation and command construction alone.
+
+
+@pytest.mark.parametrize("option", ["swdeskew", "adf-skew"])
+@pytest.mark.parametrize("requested", [True, False])
+def test_a_backend_deskew_option_is_set_and_reported(
+    tmp_path: Path, option: str, requested: bool
+) -> None:
+    caps = parse_capabilities(
+        "    --source ADF Front [ADF Front]\n"
+        "    --mode Lineart [Lineart]\n"
+        f"    --{option}[=(yes|no)] [no]\n"
+    )
+
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=requested, page_size="a4"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    # The option is always emitted, so a device default cannot straighten
+    # a page the run asked to keep.
+    assert f"--{option}={'yes' if requested else 'no'}" in command
+    assert effective.deskew_applied is requested
+
+
+@pytest.mark.parametrize("requested", [True, False])
+def test_both_deskew_options_together_report_one_verdict(
+    tmp_path: Path, requested: bool
+) -> None:
+    # A device offering both gets both set; the verdict stays a single
+    # boolean rather than something downstream has to combine.
+    caps = parse_capabilities(
+        "    --source ADF Front [ADF Front]\n"
+        "    --mode Lineart [Lineart]\n"
+        "    --swdeskew[=(yes|no)] [no]\n"
+        "    --adf-skew[=(yes|no)] [no]\n"
+    )
+
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=requested, page_size="a4"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    answer = "yes" if requested else "no"
+    assert f"--swdeskew={answer}" in command
+    assert f"--adf-skew={answer}" in command
+    assert effective.deskew_applied is requested
+
+
+def test_a_read_only_deskew_option_leaves_the_request_unclaimed(
+    tmp_path: Path,
+) -> None:
+    # Listed but not settable is not a mechanism: the backend cannot be
+    # told to straighten, so the verdict must not claim it did.
+    caps = parse_capabilities(
+        "    --source ADF Front [ADF Front]\n"
+        "    --mode Lineart [Lineart]\n"
+        "    --swdeskew[=(yes|no)] [no] [read-only]\n"
+    )
+
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=True, page_size="a4"),
+        "test:0",
+        caps,
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert not any(argument.startswith("--swdeskew") for argument in command)
+    assert effective.deskew_applied is False
