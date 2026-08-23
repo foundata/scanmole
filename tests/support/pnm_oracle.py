@@ -15,9 +15,8 @@ Contract points the oracle encodes independently:
   mean averages all channels.
 - The 1-bit cut for threshold ``t`` is ``min(maxval, max(1, round(t *
   maxval)))``; a pixel is black iff its value is below the cut.
-- Crops clamp to the frame; P4 aligns the left edge down to a byte
-  boundary while the right edge stays exact; a degenerate or full-frame
-  box is a no-op.
+- Crops clamp to the frame and are exact on every side, P4 included; a
+  degenerate or full-frame box is a no-op.
 """
 
 from __future__ import annotations
@@ -175,12 +174,15 @@ def binarize(image: OracleImage, threshold: float) -> bytes:
 
 
 def crop(image: OracleImage, box: tuple[int, int, int, int]) -> bytes | None:
-    """The expected complete file after cropping, or ``None`` for a no-op."""
+    """The expected complete file after cropping, or ``None`` for a no-op.
+
+    Every side is exact, ``P4`` included: this works on decoded samples,
+    so a left edge off a byte costs nothing here, and the engine has to
+    match that by repacking its bit rows.
+    """
     x0, y0, x1, y1 = box
     x0, y0 = max(0, x0), max(0, y0)
     x1, y1 = min(image.width, x1), min(image.height, y1)
-    if image.kind == "P4":
-        x0 = (x0 // 8) * 8
     if x1 - x0 <= 0 or y1 - y0 <= 0:
         return None
     if (x0, y0, x1, y1) == (0, 0, image.width, image.height):

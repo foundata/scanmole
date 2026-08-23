@@ -17,6 +17,7 @@ from support.pipeline import (
     _auto_config,
     _config,
     _gray_page,
+    _gray_scan_pages,
     _gray_window_scan,
     _run_capture,
 )
@@ -26,6 +27,7 @@ from scanmole.config import AutoSizePreference, ScanConfig
 from scanmole.events import EventWriter
 from scanmole.options import Capability, parse_capabilities
 from scanmole.pipeline import run_pipeline
+from scanmole.pnm import POPCOUNT
 from scanmole.scanner import (
     EffectiveSettings,
     ScanResult,
@@ -1310,3 +1312,299 @@ def _run_frame_with_settings(
         resolution=300,
     )
     assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+
+# Native 1-bit frames under automatic page size. The scanner thresholded
+# these before ScanMole saw them, so the paper boundary is ink density
+# rather than brightness; the pipeline must reach it through ordinary
+# configuration, on the raw frame, before every later stage.
+
+_LINEART_DPI = 150
+_LINEART_WINDOW = (60.0, 90.0)
+
+
+def _lineart_row(width: int, spans: list[tuple[int, int]]) -> bytes:
+    row = bytearray((width + 7) // 8)
+    for x0, x1 in spans:
+        for x in range(x0, x1):
+            row[x // 8] |= 0x80 >> (x % 8)
+    return bytes(row)
+
+
+def _lineart_window_frame(
+    *, border: bool = True, ink: bool = True, mark: bool = False
+) -> tuple[int, int, bytes]:
+    """A native 1-bit feeder frame filling the scan window.
+
+    The measured ScanSnap iX100 shape: a white sensor strip at the frame
+    edge, then a dark paper boundary around the page. ``ink`` adds a
+    text-sized block well inside the paper, ``mark`` a localized one just
+    inside the boundary that no other band supports.
+    """
+    scale = _LINEART_DPI / 25.4
+    width = round(_LINEART_WINDOW[0] * scale)
+    height = round(_LINEART_WINDOW[1] * scale)
+    strip, thick = round(3 * scale), round(1 * scale)
+    edges = (
+        [(strip, strip + thick), (width - strip - thick, width - strip)]
+        if border
+        else []
+    )
+    plain = _lineart_row(width, edges)
+    printed = _lineart_row(width, [*edges, (round(20 * scale), round(45 * scale))])
+    stamped = _lineart_row(width, [*edges, (round(9 * scale), round(10 * scale))])
+    dark = _lineart_row(width, [(0, width)])
+    rows = []
+    for y in range(height):
+        if border and (
+            strip <= y < strip + thick or height - strip - thick <= y < height - strip
+        ):
+            rows.append(dark)
+        elif ink and round(34 * scale) <= y < round(44 * scale):
+            rows.append(printed)
+        elif mark and round(8 * scale) <= y < round(17 * scale):
+            rows.append(stamped)
+        else:
+            rows.append(plain)
+    return width, height, b"P4\n%d %d\n" % (width, height) + b"".join(rows)
+
+
+_LINEART_CROPPED = (306, 483)
+"""What the detector leaves of :func:`_lineart_window_frame`: the 3 mm
+sensor strip and the 1 mm boundary off all four sides, with the left edge
+aligned to the next byte. Both axes then read as resolved, so content
+sizing leaves the result alone and it reaches the PDF as detected."""
+
+
+def _lineart_run(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frames: list[bytes],
+    *,
+    page_size: str = "auto",
+    faint_native: bool = False,
+    **overrides: object,
+):
+    """Run the pipeline over native 1-bit frames from a real config."""
+    settings = EffectiveSettings(
+        source="ADF Front",
+        mode="Lineart",
+        resolution=_LINEART_DPI,
+        window_mm=_LINEART_WINDOW,
+        faint_native=faint_native,
+    )
+    built: list[tuple[list[tuple[int, int]], int]] = []
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _gray_scan_pages(frames, faint_native, settings),
+    )
+
+    def fake_build_pdf(pages: list[Path], output: Path, dpi: int) -> None:
+        built.append(([_kept_size(page) for page in pages], dpi))
+        output.write_bytes(b"%PDF-fake")
+
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", fake_build_pdf)
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size=page_size,
+        source="adf",
+        mode="lineart",
+        resolution=_LINEART_DPI,
+        keep_images=keep_dir,
+        **overrides,  # type: ignore[arg-type]
+    )
+    stream = io.StringIO()
+    assert run_pipeline(config, EventWriter(enabled=True, stream=stream)) == 0
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    return events, keep_dir / "out", built
+
+
+def _kept_size(path: Path) -> tuple[int, int]:
+    tokens = path.read_bytes().split(b"\n", 2)[1].split()
+    return int(tokens[0]), int(tokens[1])
+
+
+def test_native_lineart_is_cropped_before_blank_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without the crop the boundary's own pixels keep a genuinely empty
+    # backside off the blank threshold, exactly as dark backing used to do
+    # on gray frames. The page must be cropped first and then drop.
+    _w, _h, printed = _lineart_window_frame()
+    _w, _h, empty = _lineart_window_frame(ink=False)
+
+    events, kept_dir, _built = _lineart_run(tmp_path, monkeypatch, [printed, empty])
+
+    scan_done = next(event for event in events if event["event"] == "scan_done")
+    assert scan_done == {"event": "scan_done", "total": 2, "kept": 1, "blanks": 1}
+    assert _kept_size(kept_dir / "page_0001.pnm") == _LINEART_CROPPED
+
+
+def test_native_lineart_keeps_a_sparse_page_across_the_crop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other direction: removing nothing but scanner backing must not
+    # move a real page over the blank threshold.
+    _w, _h, printed = _lineart_window_frame()
+
+    uncropped, _dir, _built = _lineart_run(
+        tmp_path / "fixed", monkeypatch, [printed], page_size="a4"
+    )
+    cropped, _dir, _built = _lineart_run(tmp_path / "auto", monkeypatch, [printed])
+
+    before = next(event for event in uncropped if event["event"] == "page")
+    after = next(event for event in cropped if event["event"] == "page")
+    assert before["blank"] is False and after["blank"] is False
+
+
+def test_native_enhanced_faint_lineart_takes_the_same_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "B/W (faint)" acquired through a native text enhancement arrives as
+    # P4 too. It must be cropped by ink density like any other 1-bit
+    # frame, and must not be mistaken for the plain 1-bit case the faint
+    # mode refuses.
+    _w, _h, printed = _lineart_window_frame()
+
+    events, kept_dir, _built = _lineart_run(
+        tmp_path,
+        monkeypatch,
+        [printed],
+        faint_native=True,
+        lineart_threshold="auto",
+    )
+
+    assert [event["event"] for event in events][:1] == ["start"]
+    assert _kept_size(kept_dir / "page_0001.pnm") == _LINEART_CROPPED
+
+
+def test_unresolved_native_lineart_is_still_content_sized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A white-backed 1-bit frame has no boundary to find. The detector
+    # must leave it at the scan window so the conservative content sizing
+    # behind it still gets its turn.
+    width, height, plain = _lineart_window_frame(border=False)
+
+    _events, kept_dir, _built = _lineart_run(tmp_path, monkeypatch, [plain])
+
+    kept_width, kept_height = _kept_size(kept_dir / "page_0001.pnm")
+    assert (kept_width, kept_height) != (width, height)  # content sizing ran
+    assert kept_height < height
+
+
+def test_fixed_page_size_bypasses_native_lineart_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The documented escape hatch also covers the 1-bit path: a dense
+    # border printed along the paper edge is indistinguishable from
+    # scanner backing, and a fixed size is how it is preserved.
+    width, height, printed = _lineart_window_frame()
+
+    _events, kept_dir, _built = _lineart_run(
+        tmp_path, monkeypatch, [printed], page_size="a4"
+    )
+
+    assert _kept_size(kept_dir / "page_0001.pnm") == (width, height)
+
+
+def test_from_images_never_runs_native_lineart_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Supplied images are user-curated input, not scanner frames.
+    _w, _h, printed = _lineart_window_frame()
+    source = tmp_path / "page.pbm"
+    source.write_bytes(printed)
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    config = dataclasses.replace(
+        _config(images=(source,), output=tmp_path / "out.pdf"),
+        page_size="auto",
+        resolution=_LINEART_DPI,
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+    assert source.read_bytes() == printed
+
+
+def test_native_lineart_crop_keeps_the_event_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The correction happens on the raw frame; nothing about it reaches
+    # the protocol, so no new event and no new key may appear.
+    _w, _h, printed = _lineart_window_frame()
+
+    events, _dir, _built = _lineart_run(tmp_path, monkeypatch, [printed])
+
+    assert [event["event"] for event in events] == [
+        "start",
+        "page",
+        "scan_done",
+        "done",
+    ]
+    page = next(event for event in events if event["event"] == "page")
+    assert set(page) == {"event", "n", "file", "blank", "mean"}
+    start = next(event for event in events if event["event"] == "start")
+    assert set(start) == {
+        "event",
+        "device",
+        "source",
+        "mode",
+        "resolution",
+        "page_size",
+        "output",
+    }
+
+
+def test_detected_native_lineart_size_reaches_pdf_assembly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # img2pdf sizes each PDF page from its own pixels, so the detected
+    # geometry and the effective dpi have to arrive together.
+    _w, _h, printed = _lineart_window_frame()
+
+    _events, _dir, built = _lineart_run(tmp_path, monkeypatch, [printed])
+
+    sizes, dpi = built[0]
+    assert dpi == _LINEART_DPI
+    assert sizes == [_LINEART_CROPPED]
+
+
+def test_a_localized_mark_near_the_edge_survives_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stamp, a punch reinforcement or a hand-written note close to the
+    # paper edge is not a boundary and no band beside it says otherwise.
+    # It must reach the PDF, and the page must come out the same size as
+    # the frame without it.
+    _w, _h, plain = _lineart_window_frame()
+    _w, _h, stamped = _lineart_window_frame(mark=True)
+
+    _events, plain_dir, _built = _lineart_run(tmp_path / "plain", monkeypatch, [plain])
+    _events, stamped_dir, _built = _lineart_run(
+        tmp_path / "stamped", monkeypatch, [stamped]
+    )
+
+    kept = stamped_dir / "page_0001.pnm"
+    assert _kept_size(kept) == _kept_size(plain_dir / "page_0001.pnm")
+    assert _kept_size(kept) == _LINEART_CROPPED
+    scale = _LINEART_DPI / 25.4
+    extra = (round(10 * scale) - round(9 * scale)) * (
+        round(17 * scale) - round(8 * scale)
+    )
+    assert (
+        sum(kept.read_bytes().split(b"\n", 2)[2].translate(POPCOUNT))
+        - sum(
+            (plain_dir / "page_0001.pnm")
+            .read_bytes()
+            .split(b"\n", 2)[2]
+            .translate(POPCOUNT)
+        )
+        == extra
+    )

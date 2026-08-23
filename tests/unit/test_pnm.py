@@ -12,6 +12,7 @@ from scanmole.pnm import (
     binarize_image,
     binarize_pnm,
     coherent_ink,
+    crop_bit_rows,
     crop_pnm,
     gray_histogram,
     image_mean,
@@ -515,13 +516,13 @@ def test_coherent_ink_mean_reflects_the_region_only() -> None:
     assert found.mean < 0.2
 
 
-def test_crop_pnm_aligns_p4_origin_and_keeps_the_right_edge(tmp_path: Path) -> None:
+def test_crop_pnm_honors_an_unaligned_p4_box_on_every_side(tmp_path: Path) -> None:
     page = _write(tmp_path / "page.pbm", _p4_frame(400, 600, [(64, 100, 320, 500)]))
 
-    # 70 aligns down to 64; the right edge stays exactly 330, so the width
-    # grows only on the left (330 - 64 = 266). Rows are taken exactly.
+    # 70 does not fall on a byte, and neither side gives ground for it:
+    # the rows are repacked, so the width is exactly 330 - 70.
     assert crop_pnm(page, (70, 100, 330, 500)) is True
-    assert page.read_bytes().startswith(b"P4\n266 400\n")
+    assert page.read_bytes().startswith(b"P4\n260 400\n")
     mean = pnm_mean(page)
     assert mean is not None and mean < 0.1  # the content block dominates
 
@@ -649,3 +650,158 @@ def test_gray_histogram_skips_p4_and_rejects_malformed() -> None:
 
 
 # ---- side-walk paper-run evidence (Candidate D) --------------------------
+
+
+# Bit-exact P4 repacking. Rows are packed MSB first, so a crop that does
+# not start on a byte has to move every pixel; what follows checks the
+# shifting primitive against an obviously correct reference and pins the
+# properties both callers rely on.
+
+
+def _reference_crop(
+    raster: bytes, *, row_bytes: int, box: tuple[int, int, int, int]
+) -> bytes:
+    """Unpack, slice, repack: slow, obvious, and the yardstick."""
+    x0, y0, x1, y1 = box
+    out_bytes = (x1 - x0 + 7) // 8
+    out = bytearray()
+    for y in range(y0, y1):
+        row = bytearray(out_bytes)
+        for index, x in enumerate(range(x0, x1)):
+            byte = y * row_bytes + x // 8
+            if x // 8 < row_bytes and byte < len(raster):
+                if raster[byte] & (0x80 >> (x % 8)):
+                    row[index // 8] |= 0x80 >> (index % 8)
+        out += row
+    return bytes(out)
+
+
+def _pattern(width: int, height: int, seed: int) -> bytes:
+    """A deterministic raster whose padding bits are deliberately dirty."""
+    rng = random.Random(seed)
+    row_bytes = (width + 7) // 8
+    return bytes(rng.randrange(256) for _ in range(row_bytes * height))
+
+
+def test_crop_bit_rows_matches_the_reference_exhaustively() -> None:
+    # Every width through three bytes, every box inside it: this is where
+    # the shift, the mask and the left-alignment have to agree with the
+    # obvious implementation, bit for bit.
+    checked = 0
+    for width in range(1, 18):
+        row_bytes = (width + 7) // 8
+        for height in (1, 2):
+            raster = _pattern(width, height, seed=width * 100 + height)
+            for x0 in range(width):
+                for x1 in range(x0 + 1, width + 1):
+                    for y0 in range(height):
+                        for y1 in range(y0 + 1, height + 1):
+                            box = (x0, y0, x1, y1)
+                            got = crop_bit_rows(raster, row_bytes=row_bytes, box=box)
+                            want = _reference_crop(raster, row_bytes=row_bytes, box=box)
+                            assert got == want, (width, height, box)
+                            assert len(got) == (y1 - y0) * ((x1 - x0 + 7) // 8)
+                            checked += 1
+    assert checked > 2000  # the sweep really ran
+
+
+def test_crop_bit_rows_matches_the_reference_on_larger_rasters() -> None:
+    # Seeded, not random: the same cases every run, over rasters wide
+    # enough that a box spans several source bytes.
+    rng = random.Random(20260824)
+    for _ in range(300):
+        width = rng.randrange(9, 41)
+        height = rng.randrange(1, 6)
+        row_bytes = (width + 7) // 8
+        raster = _pattern(width, height, seed=rng.randrange(1 << 30))
+        x0 = rng.randrange(width)
+        x1 = rng.randrange(x0 + 1, width + 1)
+        y0 = rng.randrange(height)
+        y1 = rng.randrange(y0 + 1, height + 1)
+        box = (x0, y0, x1, y1)
+        assert crop_bit_rows(raster, row_bytes=row_bytes, box=box) == _reference_crop(
+            raster, row_bytes=row_bytes, box=box
+        ), (width, height, box)
+
+
+@pytest.mark.parametrize("offset", range(8))
+def test_crop_bit_rows_moves_a_single_pixel_from_every_bit(offset: int) -> None:
+    # One black pixel at every source bit in turn, cropped so it lands in
+    # bit 7 of the output: the shift is what has to be exact.
+    raster = bytes([0x80 >> offset, 0x00])
+    got = crop_bit_rows(raster, row_bytes=2, box=(offset, 0, offset + 1, 1))
+    assert got == bytes([0x80])
+
+
+@pytest.mark.parametrize("width", range(1, 17))
+def test_crop_bit_rows_clears_the_padding_it_creates(width: int) -> None:
+    # Every output width, so every remainder modulo 8: the source is all
+    # black, and the bits past the requested width must still be white.
+    raster = bytes([0xFF] * 4)
+    got = crop_bit_rows(raster, row_bytes=4, box=(3, 0, 3 + width, 1))
+    out_bytes = (width + 7) // 8
+    assert len(got) == out_bytes
+    assert int.from_bytes(got, "big") == ((1 << width) - 1) << (out_bytes * 8 - width)
+
+
+def test_crop_bit_rows_keeps_the_first_and_last_requested_columns() -> None:
+    # Black exactly on both requested edges and white between them, so an
+    # off-by-one in either direction shows up as a lost or gained pixel.
+    raster = bytes([0b00100000, 0b00000100])
+    got = crop_bit_rows(raster, row_bytes=2, box=(2, 0, 14, 1))
+    assert got == bytes([0b10000000, 0b00010000])
+
+
+def test_crop_bit_rows_never_reads_the_source_padding() -> None:
+    # 12 px per row with every don't-care bit set. A crop to the declared
+    # width must not turn those into image content.
+    raster = bytes([0x00, 0x0F, 0x00, 0x0F])
+    got = crop_bit_rows(raster, row_bytes=2, box=(1, 0, 12, 2))
+    assert got == bytes([0x00, 0x00, 0x00, 0x00])
+
+
+def test_crop_bit_rows_treats_missing_source_bits_as_white() -> None:
+    # A box reaching past the row's bytes: the tail is white, never the
+    # next row's pixels.
+    raster = bytes([0xFF, 0xFF])
+    got = crop_bit_rows(raster, row_bytes=1, box=(4, 0, 12, 1))
+    assert got == bytes([0b11110000])
+
+
+@pytest.mark.parametrize("x0", [0, 8, 16])
+def test_crop_bit_rows_leaves_an_aligned_crop_byte_identical(x0: int) -> None:
+    # The fast path has to be the same function as the slow one: an
+    # aligned whole-byte box is a plain slice of the source.
+    raster = _pattern(32, 3, seed=7)
+    got = crop_bit_rows(raster, row_bytes=4, box=(x0, 0, x0 + 16, 3))
+    want = b"".join(
+        raster[row * 4 + x0 // 8 : row * 4 + x0 // 8 + 2] for row in range(3)
+    )
+    assert got == want
+
+
+@pytest.mark.parametrize("x0", [1, 5])
+def test_crop_pnm_mirrors_p4_geometry_left_and_right(tmp_path: Path, x0: int) -> None:
+    # The same distance taken off either side gives the same width, which
+    # is the asymmetry this replaced: the left used to round outward.
+    frame = _p4_frame(64, 8, [(20, 0, 44, 8)])
+    left = _write(tmp_path / "left.pbm", frame)
+    right = _write(tmp_path / "right.pbm", frame)
+
+    assert crop_pnm(left, (x0, 0, 64, 8)) is True
+    assert crop_pnm(right, (0, 0, 64 - x0, 8)) is True
+
+    assert left.read_bytes().split(b"\n", 2)[1] == b"%d 8" % (64 - x0)
+    assert right.read_bytes().split(b"\n", 2)[1] == b"%d 8" % (64 - x0)
+
+
+def test_crop_pnm_keeps_an_odd_width_p4_exactly(tmp_path: Path) -> None:
+    # 21 px per row (three bytes, three padding bits), cropped off a byte
+    # on both sides.
+    page = _write(tmp_path / "odd.pbm", _p4_frame(21, 4, [(3, 0, 18, 4)]))
+
+    assert crop_pnm(page, (3, 1, 18, 3)) is True
+
+    data = page.read_bytes()
+    assert data.startswith(b"P4\n15 2\n")
+    assert pnm_mean(page) == pytest.approx(0.0)  # every kept pixel is black

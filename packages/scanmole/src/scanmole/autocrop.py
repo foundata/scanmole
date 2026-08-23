@@ -5,6 +5,15 @@ atomic replacement and pixel-level primitives, while this module decides
 where the paper is and what to keep. The dependency runs one way, so the
 raster layer stays usable without any cropping policy.
 
+Two kinds of evidence feed one crop, chosen by the raster the device
+actually delivered rather than by the mode that was requested. Gray and
+color frames (``P5``/``P6``) carry brightness, so the paper edge is where
+the profile crosses :data:`PAPER_BRIGHTNESS_CUTOFF`. Native 1-bit frames
+(``P4``) have already been thresholded by the scanner and carry ink
+density instead, so a paper edge shows up as a boundary dark across most
+of the perpendicular axis; see :func:`_lineart_bounds`. Both produce
+:class:`_Bounds` and share :func:`_finalize`.
+
 Content-based fallback sizing and standard paper-size selection are a
 separate decision and live in :mod:`scanmole.sizing`; this module only
 reports the physical edges it can measure.
@@ -13,11 +22,12 @@ reports the physical edges it can measure.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from scanmole.pnm import read_header, replace_file
+from scanmole.pnm import POPCOUNT, crop_bit_rows, read_header, replace_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -256,10 +266,496 @@ def _gray_bounds(
     return _Bounds(left, top, right, bottom)
 
 
+_BIT_PLANES = [
+    bytes(1 if (value >> (7 - bit)) & 1 else 0 for value in range(256))
+    for bit in range(8)
+]
+"""Translate tables isolating one bit of every ``P4`` raster byte.
+
+Eight tables plus eight strided sums give exact per-column ink counts at
+C speed; a per-pixel loop over an A4/300 dpi frame is nine million
+iterations and is not an option.
+"""
+
+_LINEART_SEARCH_MM = 12.0
+"""How far in from a frame edge a 1-bit paper boundary may be found.
+
+The measured boundaries sit within 6.1 mm of their frame edge and the
+outer white strip ahead of one runs to 3.2 mm, so the search has to
+reach past both. It must not reach much further: print is fair game
+beyond it, and at 20 mm five corpus frames stop at their heading
+instead of their top border, moving that edge from row 7 to row 216.
+Measured insensitive from 12 to 15 mm.
+"""
+
+_LINEART_BAND_MM = 8.0
+"""Height of one evidence band along the perpendicular axis.
+
+A boundary skewed by a fraction of a degree crosses several positions
+over a full page, which flattens its whole-axis profile below any
+threshold worth having: measured over the corpus, whole-axis evidence
+alone loses 16 borders on 9 of the 40 frames that have one. Within a
+band this short the same boundary is effectively straight. Bands may
+not get much shorter either, or a single printed mark fills one and
+votes; below 6 mm the corpus gains crops of over 100 px driven by
+ordinary print. Measured insensitive from 6 to 12 mm.
+"""
+
+_LINEART_INK_SHARE = 0.80
+"""Ink share within a band that makes a position boundary-dark.
+
+Ink occupancy, not brightness: a ``P4`` position is a run of black and
+white bits, so this counts set bits and has nothing to do with
+:data:`PAPER_BRIGHTNESS_CUTOFF`. The value is what "spans a large
+majority of the perpendicular axis" means in practice. Measured
+insensitive from 0.70 to 0.85; at 0.60 the corpus starts reading
+halftoned backing texture as a boundary and crops 110 px more.
+"""
+
+_LINEART_PAPER_INK_SHARE = 0.05
+"""Whole-axis ink share at or below which a position reads as paper.
+
+Deliberately not zero: scanner noise, despeckle residue and the outer
+rows of ordinary text all leave a little ink in a paper position, and
+the measured margins run to 0.01. Measured insensitive from 0.02 to
+0.20; at 0.01 the corpus loses detected edges to their own paper noise.
+"""
+
+_LINEART_PAPER_RUN_MM = 2.0
+"""How far paper-like evidence must hold just inside the boundary.
+
+A boundary with nothing but more ink behind it is print, not a paper
+edge. Measured insensitive from 0.5 to 6 mm on the corpus, so this is
+a plausibility floor rather than a tuned length.
+"""
+
+_LINEART_BAND_VOTE_SHARE = 0.80
+"""Share of bands one boundary must span before a side resolves.
+
+Counted over the bands of a single boundary path, never over bands that
+merely found darkness somewhere, which is what stops an isolated mark,
+a punch hole or a short rule from becoming an edge; it also leaves room
+for the small gaps a real boundary has. Measured insensitive from 0.60
+to 0.85; at 0.95 the corpus loses 30 real borders to their own gaps.
+"""
+
+_LINEART_TRACK_SKEW = 0.125
+"""How far a boundary may move sideways from one band to the next.
+
+Dimensionless, as a fraction of the band height, so it is a skew
+tolerance and holds at every resolution: one in eight is about seven
+degrees, far past anything a feeder produces (the steepest boundary in
+the corpus runs 17 px over 3300 rows, about 0.3 degrees, or one in
+190). The generosity is deliberate, because the allowance is not there
+to measure skew but to say how far a boundary may travel between one
+band and the next. It also draws the line the guarantee rests on: a
+mark whose own position is further than this from the boundary in the
+neighbouring bands cannot be part of it, while one nearer than this is
+inside the boundary's own uncertainty and is cropped with it. The two
+measured over-crops had their marks 45 and 10 positions clear of the
+boundary. The corpus is unchanged and both stay out from 0.03 to 0.20;
+below 0.03 a real boundary starts breaking up, and at 0.21 the nearer
+mark comes within reach.
+"""
+
+_LINEART_TRACK_GAP = 2
+"""Consecutive bands a boundary may skip and still be one track.
+
+About 16 mm at the band height, which covers a punch hole, a despeckled
+patch or a torn corner. Only bands that saw nothing at all are bridged:
+a band holding a dark interval has answered, and a path that cannot
+reach any of its positions ends there rather than around it, which is
+what stops a bridge from buying extra sideways room or letting an
+unrelated mark stand in for a missing boundary. The share above
+independently limits how many bands may be missing in total, so this
+only bounds how they may cluster. The corpus is unchanged from 0 to 10
+bands, so this is a plausibility bound rather than a tuned length.
+"""
+
+
+def _band_bounds(total: int, size: int) -> list[tuple[int, int]]:
+    """Split ``total`` units into contiguous bands of about ``size`` units."""
+    count = max(1, total // size)
+    step = total // count
+    return [
+        (index * step, total if index == count - 1 else (index + 1) * step)
+        for index in range(count)
+    ]
+
+
+def _mask_padding(strip: bytes, stride: int, mask: int) -> bytes:
+    """Clear ``P4`` row-padding bits in the last byte column of a strip.
+
+    The format declares those bits don't-care and producers do leave
+    garbage there; counted as ink they would fake a boundary at the right
+    frame edge of any frame whose width is not a multiple of eight.
+    """
+    if mask == 0xFF:
+        return strip
+    data = bytearray(strip)
+    data[stride - 1 :: stride] = bytes(
+        byte & mask for byte in data[stride - 1 :: stride]
+    )
+    return bytes(data)
+
+
+def _column_ink(
+    raster: bytes,
+    *,
+    row_bytes: int,
+    height: int,
+    first: int,
+    last: int,
+    bands: list[tuple[int, int]],
+    mask: int,
+) -> list[list[int]]:
+    """Per-band, per-column ink counts for byte columns ``[first, last)``."""
+    stride = last - first
+    strip = b"".join(
+        raster[row * row_bytes + first : row * row_bytes + last]
+        for row in range(height)
+    )
+    if last == row_bytes:
+        strip = _mask_padding(strip, stride, mask)
+    counts = [[0] * (stride * 8) for _ in bands]
+    for bit, table in enumerate(_BIT_PLANES):
+        marks = strip.translate(table)
+        for index, (start, stop) in enumerate(bands):
+            segment = marks[start * stride : stop * stride]
+            for byte in range(stride):
+                counts[index][byte * 8 + bit] = sum(segment[byte::stride])
+    return counts
+
+
+def _row_ink(
+    raster: bytes,
+    *,
+    row_bytes: int,
+    first: int,
+    last: int,
+    bands: list[tuple[int, int]],
+    mask: int,
+) -> list[list[int]]:
+    """Per-band, per-row ink counts for rows ``[first, last)``."""
+    strip = _mask_padding(
+        raster[first * row_bytes : last * row_bytes], row_bytes, mask
+    ).translate(POPCOUNT)
+    return [
+        [
+            sum(strip[row * row_bytes + start : row * row_bytes + stop])
+            for row in range(last - first)
+        ]
+        for start, stop in bands
+    ]
+
+
+def _band_edges(band: list[float], window: int) -> list[int]:
+    """Innermost position of every dark interval in one band, ascending.
+
+    Intervals separated by so much as one paper-bright position stay
+    separate. Their distance may well be inside the geometric tolerance
+    the track below works to, but that tolerance is about how far a
+    boundary may travel between bands, not about what counts as one
+    feature within a band; merging on it would let a mark beside the
+    boundary pass for part of it.
+    """
+    reach = min(window, len(band))
+    return [
+        index
+        for index in range(reach)
+        if band[index] >= _LINEART_INK_SHARE
+        and (index + 1 >= reach or band[index + 1] < _LINEART_INK_SHARE)
+    ]
+
+
+def _extend(
+    behind: list[int], reached: list[int], here: list[int], allowance: int
+) -> list[int]:
+    """Longest chain ending at each of ``here``, extended from ``behind``.
+
+    Both position lists are ascending, so the admissible predecessors of
+    a position form a window that only ever moves forward; a monotonic
+    deque keeps the best chain in it, which holds the whole pass linear
+    in the number of positions rather than quadratic.
+    """
+    best = [1] * len(here)
+    if not behind:
+        return best
+    low = high = 0
+    window: deque[int] = deque()  # indices into behind, chain lengths descending
+    for index, position in enumerate(here):
+        while high < len(behind) and behind[high] <= position + allowance:
+            while window and reached[window[-1]] <= reached[high]:
+                window.pop()
+            window.append(high)
+            high += 1
+        while low < high and behind[low] < position - allowance:
+            if window and window[0] == low:
+                window.popleft()
+            low += 1
+        if window:
+            best[index] = reached[window[0]] + 1
+    return best
+
+
+def _boundary_track(bands: list[list[float]], *, window: int, slack: int) -> int | None:
+    """Innermost position of a boundary the bands agree on, or ``None``.
+
+    Bands voting separately is not enough evidence: each one finding
+    darkness *somewhere* lets a single interior mark, deeper than the
+    real boundary and unrelated to it, decide the crop. Neither is
+    joining that darkness into connected groups, because a group is not
+    a boundary: a mark beside the boundary touches it, inherits the
+    support the whole edge earned and pulls the crop in behind itself.
+
+    So a boundary is a **path** here, holding at most one position per
+    band and stepping no more than ``slack`` per band between them. A
+    position counts only when some path through it spans
+    :data:`_LINEART_BAND_VOTE_SHARE` of the bands, which two passes
+    decide: the longest path reaching it from outside, plus the longest
+    leaving it inward, minus itself. A mark the neighbouring bands
+    cannot reach at its own position lies on no path but its own, spans
+    one band and is ignored however deep it sits.
+
+    A path may bridge up to :data:`_LINEART_TRACK_GAP` bands that hold
+    no dark interval at all, with the step allowance growing in
+    proportion so a punch hole does not penalise a skewed boundary. A
+    band that does hold one has answered for that stretch of the axis:
+    a path that cannot reach any of its positions ends there instead of
+    reaching around it, so an unrelated mark can neither stand in for a
+    missing boundary nor buy a path extra sideways room.
+
+    Returns the deepest position any qualifying path reaches, which is
+    what makes the rectangle conservative: a skewed boundary sits
+    further in for some bands than others, and cutting at the outermost
+    would leave part of the wedge behind.
+    """
+    edges = [_band_edges(band, window) for band in bands]
+    filled = [index for index, found in enumerate(edges) if found]
+    if not filled:
+        return None
+    positions = [edges[index] for index in filled]
+    # Bridging skips empty bands only, so the band before a filled one
+    # is fixed: its nearest filled predecessor, when close enough.
+    steps = [filled[index + 1] - filled[index] for index in range(len(filled) - 1)]
+    linked = [step <= _LINEART_TRACK_GAP + 1 for step in steps]
+
+    forward = [[1] * len(row) for row in positions]
+    for index in range(1, len(filled)):
+        if linked[index - 1]:
+            forward[index] = _extend(
+                positions[index - 1],
+                forward[index - 1],
+                positions[index],
+                slack * steps[index - 1],
+            )
+    backward = [[1] * len(row) for row in positions]
+    for index in range(len(filled) - 2, -1, -1):
+        if linked[index]:
+            backward[index] = _extend(
+                positions[index + 1],
+                backward[index + 1],
+                positions[index],
+                slack * steps[index],
+            )
+
+    needed = _LINEART_BAND_VOTE_SHARE * len(bands)
+    supported = [
+        position
+        for index, row in enumerate(positions)
+        for at, position in enumerate(row)
+        if forward[index][at] + backward[index][at] - 1 >= needed
+    ]
+    return max(supported) if supported else None
+
+
+def _lineart_edge(
+    bands: list[list[float]],
+    overall: list[float],
+    *,
+    window: int,
+    run: int,
+    slack: int,
+) -> int | None:
+    """Distance from a frame edge to the paper, or ``None`` if unresolved.
+
+    Every profile is indexed outward to inward from its own frame edge,
+    so one routine serves all four sides and the caller maps the result
+    back. A side resolves only on two pieces of evidence together: one
+    coherent boundary within ``window`` of the frame edge that the bands
+    agree on (:func:`_boundary_track`), and paper-like ink holding for
+    ``run`` positions somewhere behind it.
+
+    The cut falls on the *first* paper-like position past the boundary,
+    which is where the paper starts; the sustained run only has to exist
+    further in, as proof that real paper lies behind the edge rather
+    than more print. Sliding the cut to the run itself would walk it
+    through whatever sits in between, and a stamp or a note close to the
+    paper edge is exactly what sits there.
+
+    This weighs edge evidence; it cannot recognise content. A dense mark
+    spanning most of an axis close to the paper edge is what a boundary
+    looks like, and is cropped as one.
+    """
+    reach = len(overall)
+    boundary = _boundary_track(bands, window=window, slack=slack)
+    if boundary is None:
+        return None
+    edge: int | None = None
+    count = 0
+    for index in range(boundary + 1, reach):
+        if overall[index] > _LINEART_PAPER_INK_SHARE:
+            count = 0
+            continue
+        if edge is None:
+            edge = index
+            if edge >= window:
+                return None  # paper only begins past the bounded search
+        count += 1
+        if count >= run:
+            return edge
+    return None
+
+
+def _lineart_bounds(
+    raster: bytes, *, width: int, height: int, row_bytes: int, dpi: int
+) -> _Bounds | None:
+    """Where the paper lies in a native 1-bit raster, or ``None``.
+
+    The scanner thresholded this frame before ScanMole saw it, so there
+    is no brightness left to walk: what remains of a paper edge is a
+    boundary of ink, dark across most of the perpendicular axis and
+    followed by paper. A white margin proves nothing on its own, because
+    1-bit padding outside the paper and the page's own white margin are
+    the same bits, which is why a dark boundary has to be found first.
+
+    ``None`` means the evidence contradicts itself (a left edge inward
+    of the right one); the caller then keeps the frame. An unresolved
+    side reports its frame edge, exactly as the brightness walk does.
+    """
+    pad = 0xFF if width % 8 == 0 else 0xFF ^ (0xFF >> (width % 8))
+    window = max(1, round(_LINEART_SEARCH_MM * dpi / 25.4))
+    run = max(1, round(_LINEART_PAPER_RUN_MM * dpi / 25.4))
+    band_px = max(1, round(_LINEART_BAND_MM * dpi / 25.4))
+    slack = max(1, round(_LINEART_TRACK_SKEW * band_px))
+
+    # Sides: profiles over columns, bands over rows. The profile has to
+    # reach one run past the window so a boundary at its very inner limit
+    # can still prove paper behind it.
+    span = min(width, window + run)
+    row_bands = _band_bounds(height, band_px)
+    heights = [stop - start for start, stop in row_bands]
+
+    def side(first: int, last: int, origin: int, step: int) -> int | None:
+        counts = _column_ink(
+            raster,
+            row_bytes=row_bytes,
+            height=height,
+            first=first,
+            last=last,
+            bands=row_bands,
+            mask=pad,
+        )
+        base = origin - first * 8
+        shares = [
+            [band[base + step * index] / rows for index in range(span)]
+            for band, rows in zip(counts, heights, strict=True)
+        ]
+        totals = [sum(column) for column in zip(*counts, strict=True)]
+        overall = [totals[base + step * index] / height for index in range(span)]
+        return _lineart_edge(shares, overall, window=window, run=run, slack=slack)
+
+    left = side(0, min(row_bytes, (span + 7) // 8), 0, 1)
+    right = side(max(0, (width - span) // 8), row_bytes, width - 1, -1)
+
+    # Ends: profiles over rows, bands over byte columns (one byte spans
+    # eight columns, which is finer than any band worth having).
+    reach = min(height, window + run)
+    column_bands = _band_bounds(row_bytes, max(1, band_px // 8))
+    widths = [min(stop * 8, width) - start * 8 for start, stop in column_bands]
+
+    def end(first: int, origin: int, step: int) -> int | None:
+        counts = _row_ink(
+            raster,
+            row_bytes=row_bytes,
+            first=first,
+            last=first + reach,
+            bands=column_bands,
+            mask=pad,
+        )
+        base = origin - first
+        shares = [
+            [band[base + step * index] / columns for index in range(reach)]
+            for band, columns in zip(counts, widths, strict=True)
+        ]
+        totals = [sum(row) for row in zip(*counts, strict=True)]
+        overall = [totals[base + step * index] / width for index in range(reach)]
+        return _lineart_edge(shares, overall, window=window, run=run, slack=slack)
+
+    top = end(0, 0, 1)
+    bottom = end(height - reach, height - 1, -1)
+
+    bounds = _Bounds(
+        left=0 if left is None else left,
+        top=0 if top is None else top,
+        right=width - 1 if right is None else width - 1 - right,
+        bottom=height - 1 if bottom is None else height - 1 - bottom,
+    )
+    if bounds.left >= bounds.right or bounds.top >= bounds.bottom:
+        return None  # contradictory evidence: no plausible paper here
+    return bounds
+
+
+def _autocrop_lineart(path: Path, buffer: bytes, *, dpi: int) -> bool:
+    """Crop a native 1-bit ``P4`` frame to its paper boundaries, in place."""
+    tokens, offset = read_header(buffer, 2)
+    try:
+        width, height = int(tokens[0]), int(tokens[1])
+    except ValueError as exc:
+        raise ValueError("bad PNM header") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError("bad PNM dimensions")
+    row_bytes = (width + 7) // 8
+    if len(buffer) - offset < row_bytes * height:
+        raise ValueError("truncated PNM raster")
+    raster = buffer[offset : offset + row_bytes * height]
+
+    bounds = _lineart_bounds(
+        raster, width=width, height=height, row_bytes=row_bytes, dpi=dpi
+    )
+    if bounds is None:
+        return False
+    # No trim: the frame is already thresholded, so a detected boundary
+    # has no half-gray transition to shave, and the walk stops at the
+    # first position that reads as paper anyway. Measured over all 63
+    # detected sides in the corpus, the outermost line a crop keeps
+    # holds at most 4.5% ink, under the share the rule calls paper.
+    kept = _finalize(bounds, width, height, 0)
+    if kept is None:
+        return False
+    # The detected bounds are kept to the pixel on every side. Bit-packed
+    # rows are repacked rather than sliced from a byte boundary
+    # (:func:`~scanmole.pnm.crop_bit_rows`), so a left edge that does not
+    # fall on a byte costs nothing; rounding it inward used to give away
+    # up to seven columns of paper that the detector had just proved was
+    # paper.
+    header = b"P4\n%d %d\n" % (
+        kept.right - kept.left + 1,
+        kept.bottom - kept.top + 1,
+    )
+    data = crop_bit_rows(
+        raster,
+        row_bytes=row_bytes,
+        box=(kept.left, kept.top, kept.right + 1, kept.bottom + 1),
+    )
+    replace_file(path, header + data)
+    return True
+
+
 def autocrop_pnm(
     path: Path, trim_px: int, feeder_band_px: int | None = None, *, dpi: int
 ) -> bool:
-    """Crop a raw gray/color PNM to the detected paper edges, in place.
+    """Crop a raw PNM to the detected paper edges, in place.
 
     Scanning the device's full window (page size ``auto``) surrounds the
     paper with the darker ADF backing and end-of-paper padding. This walks
@@ -294,10 +790,12 @@ def autocrop_pnm(
     The band must stay shorter than the shortest plausible document (a
     short receipt); the pipeline passes about 50 mm.
 
-    Already-1-bit (``P4``) and non-PNM files are left alone: 1-bit padding is
-    indistinguishable from the page's own white margin, so native-lineart
-    devices rely on hardware lower-edge detection instead (``--ald``, see the
-    scan command assembly).
+    Frames a device already thresholded (``P4``) take the ink-density
+    path instead (:func:`_lineart_bounds`), which neither ``trim_px`` nor
+    ``feeder_band_px`` applies to: there are no transition pixels to
+    shave off a binary edge, and mid-gray window padding, the one thing
+    the leading-edge band exists for, cannot occur in a 1-bit raster.
+    Non-PNM files are left alone.
 
     Returns:
         Whether the file was rewritten. ``False`` also covers "no backing
@@ -308,9 +806,13 @@ def autocrop_pnm(
         ValueError: If the file starts as a PNM but is malformed or truncated.
     """
     buffer = path.read_bytes()
-    if len(buffer) < 8 or buffer[:1] != b"P" or buffer[1:2] not in (b"5", b"6"):
+    if len(buffer) < 8 or buffer[:1] != b"P":
         return False
     kind = buffer[1:2]
+    if kind == b"4":
+        return _autocrop_lineart(path, buffer, dpi=dpi)
+    if kind not in (b"5", b"6"):
+        return False
     tokens, offset = read_header(buffer, 3)
     try:
         width, height, maxval = int(tokens[0]), int(tokens[1]), int(tokens[2])

@@ -19,8 +19,12 @@ LOGGER = logging.getLogger(__name__)
 
 _WHITESPACE = b" \t\r\n"
 
-_POPCOUNT = bytes(value.bit_count() for value in range(256))
-"""Translate table turning each raster byte into its number of set bits."""
+POPCOUNT = bytes(value.bit_count() for value in range(256))
+"""Translate table turning each raster byte into its number of set bits.
+
+Shared with :mod:`scanmole.autocrop`, which measures 1-bit ink density on
+the same rasters; counting set bits is a raster operation and belongs
+here rather than in the cropping policy."""
 
 
 def replace_file(path: Path, data: bytes) -> None:
@@ -70,6 +74,62 @@ def read_header(buffer: bytes, token_count: int) -> tuple[list[bytes], int]:
             raise ValueError("truncated PNM header")
         tokens.append(buffer[start:index])
     return tokens, index + 1
+
+
+def crop_bit_rows(
+    raster: bytes, *, row_bytes: int, box: tuple[int, int, int, int]
+) -> bytes:
+    """Repack a ``P4`` raster to ``box`` (``x0, y0, x1, y1``, exclusive ends).
+
+    Bit packing makes a horizontal crop a shift rather than a slice:
+    ``P4`` puts the leftmost pixel in bit 7 of each byte, so a box that
+    does not start on a byte moves every pixel of every row. Each row
+    goes through one integer of its own, which keeps the work at C speed
+    and makes it impossible for one row's bits to reach the next. Where
+    the box does start on a byte the rows are sliced instead, since
+    there is nothing to move.
+
+    Bits the source row does not have (a box reaching past its bytes)
+    come out white rather than borrowed from the row below, and the
+    unused bits of the last output byte are cleared. The caller clamps ``x1`` to the declared width, which is
+    what keeps the source's own don't-care padding out of the result:
+    those bits sit past the last real column and are never selected.
+
+    Returns:
+        ``y1 - y0`` rows of ``(x1 - x0 + 7) // 8`` bytes each.
+    """
+    x0, y0, x1, y1 = box
+    width = x1 - x0
+    out_bytes = (width + 7) // 8
+    first = x0 // 8
+    tail = (0xFF << (8 - width % 8)) & 0xFF if width % 8 else 0xFF
+    rows: list[bytes] = []
+    if x0 % 8 == 0:
+        # Never past this row's own bytes: the next row's pixels are not
+        # white space to borrow from.
+        available = max(0, min(out_bytes, row_bytes - first))
+        for row in range(y0, y1):
+            start = row * row_bytes + first
+            chunk = raster[start : start + available]
+            if len(chunk) < out_bytes:
+                chunk += bytes(out_bytes - len(chunk))
+            rows.append(chunk[:-1] + bytes((chunk[-1] & tail,)))
+        return b"".join(rows)
+    span = (x1 + 7) // 8 - first
+    # Drop the chunk bits behind the box, keep its width, then push what
+    # is left up against bit 7 of the first output byte.
+    drop = span * 8 - (x0 - first * 8) - width
+    mask = (1 << width) - 1
+    shift = out_bytes * 8 - width
+    available = max(0, min(span, row_bytes - first))
+    for row in range(y0, y1):
+        start = row * row_bytes + first
+        chunk = raster[start : start + available]
+        if len(chunk) < span:
+            chunk += bytes(span - len(chunk))
+        value = (int.from_bytes(chunk, "big") >> drop) & mask
+        rows.append((value << shift).to_bytes(out_bytes, "big"))
+    return b"".join(rows)
 
 
 def pnm_mean(path: Path) -> float | None:
@@ -347,7 +407,7 @@ def pnm_content_stats(path: Path, *, min_ink_px: int) -> ContentStats | None:
             raster[row_bytes - 1 :: row_bytes] = bytes(
                 byte & pad_mask for byte in raster[row_bytes - 1 :: row_bytes]
             )
-        ink = bytes(raster).translate(_POPCOUNT)
+        ink = bytes(raster).translate(POPCOUNT)
         units = row_bytes  # units per row; one unit = 8 columns
     else:
         channels = 3 if kind == b"6" else 1
@@ -699,7 +759,7 @@ def coherent_ink(buffer: bytes, dpi: int) -> CoherentInk | None:
         raster[row_bytes - 1 :: row_bytes] = bytes(
             byte & pad_mask for byte in raster[row_bytes - 1 :: row_bytes]
         )
-    ink = bytes(raster).translate(_POPCOUNT)
+    ink = bytes(raster).translate(POPCOUNT)
 
     # Per-tile ink via big-integer row addition: each ink byte is <= 8, so
     # up to 31 rows sum carry-free into per-byte-column totals at C speed.
@@ -781,11 +841,11 @@ def coherent_ink(buffer: bytes, dpi: int) -> CoherentInk | None:
 def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:
     """Crop a raw PNM to ``box`` (``x0, y0, x1, y1``, exclusive ends), in place.
 
-    1-bit ``P4`` files are cropped from a byte-aligned origin: ``x0`` is
-    aligned down to the previous multiple of 8 (growing the box by up to 7 px
-    on the left, 3.6 mm even at 50 dpi) while the right edge and therefore
-    the requested width stay exact, instead of bit-shifting the raster. Any
-    padding bits in the resulting last row byte are cleared to white.
+    Every side is honored exactly, 1-bit ``P4`` included: its rows are
+    repacked bit by bit (:func:`crop_bit_rows`) rather than sliced from a
+    byte boundary, so an ``x0`` that does not fall on a byte costs no
+    pixels on either side. Padding bits in the last row byte come out
+    white.
 
     Returns:
         Whether the file was rewritten. ``False`` means the box is not a real
@@ -812,8 +872,6 @@ def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:
     x0, y0, x1, y1 = box
     x0, y0 = max(0, x0), max(0, y0)
     x1, y1 = min(width, x1), min(height, y1)
-    if kind == b"4":
-        x0 = (x0 // 8) * 8  # aligned origin; the right edge stays exact
     if x1 - x0 <= 0 or y1 - y0 <= 0:
         return False
     if (x0, y0, x1, y1) == (0, 0, width, height):
@@ -824,17 +882,9 @@ def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:
         if len(buffer) - offset < row_bytes * height:
             raise ValueError("truncated PNM raster")
         raster = buffer[offset : offset + row_bytes * height]
-        new_width = x1 - x0
-        start, stop = x0 // 8, (x1 + 7) // 8
-        rows = [
-            raster[row * row_bytes + start : row * row_bytes + stop]
-            for row in range(y0, y1)
-        ]
-        if new_width % 8:  # clear don't-care padding bits to white
-            keep = (0xFF << (8 - new_width % 8)) & 0xFF
-            rows = [row[:-1] + bytes((row[-1] & keep,)) for row in rows]
-        header = b"P4\n%d %d\n" % (new_width, y1 - y0)
-        replace_file(path, header + b"".join(rows))
+        data = crop_bit_rows(raster, row_bytes=row_bytes, box=(x0, y0, x1, y1))
+        header = b"P4\n%d %d\n" % (x1 - x0, y1 - y0)
+        replace_file(path, header + data)
         return True
 
     channels = 3 if kind == b"6" else 1
