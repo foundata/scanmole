@@ -383,6 +383,19 @@ def test_blank_threshold_zero_and_fractions_still_parse(tmp_path: Path) -> None:
     assert _build_config(frac).blank_threshold == 0.98
 
 
+def test_the_deskew_help_names_the_owners_in_order() -> None:
+    # The help is where a user learns what the flag will actually do,
+    # and the cascade gained a middle step: the host straightens the
+    # raster itself where the device offers nothing, so OCR is the last
+    # resort rather than the first fallback.
+    rendered = " ".join(build_parser().format_help().split())
+
+    assert (
+        "on the device where it offers deskew, otherwise on the scanned "
+        "raster here, otherwise during OCR" in rendered
+    )
+
+
 def test_deskew_defaults_on_and_can_be_disabled(tmp_path: Path) -> None:
     default = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
     disabled = _build_config(_parse(["--no-deskew", "-o", str(tmp_path / "a.pdf")]))

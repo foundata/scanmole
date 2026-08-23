@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import tempfile
 import time
 from collections import Counter
@@ -20,6 +21,8 @@ from pathlib import Path
 
 from scanmole.autocrop import autocrop_image
 from scanmole.config import ScanConfig
+from scanmole.deskew import ANGLE_TOOL, Deskewed, deskew_page
+from scanmole.deskew import TIMEOUT_SECONDS as DESKEW_TIMEOUT_SECONDS
 from scanmole.devices import pick_default_device
 from scanmole.errors import InputError, NoPagesError, ProcessingError, ScanMoleError
 from scanmole.events import EventWriter
@@ -421,6 +424,49 @@ def _recovery_command(
     )
 
 
+def _straighten(page: Path) -> Deskewed:
+    """Deskew one acquired page, translating a broken attempt.
+
+    The deskew module reports outcomes and lets failures out as what
+    they are, since it cannot know what a run owes the paper. Here that
+    is known: the sheet has already been through the feeder, so a tool
+    that could not read the page, one that hung, and a rotation that
+    could not be written are all processing failures over pages worth
+    keeping, and each must reach the caller as the documented exit code
+    rather than as an unexpected internal error. Interrupts and
+    termination are deliberately not caught: they are not failures of
+    this stage and the recovery path handles them on its own.
+
+    Raises:
+        ProcessingError: If measuring or straightening the page failed.
+            The scanned pages are preserved by the caller's recovery
+            contract; only the page's own name is named, as the
+            per-page log lines already do.
+    """
+    try:
+        return deskew_page(page).outcome
+    except subprocess.TimeoutExpired as exc:
+        raise ProcessingError(
+            f"measuring the skew of {page.name} timed out after "
+            f"{DESKEW_TIMEOUT_SECONDS:g}s"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        tail = "\n".join((exc.stderr or "").strip().splitlines()[-3:])
+        raise ProcessingError(
+            f"cannot measure the skew of {page.name} "
+            f"({ANGLE_TOOL} exit {exc.returncode})"
+            f"{f': {tail}' if tail else ''}"
+        ) from exc
+    except subprocess.SubprocessError as exc:  # pragma: no cover -- contract width
+        raise ProcessingError(
+            f"cannot measure the skew of {page.name}: {type(exc).__name__}"
+        ) from exc
+    except OSError as exc:
+        raise ProcessingError(
+            f"cannot straighten {page.name}: {exc.strerror or exc}"
+        ) from exc
+
+
 def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
     """Run the full pipeline for ``config`` and return the process exit code.
 
@@ -465,13 +511,33 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
         binarized = False
         negotiated: list[EffectiveSettings] = []
         measured: list[PageContent] = []
+        # Who straightens a page. The backend does where it took the
+        # request, otherwise the host does it here on the raw frame, and
+        # ocrmypdf keeps the pages neither could own. Exactly one of them
+        # ever runs, because resampling twice costs more than the skew.
+        host_deskew = False
+        host_handled = 0
+        host_declined = 0
+
+        def adopt_settings(settings: EffectiveSettings) -> None:
+            """Record the negotiated settings and settle deskew ownership.
+
+            Called before any paper moves, which is the point: a run that
+            needs the host path must find its tool now rather than after
+            a stack has gone through the feeder.
+            """
+            nonlocal host_deskew
+            negotiated.append(settings)
+            host_deskew = config.deskew and not settings.deskew_applied
+            if host_deskew:
+                require_tools(["tesseract"])
 
         def handle_page(page: Path, origin: PageOrigin | None = None) -> None:
             # Called per page as it lands: from the scanner's reader thread
             # during a batch (with its acquisition segment identity), or
             # inline for --from-images (no origin). Frontends see the page
             # event while the rest of the batch is still scanning.
-            nonlocal total, blanks, binarized
+            nonlocal total, blanks, binarized, host_handled, host_declined
             total += 1
             window = negotiated[0].window_mm if negotiated else None
             dpi_now = negotiated[0].resolution if negotiated else None
@@ -494,6 +560,23 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                 if source_now is not None and is_feeder_source(source_now):
                     band_px = max(1, round(_FEEDER_BAND_MM * effective_dpi / 25.4))
                 autocrop_image(page, trim_px, band_px, dpi=effective_dpi)
+            # Straighten before anything reads the frame's content, and
+            # between the two crops: the first one takes the backing off
+            # so the rotation turns paper rather than a dark border, and
+            # the second takes off the white wedges the rotation exposes.
+            # A fixed page size skips both crops and keeps its configured
+            # canvas, but the page is still straightened.
+            if host_deskew and not from_images:
+                outcome = _straighten(page)
+                if outcome is Deskewed.UNSUPPORTED:
+                    host_declined += 1
+                else:
+                    host_handled += 1
+                if outcome is Deskewed.ROTATED and auto_page_size:
+                    # Zero trim and no feeder band: the paper edges were
+                    # already found and shaved once, and the fallback
+                    # wants an unrotated top-anchored frame.
+                    autocrop_image(page, 0, None, dpi=dpi_now or config.resolution)
             # Backends without a 1-bit mode (eSCL offers only Gray/Color)
             # degrade a lineart request to gray; restore the asked-for 1-bit
             # output in software, before blank detection so the 0.995 default
@@ -601,7 +684,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                     "Auto page size: cropping each page to the detected paper edges"
                 )
             scanned = scan_to_files(
-                config, device, work_dir, events, handle_page, negotiated.append
+                config, device, work_dir, events, handle_page, adopt_settings
             )
             # The PDF must be stamped with the dpi the pages were actually
             # scanned at, or their geometry comes out wrong. scan_to_files
@@ -624,24 +707,38 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
 
         raw_pdf = work_dir / "raw.pdf"
         build_pdf([page for _, page in kept], raw_pdf, dpi)
-        # Deskew cascade, one mechanism per page: the backend where it offers
-        # deskew, otherwise ocrmypdf during OCR, otherwise a warning. The
-        # request must never be a silent no-op.
+        # Deskew cascade, settled once for the batch: the backend where it
+        # took the request, otherwise the host on each raw frame, and
+        # ocrmypdf only for a batch the host owned no page of. A batch
+        # where the host handled some pages and declined others keeps
+        # ocrmypdf out entirely, because it deskews the whole document
+        # and would resample every page the host already turned.
         deskew_pending = config.deskew and not (
             negotiated[0].deskew_applied if negotiated else False
         )
+        ocr_deskew = deskew_pending and host_handled == 0
         if config.ocr:
             events.emit("ocr_start", lang=config.lang)
             LOGGER.info("Running OCR (%s) ...", config.lang)
             final_pdf = work_dir / "ocr.pdf"
-            run_ocr(raw_pdf, final_pdf, config, deskew=deskew_pending)
+            run_ocr(raw_pdf, final_pdf, config, deskew=ocr_deskew)
+            if host_declined and not ocr_deskew:
+                LOGGER.warning(
+                    "%d page(s) could not be straightened here and were left "
+                    "as scanned; the rest of the batch was already "
+                    "straightened, so OCR was not asked to do it again",
+                    host_declined,
+                )
         else:
             final_pdf = raw_pdf
-            if deskew_pending:
+            if deskew_pending and (host_declined or host_handled == 0):
                 LOGGER.warning(
-                    "deskew requested, but the device offers no deskew and "
-                    "OCR is off; pages keep their skew (enable --ocr or use "
-                    "--no-deskew to silence this)"
+                    "deskew requested, but %s and OCR is off; those pages "
+                    "keep their skew (enable --ocr or use --no-deskew to "
+                    "silence this)",
+                    f"{host_declined} page(s) could not be straightened here"
+                    if host_declined
+                    else "the device offers no deskew",
                 )
         publish_pdf(final_pdf, config.output)
 

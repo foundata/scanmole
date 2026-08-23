@@ -10,6 +10,7 @@ import dataclasses
 import io
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -228,7 +229,15 @@ def test_keep_images_batches_never_collide(tmp_path: Path) -> None:
     assert (archive / "scan_2" / "page_0001.pnm").is_file()
 
 
-def _deskew_scan(settings: EffectiveSettings):  # type: ignore[no-untyped-def]
+def _no_skew(monkeypatch: pytest.MonkeyPatch, stderr: str = "") -> None:
+    """Answer the host measurement without running Tesseract."""
+    monkeypatch.setattr(
+        "scanmole.deskew.run_command",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", stderr),
+    )
+
+
+def _deskew_scan(settings: EffectiveSettings, page: bytes | None = None):  # type: ignore[no-untyped-def]
     def fake_scan(
         config: ScanConfig,
         device: str,
@@ -239,17 +248,24 @@ def _deskew_scan(settings: EffectiveSettings):  # type: ignore[no-untyped-def]
     ) -> ScanResult:
         assert callable(on_settings)
         on_settings(settings)
-        page = _gray_page(work_dir / "page_0001.pnm")
+        acquired = work_dir / "page_0001.pnm"
+        if page is None:
+            _gray_page(acquired)
+        else:
+            acquired.write_bytes(page)
         assert callable(on_page)
-        on_page(page)
-        return ScanResult(pages=[page], settings=settings)
+        on_page(acquired)
+        return ScanResult(pages=[acquired], settings=settings)
 
     return fake_scan
 
 
-def test_deskew_falls_through_to_ocr_when_the_backend_has_none(
+def test_the_host_path_keeps_ocr_from_deskewing_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # A backend without deskew hands the request to the host, and a page
+    # the host owned is final: asking OCR to deskew it would resample it
+    # a second time for nothing.
     ocr_calls: list[bool] = []
 
     def fake_ocr(
@@ -269,12 +285,13 @@ def test_deskew_falls_through_to_ocr_when_the_backend_has_none(
         lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
     )
     monkeypatch.setattr("scanmole.pipeline.run_ocr", fake_ocr)
+    _no_skew(monkeypatch)
     config = dataclasses.replace(
         _config(images=None, output=tmp_path / "out.pdf"), deskew=True, ocr=True
     )
 
     assert run_pipeline(config, EventWriter(enabled=False)) == 0
-    assert ocr_calls == [True]
+    assert ocr_calls == [False]
 
 
 def test_deskew_stays_off_in_ocr_when_the_backend_took_it(
@@ -307,23 +324,32 @@ def test_deskew_stays_off_in_ocr_when_the_backend_took_it(
     assert ocr_calls == [False]  # the backend already straightened the pages
 
 
-def test_deskew_dead_end_warns_instead_of_staying_silent(
+def test_a_page_nothing_could_straighten_still_warns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    # 16-bit color is the one raster the host refuses, because rotating
+    # it through Pillow would halve its depth. With OCR off nothing else
+    # can straighten it, and the request must not be a silent no-op.
     settings = EffectiveSettings(
-        source="ADF Duplex", mode="Gray", resolution=300, deskew_applied=False
+        source="ADF Duplex", mode="Color", resolution=300, deskew_applied=False
     )
+    deep = b"P6\n40 40\n65535\n" + bytes(40 * 40 * 6)
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
     monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
-    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _deskew_scan(settings))
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _deskew_scan(settings, deep))
     monkeypatch.setattr(
         "scanmole.pipeline.build_pdf",
         lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
     )
+    _no_skew(monkeypatch)
     config = dataclasses.replace(
-        _config(images=None, output=tmp_path / "out.pdf"), deskew=True, ocr=False
+        _config(images=None, output=tmp_path / "out.pdf"),
+        deskew=True,
+        ocr=False,
+        mode="color",
+        keep_blanks=True,
     )
 
     with caplog.at_level("WARNING"):
@@ -391,3 +417,189 @@ def test_keep_blanks_and_zero_threshold_differ_in_classification(
     assert page["blank"] is False  # never classified at all
     scan_done = next(e for e in events if e["event"] == "scan_done")
     assert scan_done["kept"] == 1 and scan_done["blanks"] == 0
+
+
+# Deskew ownership. Exactly one mechanism straightens a page: the backend
+# where it took the request, the host on the raw frame otherwise, and
+# ocrmypdf only for a batch the host owned no page of.
+
+
+def _skewed_gray(width: int = 200, height: int = 260) -> bytes:
+    """A gray page with enough ink for the measurement to be asked about."""
+    rows = bytearray(b"\xff" * (width * height))
+    for line in range(12):
+        top = 30 + line * 18
+        for y in range(top, top + 6):
+            for x in range(24, 24 + 120 + (line % 3) * 20):
+                rows[y * width + x] = 0
+    return b"P5\n%d %d\n255\n" % (width, height) + bytes(rows)
+
+
+def _deskew_run(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    deskew_applied: bool = False,
+    stderr: str = "",
+    page: bytes | None = None,
+    **overrides: object,
+):
+    """One scanner run with the measurement answered from a recording."""
+    calls: list[bool] = []
+    required: list[list[str]] = []
+
+    def fake_ocr(
+        source: Path, output: Path, config: ScanConfig, deskew: bool = False
+    ) -> None:
+        calls.append(deskew)
+        output.write_bytes(b"%PDF-fake")
+
+    settings = EffectiveSettings(
+        source="ADF Duplex",
+        mode="Gray",
+        resolution=300,
+        deskew_applied=deskew_applied,
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.require_tools", lambda tools: required.append(list(tools))
+    )
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _deskew_scan(settings, page if page is not None else _skewed_gray()),
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    monkeypatch.setattr("scanmole.pipeline.run_ocr", fake_ocr)
+    _no_skew(monkeypatch, stderr)
+    keep = tmp_path / "kept"
+    settings_for_run: dict[str, object] = {
+        "deskew": True,
+        "ocr": True,
+        "mode": "gray",
+        "keep_images": keep,
+        "keep_blanks": True,
+    }
+    settings_for_run.update(overrides)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        **settings_for_run,  # type: ignore[arg-type]
+    )
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+    return calls, required, keep / "out" / "page_0001.pnm"
+
+
+def test_the_backend_keeps_both_later_mechanisms_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nothing may straighten a page twice, so a backend that took the
+    # request stops the host as well as ocrmypdf. It also means the run
+    # never needs the measurement tool.
+    calls, required, _page = _deskew_run(tmp_path, monkeypatch, deskew_applied=True)
+
+    assert calls == [False]
+    assert not any("tesseract" in tools for tools in required)
+
+
+def test_the_measurement_tool_is_required_before_any_paper_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The host path needs Tesseract, and a run must find that out from
+    # the negotiated settings rather than after a stack went through.
+    _calls, required, _page = _deskew_run(tmp_path, monkeypatch)
+
+    assert any("tesseract" in tools for tools in required)
+
+
+@pytest.mark.parametrize("requested", [False, True])
+def test_the_tool_is_only_required_where_the_host_would_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested: bool
+) -> None:
+    # --no-deskew asks for nothing, so it must not turn a missing
+    # Tesseract into a refused scan.
+    _calls, required, _page = _deskew_run(tmp_path, monkeypatch, deskew=requested)
+
+    assert any("tesseract" in tools for tools in required) is requested
+
+
+def test_a_straightened_page_is_not_deskewed_by_ocr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A real angle: the host turns the page, so ocrmypdf must not.
+    calls, _required, page = _deskew_run(
+        tmp_path, monkeypatch, stderr="Deskew angle: 0.0350\n"
+    )
+
+    assert calls == [False]
+    assert page.read_bytes().startswith(b"P5\n200 260\n")  # the canvas is kept
+
+
+def test_a_page_the_host_cannot_own_falls_through_to_ocr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 16-bit color is refused by the host, and no page in the batch was
+    # straightened, so the fallback is still ocrmypdf's to take.
+    deep = b"P6\n40 40\n65535\n" + bytes(40 * 40 * 6)
+    calls, _required, _page = _deskew_run(
+        tmp_path, monkeypatch, page=deep, mode="color"
+    )
+
+    assert calls == [True]
+
+
+def test_a_fixed_page_size_keeps_its_canvas_while_still_straightening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The fixed size bypasses both automatic crops, so the configured
+    # dimensions come through exactly; the page is still turned.
+    _calls, _required, page = _deskew_run(
+        tmp_path, monkeypatch, stderr="Deskew angle: 0.0350\n", page_size="a4"
+    )
+
+    assert page.read_bytes().startswith(b"P5\n200 260\n")
+
+
+def test_the_second_crop_takes_the_wedges_the_rotation_straightens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A skewed sheet on dark backing: the first crop can only take the
+    # bounding box, which still holds triangular backing in the corners.
+    # Turning the page lines those wedges up along the edges, and the
+    # second crop is what removes them. Without it they stay, so the
+    # kept page's own outer lines are the test.
+    from PIL import Image, ImageDraw
+
+    width, height = 240, 300
+    sheet = Image.new("L", (width, height), 0)  # backing
+    draw = ImageDraw.Draw(sheet)
+    draw.rectangle([30, 30, width - 30, height - 30], fill=255)  # the paper
+    for line in range(9):
+        top = 60 + line * 22
+        draw.rectangle([50, top, 50 + 120 + (line % 3) * 15, top + 7], fill=0)
+    skewed = sheet.rotate(2.0, resample=Image.Resampling.BICUBIC, fillcolor=0)
+    frame = tmp_path / "frame.pgm"
+    skewed.save(frame)
+
+    _calls, _required, page = _deskew_run(
+        tmp_path,
+        monkeypatch,
+        stderr=f"Deskew angle: {-2.0 * 3.141592653589793 / 180:.6f}\n",
+        page=frame.read_bytes(),
+        page_size="auto",
+    )
+
+    data = page.read_bytes()
+    tokens = data.split(b"\n", 3)
+    kept_w, kept_h = (int(v) for v in tokens[1].split())
+    raster = tokens[3]
+    # Every outer line of what survives has to read as paper; a backing
+    # wedge the second crop missed would darken one of them.
+    edges = [
+        sum(raster[y * kept_w] < 128 for y in range(kept_h)) / kept_h,
+        sum(raster[y * kept_w + kept_w - 1] < 128 for y in range(kept_h)) / kept_h,
+        sum(raster[x] < 128 for x in range(kept_w)) / kept_w,
+        sum(raster[(kept_h - 1) * kept_w + x] < 128 for x in range(kept_w)) / kept_w,
+    ]
+    assert max(edges) < 0.30, edges

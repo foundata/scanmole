@@ -236,8 +236,9 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "straighten skewed pages: via the device where it offers deskew, "
-            "otherwise during OCR (default: on)"
+            "straighten skewed pages: on the device where it offers deskew, "
+            "otherwise on the scanned raster here, otherwise during OCR "
+            "(default: on)"
         ),
     )
     parser.add_argument(

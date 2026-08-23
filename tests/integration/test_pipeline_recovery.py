@@ -24,9 +24,11 @@ from support.pipeline import (
 )
 
 import scanmole.pipeline as pipeline_module
+from scanmole.cli import main
 from scanmole.config import ScanConfig
 from scanmole.errors import (
     DeviceError,
+    MissingDependencyError,
     ProcessingError,
     ScanMoleError,
 )
@@ -36,6 +38,7 @@ from scanmole.pipeline import publish_pdf, run_pipeline
 from scanmole.scanner import (
     EffectiveSettings,
     ScanResult,
+    run_scanimage,
 )
 
 pytestmark = pytest.mark.integration
@@ -726,3 +729,267 @@ def test_a_cleanup_failure_does_not_mask_the_publishing_error(
 
     with pytest.raises(ProcessingError, match="cannot write output"):
         publish_pdf(source, output)
+
+
+# ------------------------------------------------- host deskew failures
+#
+# Every case below travels the production route: the failure is raised
+# inside the page callback, which run_scanimage invokes from its reader
+# thread, records, and re-raises through the controller. Only the
+# measurement tool and the two write points are stood in for.
+
+
+_ANGLE = "Deskew angle: 0.0350\n"
+_HOST_SETTINGS = EffectiveSettings(
+    source="ADF Duplex", mode="Gray", resolution=300, deskew_applied=False
+)
+
+
+def _skewed_gray() -> bytes:
+    """A page with enough ruled lines to look like text to a measurement."""
+    width, height = 200, 260
+    rows = bytearray(b"\xff" * (width * height))
+    for line in range(12):
+        top = 30 + line * 18
+        for y in range(top, top + 6):
+            for x in range(24, 24 + 120 + (line % 3) * 20):
+                rows[y * width + x] = 0
+    return b"P5\n%d %d\n255\n" % (width, height) + bytes(rows)
+
+
+def _reader_scan(page_bytes: bytes):  # type: ignore[no-untyped-def]
+    """A scan whose page callback runs on run_scanimage's own reader thread."""
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(_HOST_SETTINGS)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(page_bytes)
+        assert callable(on_page)
+        # The child outlives its announcement so the failure has to end
+        # the batch, exactly as it does on real paper.
+        announce = f"echo {shlex.quote(str(page))}; sleep 30"
+        run_scanimage(["sh", "-c", announce], on_page)
+        return ScanResult(pages=[page], settings=_HOST_SETTINGS)
+
+    return fake_scan
+
+
+def _tesseract(
+    monkeypatch: pytest.MonkeyPatch, *, returncode: int = 0, stderr: str = ""
+) -> None:
+    monkeypatch.setattr(
+        "scanmole.deskew.run_command",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, returncode, "", stderr
+        ),
+    )
+
+
+def _measurement_hangs(monkeypatch: pytest.MonkeyPatch) -> None:
+    def hang(command: list[str], **_kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(command, 120.0)
+
+    monkeypatch.setattr("scanmole.deskew.run_command", hang)
+
+
+def _staging_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    _tesseract(monkeypatch, stderr=_ANGLE)
+
+    def failing_save(self: object, fp: object, *a: object, **kw: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("PIL.Image.Image.save", failing_save)
+
+
+def _replacement_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    _tesseract(monkeypatch, stderr=_ANGLE)
+
+    def failing_replace(path: Path, data: bytes) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("scanmole.deskew.replace_file", failing_replace)
+
+
+def _unreadable_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    _tesseract(
+        monkeypatch, returncode=2, stderr="Leptonica Error in pixRead: pix not read\n"
+    )
+
+
+def _host_deskew_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ScanConfig, io.StringIO]:
+    """Arrange one scanner run that hands the deskew request to the host."""
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _reader_scan(_skewed_gray()))
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        deskew=True,
+        ocr=False,
+        mode="gray",
+    )
+    return config, io.StringIO()
+
+
+_DESKEW_FAILURES = [
+    pytest.param(_unreadable_page, "cannot measure the skew", id="tesseract-exit-2"),
+    pytest.param(_measurement_hangs, "timed out", id="measurement-timeout"),
+    pytest.param(_staging_full, "cannot straighten", id="staging-write"),
+    pytest.param(_replacement_full, "cannot straighten", id="atomic-replacement"),
+]
+
+
+@pytest.mark.parametrize(("arrange", "stage"), _DESKEW_FAILURES)
+def test_a_broken_deskew_is_a_processing_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: object,
+    stage: str,
+) -> None:
+    # A page that has already been through the feeder is worth an exit
+    # code that says "the pages survived, rebuild them", not the one
+    # that means ScanMole has a bug.
+    config, stream = _host_deskew_run(tmp_path, monkeypatch)
+    assert callable(arrange)
+    arrange(monkeypatch)
+
+    with pytest.raises(ProcessingError) as info:
+        run_pipeline(config, EventWriter(enabled=True, stream=stream))
+
+    assert info.value.exit_code == 5
+    assert stage in info.value.message
+    assert "page_0001.pnm" in info.value.message
+    # The stage is named, but no more of the filesystem than the
+    # recovery instructions in the same message already give away.
+    work_dir = Path(info.value.message.split("kept in ", 1)[1].split(" ", 1)[0])
+    try:
+        assert (work_dir / "page_0001.pnm").is_file()
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize(("arrange", "stage"), _DESKEW_FAILURES)
+def test_a_broken_deskew_keeps_its_original_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: object,
+    stage: str,
+) -> None:
+    # Translating the failure must not lose what actually broke: the
+    # traceback has to still name the tool error or the write error.
+    config, stream = _host_deskew_run(tmp_path, monkeypatch)
+    assert callable(arrange)
+    arrange(monkeypatch)
+
+    with pytest.raises(ProcessingError) as info:
+        run_pipeline(config, EventWriter(enabled=True, stream=stream))
+
+    cause = info.value.__cause__
+    assert isinstance(cause, (subprocess.SubprocessError, OSError))
+    assert info.value.__suppress_context__  # raised "from", not incidentally
+    shutil.rmtree(
+        Path(info.value.message.split("kept in ", 1)[1].split(" ", 1)[0]),
+        ignore_errors=True,
+    )
+
+
+@pytest.mark.parametrize(("arrange", "stage"), _DESKEW_FAILURES)
+def test_a_page_whose_deskew_broke_is_never_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: object,
+    stage: str,
+) -> None:
+    # Deskew runs before anything reads the page's content, so a page
+    # that did not get through it has no verdict to announce. Reporting
+    # one would describe a raster that no longer exists in that form.
+    config, stream = _host_deskew_run(tmp_path, monkeypatch)
+    assert callable(arrange)
+    arrange(monkeypatch)
+
+    with pytest.raises(ProcessingError) as info:
+        run_pipeline(config, EventWriter(enabled=True, stream=stream))
+
+    kinds = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
+    assert "page" not in kinds
+    assert "scan_done" not in kinds and "done" not in kinds
+    shutil.rmtree(
+        Path(info.value.message.split("kept in ", 1)[1].split(" ", 1)[0]),
+        ignore_errors=True,
+    )
+
+
+def test_a_broken_deskew_reaches_the_json_stream_as_code_five(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The whole point of the translation is what a frontend reads: the
+    # terminal error event has to classify this as a processing failure
+    # with pages to recover, and the process has to agree with it.
+    config, _stream = _host_deskew_run(tmp_path, monkeypatch)
+    _unreadable_page(monkeypatch)
+    monkeypatch.setattr("scanmole.cli.pick_default_device", lambda: "test:0")
+
+    code = main(["--json", "--no-ocr", "-o", str(config.output)])
+
+    event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert code == 5
+    assert event["event"] == "error" and event["code"] == 5
+    shutil.rmtree(
+        Path(event["message"].split("kept in ", 1)[1].split(" ", 1)[0]),
+        ignore_errors=True,
+    )
+
+
+def test_a_missing_measurement_tool_still_fails_before_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unchanged by the translation above: an absent Tesseract is a
+    # missing dependency, not a processing failure, and it must be
+    # found while the stack is still in the feeder.
+    delivered: list[Path] = []
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(_HOST_SETTINGS)  # the real require_tools runs in here
+        page = _gray_page(work_dir / "page_0001.pnm")
+        assert callable(on_page)
+        on_page(page)
+        delivered.append(page)
+        return ScanResult(pages=[page], settings=_HOST_SETTINGS)
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "scanmole.external.shutil.which",
+        lambda tool: None if tool == "tesseract" else real_which(tool),
+    )
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        deskew=True,
+        ocr=False,
+        mode="gray",
+    )
+
+    with pytest.raises(MissingDependencyError) as info:
+        run_pipeline(config, EventWriter(enabled=False))
+
+    assert info.value.exit_code == 4
+    assert "tesseract" in info.value.message
+    assert delivered == []
