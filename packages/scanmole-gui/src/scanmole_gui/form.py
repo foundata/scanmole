@@ -126,8 +126,9 @@ FLOW_ACTIONS: tuple[tuple[str, SheetFlow], ...] = (
 HARDWARE_BUTTON_ACTIONS = (
     (_("Off"), "off"),
     # The play glyph mirrors the Scan button's icon, so the mapping names
-    # the control it copies instead of just its word.
-    (_('Same as "▶ Scan"'), "same"),
+    # the control it copies instead of just its word. Typographic quotes,
+    # matching the German catalogue, which already uses its own pair.
+    (_("Same as “▶ Scan”"), "same"),
     (_("Scan one sheet"), "single"),
     (_("Combine scans"), "collect"),
 )
