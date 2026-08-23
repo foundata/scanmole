@@ -1895,10 +1895,10 @@ def test_read_only_options_are_never_emitted(tmp_path: Path) -> None:
         "--swdespeck=1",
     ):
         assert option not in command, option
-    # The read-only resolution still establishes the dpi without emission,
-    # and no window travels because none could be requested.
+    # Read-only current values still establish state without emission:
+    # the dpi, and the window the scan will actually run in.
     assert effective.resolution == 300
-    assert effective.window_mm is None
+    assert effective.window_mm == (219.4, 297.0)
     assert effective.deskew_applied is False
 
 
@@ -2031,3 +2031,87 @@ def test_unknown_source_keeps_the_flatbed_frame_limit(tmp_path: Path) -> None:
         str(tmp_path / "page_%04d.pnm"),
     )
     assert "--batch-count=1" in command
+
+
+def _window_caps(x: str, y: str) -> dict[str, Capability]:
+    """A read-only listing whose only evidence is its x/y current values."""
+    return parse_capabilities(f"    --resolution 300 [300] [read-only]\n{x}{y}")
+
+
+def test_read_only_window_values_become_the_effective_window(
+    tmp_path: Path,
+) -> None:
+    # A [read-only] -x/-y cannot be set, but its current value is the
+    # width and height the backend will use, which is exactly what
+    # automatic page size measures each frame against.
+    command, effective = build_scan_command(
+        _config(page_size="auto"),
+        "test:0",
+        _window_caps(
+            "    -x 0..215.9mm [215.9] [read-only]\n",
+            "    -y 0..297.18mm [297.18] [read-only]\n",
+        ),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "-x" not in command and "-y" not in command
+    assert effective.window_mm == (215.9, 297.18)
+
+
+@pytest.mark.parametrize(
+    ("x", "y"),
+    [
+        # A range maximum is a limit, not the window in force.
+        ("    -x 0..215.9mm [read-only]\n", "    -y 0..297.18mm [read-only]\n"),
+        # Opaque or malformed markers are not measurements.
+        (
+            "    -x 0..215.9mm [<float>] [read-only]\n",
+            "    -y 0..297.18mm [auto] [read-only]\n",
+        ),
+        # Neither is a value that cannot be a physical extent.
+        (
+            "    -x 0..215.9mm [0] [read-only]\n",
+            "    -y 0..297.18mm [-5] [read-only]\n",
+        ),
+        (
+            "    -x 0..215.9mm [inf] [read-only]\n",
+            "    -y 0..297.18mm [nan] [read-only]\n",
+        ),
+        (
+            "    -x 0..215.9mm [" + "9" * 400 + "] [read-only]\n",
+            "    -y 0..297.18mm [297.18] [read-only]\n",
+        ),
+        # One axis alone describes no window.
+        ("    -x 0..215.9mm [215.9] [read-only]\n", ""),
+        ("", "    -y 0..297.18mm [297.18] [read-only]\n"),
+    ],
+)
+def test_unusable_read_only_window_values_carry_no_window(
+    tmp_path: Path, x: str, y: str
+) -> None:
+    _command, effective = build_scan_command(
+        _config(page_size="auto"),
+        "test:0",
+        _window_caps(x, y),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert effective.window_mm is None
+
+
+def test_writable_geometry_keeps_reporting_what_it_requested(tmp_path: Path) -> None:
+    # The read-only fallback must not touch an axis the command set
+    # itself: there the emitted value is the window, current value or not.
+    command, effective = build_scan_command(
+        _config(page_size="a4"),
+        "test:0",
+        parse_capabilities(
+            "    --resolution 300 [300]\n"
+            "    -x 0..215.9mm [215.9]\n"
+            "    -y 0..297.18mm [297.18]\n"
+        ),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "-x" in command and "-y" in command
+    assert effective.window_mm == (210.0, 297.0)  # the A4 request, not the maxima

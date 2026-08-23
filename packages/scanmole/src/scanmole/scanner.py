@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import re
 import shlex
 import subprocess
@@ -35,6 +36,7 @@ from scanmole.options import (
     is_flatbed_source,
     parse_page_size,
     probe_capabilities,
+    readable_capability,
     writable_capability,
 )
 from scanmole.sensors import probe_sensors
@@ -153,6 +155,28 @@ def _single_sheet_count(plan: Plan) -> int:
     return 2 if plan.source.effective == "adf-duplex" else 1
 
 
+_WINDOW_VALUE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mm)?")
+
+
+def _observed_window_mm(caps: dict[str, Capability], option: str) -> float | None:
+    """The scan extent a read-only ``-x``/``-y`` reports it is fixed at.
+
+    A ``[read-only]`` window option cannot be set, but its current value
+    still states the width or height the backend will actually use, which
+    is what automatic page size compares each frame against. Only a plain,
+    finite, positive number counts: a range maximum is a limit rather than
+    the window in force, and anything else is not evidence.
+    """
+    capability = readable_capability(caps, option)
+    if capability is None or capability.settable:
+        return None
+    match = _WINDOW_VALUE.fullmatch((capability.current or "").strip())
+    if match is None:
+        return None
+    value = float(match.group(1))
+    return value if math.isfinite(value) and value > 0 else None
+
+
 def build_scan_command(
     config: ScanConfig,
     device: str,
@@ -246,6 +270,14 @@ def build_scan_command(
         command += [option, rendered]
         if option in ("-x", "-y"):
             window[option] = float(rendered)
+    for option, name in (("-x", "x"), ("-y", "y")):
+        # A read-only axis was skipped above, because nothing may be
+        # emitted for it. Its current value is still the window the scan
+        # will run in, and automatic page size needs that comparison.
+        if option not in window:
+            observed = _observed_window_mm(caps, name)
+            if observed is not None:
+                window[option] = observed
     if size is None and writable_capability(caps, "ald") is not None:
         # Auto page size: let the scanner detect the paper's lower edge, so
         # frames come back at true paper length instead of the padded window.

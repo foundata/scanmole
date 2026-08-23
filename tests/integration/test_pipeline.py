@@ -2777,3 +2777,73 @@ def test_an_unengaged_read_only_enhancement_still_refuses_plain_p4(
     match = re.search(r"kept in (\S+)", str(excinfo.value))
     assert match is not None
     shutil.rmtree(Path(match.group(1)), ignore_errors=True)
+
+
+def test_a_read_only_window_arms_content_sizing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The device fixes its scan window and will not accept a value for it.
+    # Automatic page size decides whether an axis is still at the window by
+    # comparing against exactly that number, so losing it leaves every page
+    # at full window width.
+    caps = parse_capabilities(
+        "    --resolution 300 [300] [read-only]\n"
+        "    -x 0..50.8mm [50.8] [read-only]\n"
+        "    -y 0..76.2mm [76.2] [read-only]\n"
+    )
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size="auto",
+        source="adf",
+        resolution=300,
+        keep_images=tmp_path / "kept",
+    )
+    command, effective = build_scan_command(
+        config, "test:0", caps, str(tmp_path / "page_%04d.pnm")
+    )
+    assert "-x" not in command and "-y" not in command
+    assert effective.window_mm == (50.8, 76.2)
+
+    # A frame filling that window, paper-bright throughout, with one dense
+    # block: both axes read as unresolved, so the page must be sized from
+    # its content instead of kept at the window.
+    frame_w, frame_h = 600, 900
+    rows = []
+    for y in range(frame_h):
+        row = bytearray([235] * frame_w)
+        if 100 <= y < 300:
+            row[100:300] = bytes(200)
+        rows.append(bytes(row))
+    frame = b"P5\n%d %d\n255\n" % (frame_w, frame_h) + b"".join(rows)
+
+    def fake_scan(
+        scan_config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        assert callable(on_settings)
+        on_settings(effective)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=effective)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    kept = (tmp_path / "kept" / "out" / "page_0001.pnm").read_bytes()
+    width, height = (int(v) for v in kept.split(b"\n")[1].split(b" "))
+    # Content-sized (444 x 477 px), not the 592 x 892 px the frame keeps
+    # when the window is unknown and the sizing pass never arms.
+    assert width < 500 and height < 600
