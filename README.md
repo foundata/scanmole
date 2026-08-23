@@ -280,7 +280,7 @@ The following devices are regularly used with ScanMole and were verified with re
 | Brother ADS-4550W | USB (via ipp-usb) and network | `airscan` (eSCL, driverless) | Duplex ADF. Offers only Color/Gray, so 1-bit output comes from ScanMole's software conversion. | None known. |
 | Canon CanoScan LiDE 220 | USB | `genesys` | Flatbed. Feeder requests degrade to a single flatbed scan; 1-bit output comes from ScanMole's software conversion. | None known. |
 | Epson DS-730N | Network | `epsonds` (see [Epson](#devices-epson)) | Duplex ADF, native 1-bit. | Ignores its hardware auto-crop command over the network; ScanMole's `auto` page size compensates by sizing each page from its content. |
-| ScanSnap iX100 | USB | `fujitsu` | Portable single-side sheet feeder, native 1-bit. | None known. |
+| ScanSnap iX100 | USB | `fujitsu` | Portable single-side sheet feeder, native 1-bit. | In its native 1-bit mode (the default black and white output) the scanner thresholds before ScanMole sees the frame, so automatic page size cannot find the paper edge by brightness and pages keep the full scan width. Hardware length detection still shortens them. Scanning in Gray or Color, or choosing a fixed page size, gives the expected width. |
 | ScanSnap iX500 | USB | `fujitsu` | Duplex ADF, native 1-bit, hardware paper-edge detection. | None known. |
 
 Every listed device has its captured capability listing pinned in the test suite (`tests/fixtures/scanimage-A/`), so its option mapping stays regression-tested without the hardware. If your device works too (or does not), [reporting it](#faq-scanner-quirks) helps this list grow.
