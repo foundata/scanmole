@@ -487,7 +487,7 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
                 band_px: int | None = None
                 if source_now is not None and is_feeder_source(source_now):
                     band_px = max(1, round(_FEEDER_BAND_MM * effective_dpi / 25.4))
-                autocrop_image(page, trim_px, band_px)
+                autocrop_image(page, trim_px, band_px, dpi=effective_dpi)
             # Backends without a 1-bit mode (eSCL offers only Gray/Color)
             # degrade a lineart request to gray; restore the asked-for 1-bit
             # output in software, before blank detection so the 0.995 default

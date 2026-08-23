@@ -1401,7 +1401,9 @@ def _autocrop_probe(  # type: ignore[no-untyped-def]
     """Run one fake scan and record the (trim, band) autocrop received."""
     calls: list[tuple[int, int | None]] = []
 
-    def recorder(page: Path, trim_px: int, feeder_band_px: int | None = None) -> bool:
+    def recorder(
+        page: Path, trim_px: int, feeder_band_px: int | None = None, *, dpi: int
+    ) -> bool:
         calls.append((trim_px, feeder_band_px))
         return False
 
@@ -1509,7 +1511,10 @@ def test_snapped_dpi_trim_keeps_near_edge_content(
 ) -> None:
     # Behavioral proof for the trim fix: content 3 px inside the detected
     # paper edge of a 150 dpi frame survives (2 px trim); the request-derived
-    # 8 px trim would have deleted it.
+    # 8 px trim would have deleted it. The strip is short enough that its
+    # column mean stays paper-bright, which is the localized content the
+    # side walk promises to keep; the dense case it may drop is pinned by
+    # test_dense_edge_adjacent_content_is_cropped_by_automatic_size.
     dpi = 150
     scale = dpi / 25.4
     window = (215.9, 355.6)
@@ -1522,7 +1527,7 @@ def test_snapped_dpi_trim_keeps_near_edge_content(
             row = bytearray(
                 [80] * backing + [230] * (frame_w - 2 * backing) + [80] * backing
             )
-            if 200 <= y < 800:
+            if 200 <= y < 400:  # short: the column mean stays paper-bright
                 row[backing + 3 : backing + 6] = bytes(3)  # near-edge strip
             if 100 <= y < 1600:
                 row[300:900] = bytes(600)  # dense block: keeps the page
@@ -1575,7 +1580,122 @@ def test_snapped_dpi_trim_keeps_near_edge_content(
     row_bytes = (width + 7) // 8
     # The strip sat 3 px inside the paper edge; after the 2 px trim it is
     # bit 1 of each row's first byte on its rows.
-    assert any(raster[row * row_bytes] != 0 for row in range(200, 780))
+    assert any(raster[row * row_bytes] != 0 for row in range(200, 400))
+
+
+def _edge_strip_frame(
+    dpi: int, window: tuple[float, float], backing: int, span: range
+) -> tuple[int, bytes]:
+    """A feeder frame with a 3 px dark strip 3 px inside the paper edge.
+
+    ``span`` is the strip's vertical extent, which is what decides whether
+    its column mean stays paper-bright or reads as backing.
+    """
+    scale = dpi / 25.4
+    frame_w, frame_h = round(window[0] * scale), round(window[1] * scale)
+    paper_end = round(297 * scale)
+    rows = []
+    for y in range(frame_h):
+        if y >= paper_end:
+            rows.append(bytes([80] * frame_w))
+            continue
+        row = bytearray(
+            [80] * backing + [230] * (frame_w - 2 * backing) + [80] * backing
+        )
+        if y in span:
+            row[backing + 3 : backing + 6] = bytes(3)
+        if 100 <= y < 1600:
+            row[300:900] = bytes(600)  # dense block: keeps the page
+        rows.append(bytes(row))
+    return frame_w, b"P5\n%d %d\n255\n" % (frame_w, frame_h) + b"".join(rows)
+
+
+def _run_with_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dpi: int,
+    window: tuple[float, float],
+    frame: bytes,
+    page_size: str,
+) -> tuple[int, bytes]:
+    """Run the pipeline over one prepared frame and return the kept page."""
+
+    def fake_scan(
+        config: ScanConfig,
+        device: str,
+        work_dir: Path,
+        events: EventWriter,
+        on_page: object,
+        on_settings: object = None,
+    ) -> ScanResult:
+        settings = EffectiveSettings(
+            source="ADF Front", mode="Gray", resolution=dpi, window_mm=window
+        )
+        assert callable(on_settings)
+        on_settings(settings)
+        page = work_dir / "page_0001.pnm"
+        page.write_bytes(frame)
+        assert callable(on_page)
+        on_page(page)
+        return ScanResult(pages=[page], settings=settings)
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", fake_scan)
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+    keep_dir = tmp_path / "kept"
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        page_size=page_size,
+        source="adf",
+        resolution=dpi,
+        keep_images=keep_dir,
+    )
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+    kept = (keep_dir / "out" / "page_0001.pnm").read_bytes()
+    _magic, dims, raster = kept.split(b"\n", 2)
+    width, _height = map(int, dims.split())
+    return width, raster
+
+
+def test_dense_edge_adjacent_content_is_cropped_by_automatic_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The accepted limitation, stated as an expectation so it cannot drift
+    # in either direction. The same strip as the trim test, but tall enough
+    # that its column mean falls below the paper cutoff: with only 3 px of
+    # bright margin ahead of it (far under the 2 mm minimum run) the side
+    # walk cannot tell it from backing and crops it away. A fixed page size
+    # is the remedy, pinned by the test below.
+    dpi, window, backing = 150, (215.9, 355.6), 24
+    frame_w, frame = _edge_strip_frame(dpi, window, backing, range(200, 800))
+
+    width, raster = _run_with_frame(tmp_path, monkeypatch, dpi, window, frame, "auto")
+
+    # 3 px of margin and the 3 px strip are gone beyond the ordinary trim.
+    assert width == frame_w - 2 * backing - 4 - 6
+    row_bytes = (width + 7) // 8
+    assert all(raster[row * row_bytes] == 0 for row in range(200, 800))
+
+
+def test_a_fixed_page_size_preserves_dense_edge_adjacent_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The documented escape hatch: a fixed page size never runs the
+    # brightness walk, so the same frame keeps every column.
+    dpi, window, backing = 150, (215.9, 355.6), 24
+    frame_w, frame = _edge_strip_frame(dpi, window, backing, range(200, 800))
+
+    width, raster = _run_with_frame(tmp_path, monkeypatch, dpi, window, frame, "a4")
+
+    assert width == frame_w  # untouched: no crop at all
+    row_bytes = (width + 7) // 8
+    # Columns 24 to 31 land in byte 3: paper, then the 3 px strip, then paper.
+    assert all(raster[row * row_bytes + 3] != 0 for row in range(200, 800))
+    assert raster[100 * row_bytes + 3] == 0  # a row without the strip
 
 
 def test_huge_feeder_window_with_mid_gray_tail_yields_a4_pages(

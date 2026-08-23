@@ -12,6 +12,7 @@ import logging
 import math
 import os
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -217,7 +218,101 @@ _MIN_PAPER_PX = 16
 """Reject a detected paper box smaller than this per axis as noise."""
 
 
-def autocrop_pnm(path: Path, trim_px: int, feeder_band_px: int | None = None) -> bool:
+_MIN_COLUMN_PAPER_RUN_MM = 2.0
+"""How far a column profile must stay paper-bright to end a side walk.
+
+A lone bright column is not evidence of paper. Two such columns are
+measured: a saturated sensor strip 1.61 mm wide at the frame edge, and
+ordinary backing noise whose mean touches the cutoff for a single
+column. Both used to end the walk immediately and keep the backing.
+
+This is not free. Content whose own bright margin is shorter than this
+run can be classified as backing and cropped away; that is the accepted
+limitation documented for automatic page size, and a fixed page size
+avoids the walk entirely. Applies to the side (column) walk only; the
+row walk is unchanged. Measured insensitive from 2 to 8 mm across the
+corpus, so this is the smallest stable value rather than a tuned one.
+"""
+
+_MIN_BACKING_PROFILE_SHARE = 0.80
+"""Share of profile positions that must be below the cutoff to skip a run.
+
+Counted over *profile positions*, never over raster pixels: the walk
+only ever sees per-column means. Guards the one decision that can
+discard evidence, so a short bright run is only dropped when what lies
+between it and the real paper reads as backing.
+
+That reading is a density judgement, not a recognition of content.
+Ordinary sparse content and alternating patterns (a barcode at the
+paper edge) leave the gap around half bright and keep their outer edge;
+backing runs 0.96 and above. Dense edge-adjacent content fills the gap
+just as backing does and is indistinguishable here. Measured
+insensitive from 0.60 to 0.95 on every primary case.
+"""
+
+
+def _paper_edge(
+    size: int,
+    is_paper: Callable[[int], bool],
+    start: int,
+    step: int,
+    run: int,
+) -> int | None:
+    """One side of the column walk: where the paper starts, or ``None``.
+
+    ``None`` means no paper-like position at all, or none that stays
+    paper-bright for ``run`` positions; the caller treats that as "no
+    plausible paper" exactly as a converged walk used to.
+
+    A short bright run at the very edge is discarded only when the gap
+    between it and the first sustained run is predominantly dark, which
+    is what backing looks like. The gap deliberately excludes the outer
+    run itself: including it would make the verdict depend on how wide
+    that run happens to be, which is a property of the sensor rather
+    than of the page.
+
+    This validates edge evidence; it cannot recognise content. Sparse
+    and alternating content leaves the gap too bright to skip, so it
+    survives, but a dense region preceded by less than ``run`` of bright
+    paper fills the gap exactly as backing does and is cropped with it.
+    """
+    first: int | None = None
+    sustained: int | None = None
+    run_start = start
+    count = 0
+    index = start
+    while 0 <= index < size:
+        if is_paper(index):
+            if count == 0:
+                run_start = index
+                if first is None:
+                    first = index
+            count += 1
+            if count >= run:
+                sustained = run_start
+                break
+        else:
+            count = 0
+        index += step
+    if first is None or sustained is None:
+        return None
+    if sustained == first:
+        return first  # today's answer already stays paper-bright
+    gap = first
+    while 0 <= gap < size and is_paper(gap):
+        gap += step  # step over the complete outer run
+    if not (0 <= gap < size):  # pragma: no cover -- the run would be sustained
+        return first
+    positions = range(gap, sustained, step)  # directional [gap, sustained)
+    dark = sum(1 for position in positions if not is_paper(position))
+    if dark / len(positions) >= _MIN_BACKING_PROFILE_SHARE:
+        return sustained
+    return first
+
+
+def autocrop_pnm(
+    path: Path, trim_px: int, feeder_band_px: int | None = None, *, dpi: int
+) -> bool:
     """Crop a raw gray/color PNM to the detected paper edges, in place.
 
     Scanning the device's full window (page size ``auto``) surrounds the
@@ -231,6 +326,16 @@ def autocrop_pnm(path: Path, trim_px: int, feeder_band_px: int | None = None) ->
     never sits at a physically detected paper edge, so the shave is safe
     there; an edge the walk left at the frame boundary was never detected,
     may carry content up to its first row, and keeps every row.
+
+    The side walk additionally requires the crossing to hold for
+    :data:`_MIN_COLUMN_PAPER_RUN_MM` (hence ``dpi``), because a single
+    paper-bright column is not evidence of paper: a saturated sensor
+    strip at the frame edge and backing noise touching the cutoff both
+    used to end the walk immediately and keep the backing. A short outer
+    run is only discarded when the gap to the first sustained run is
+    predominantly dark; see :func:`_paper_edge`. The row walk is
+    deliberately unchanged, since the measured defects are all side
+    edges.
 
     ``feeder_band_px`` enables the feeder-only fallback for top-anchored
     frames (the caller states that context explicitly; it is never guessed
@@ -288,6 +393,8 @@ def autocrop_pnm(path: Path, trim_px: int, feeder_band_px: int | None = None) ->
     # Column profile over a row subsample (C-speed slices); row profile over a
     # column subsample restricted to the detected paper columns, so the side
     # backing cannot drag content rows below the cutoff.
+    paper_run_px = max(1, round(_MIN_COLUMN_PAPER_RUN_MM * dpi / 25.4))
+
     def column_walk(last_row: int) -> tuple[int, int]:
         row_step = max(1, last_row // 512)
         sampled = b"".join(
@@ -295,15 +402,21 @@ def autocrop_pnm(path: Path, trim_px: int, feeder_band_px: int | None = None) ->
             for row in range(0, last_row, row_step)
         )
         sampled_rows = len(sampled) // width
+        verdict: dict[int, bool] = {}
 
         def column_is_paper(column: int) -> bool:
-            return sum(sampled[column::width]) / sampled_rows >= cutoff
+            decided = verdict.get(column)
+            if decided is None:
+                decided = sum(sampled[column::width]) / sampled_rows >= cutoff
+                verdict[column] = decided
+            return decided
 
-        found_left, found_right = 0, width - 1
-        while found_left < found_right and not column_is_paper(found_left):
-            found_left += 1
-        while found_right > found_left and not column_is_paper(found_right):
-            found_right -= 1
+        found_left = _paper_edge(width, column_is_paper, 0, 1, paper_run_px)
+        found_right = _paper_edge(width, column_is_paper, width - 1, -1, paper_run_px)
+        if found_left is None or found_right is None:
+            # No plausible paper, reported exactly as a converged walk used
+            # to be, so the feeder-band fallback below still engages.
+            return 0, 0
         return found_left, found_right
 
     left, right = column_walk(height)
@@ -368,7 +481,9 @@ def autocrop_pnm(path: Path, trim_px: int, feeder_band_px: int | None = None) ->
     return True
 
 
-def autocrop_image(path: Path, trim_px: int, feeder_band_px: int | None = None) -> bool:
+def autocrop_image(
+    path: Path, trim_px: int, feeder_band_px: int | None = None, *, dpi: int
+) -> bool:
     """Best-effort in-place crop to the paper edges; never fails the page.
 
     Returns:
@@ -376,7 +491,7 @@ def autocrop_image(path: Path, trim_px: int, feeder_band_px: int | None = None) 
         a warning, so the page still reaches the rest of the pipeline.
     """
     try:
-        return autocrop_pnm(path, trim_px, feeder_band_px)
+        return autocrop_pnm(path, trim_px, feeder_band_px, dpi=dpi)
     except (ValueError, OSError) as exc:
         LOGGER.warning("cannot crop %s: %s", path, exc)
         return False
