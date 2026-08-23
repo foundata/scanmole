@@ -13,6 +13,7 @@ import math
 import signal
 import subprocess
 import sys
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
@@ -29,7 +30,7 @@ from scanmole.devices import (
 from scanmole.errors import InputError, ScanMoleError, Terminated
 from scanmole.events import EventWriter
 from scanmole.external import require_tools
-from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, expand_template, has_counter
+from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE, output_candidates
 from scanmole.pipeline import run_pipeline
 
 LOGGER = logging.getLogger("scanmole")
@@ -341,30 +342,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _unique_output(path: Path) -> Path:
-    """Reserve and return ``path`` or the next free ``name_2.pdf``, ...
+def _reserve(candidates: Iterator[Path]) -> Path:
+    """Reserve the first free candidate and return it.
 
     The chosen name is reserved by creating it empty with ``O_EXCL``, so two
     concurrent runs can never pick the same output file; a plain existence
-    check would let both pass before either has written anything. The
+    check would let both pass before either has written anything, which is
+    also why the GUI's preview of this same sequence stays advisory. The
     pipeline later replaces the empty file atomically with the finished PDF;
     :func:`main` removes it again when no PDF was published.
 
     Raises:
         InputError: If the output location is not writable.
     """
-    number = 2
-    candidate = path
     while True:
+        candidate = next(candidates)
         try:
             candidate.touch(exist_ok=False)
         except FileExistsError:
-            candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
-            number += 1
+            continue
         except OSError as exc:
             raise InputError(f"cannot create output file {candidate}: {exc}") from exc
-        else:
-            return candidate
+        return candidate
 
 
 def _discard_unused_reservation(output: Path | None) -> None:
@@ -380,14 +379,6 @@ def _discard_unused_reservation(output: Path | None) -> None:
             output.unlink()
     except OSError:
         LOGGER.debug("could not clean up %s", output, exc_info=True)
-
-
-def _as_pdf_path(name: str) -> Path:
-    """Turn an expanded output name into an absolute path ending in .pdf."""
-    path = Path(name).expanduser()
-    if path.suffix.lower() != ".pdf":
-        path = path.with_name(path.name + ".pdf")
-    return path.resolve()
 
 
 def _resolve_output(args: argparse.Namespace, device: str | None) -> Path:
@@ -412,28 +403,15 @@ def _resolve_output(args: argparse.Namespace, device: str | None) -> Path:
         raise InputError(
             "the {device} placeholder needs a scanner run; --from-images has no device"
         )
-    when = datetime.now().astimezone()
-
-    def expand(counter: int) -> Path:
-        try:
-            name = expand_template(template, when=when, counter=counter, device=device)
-        except ValueError as exc:  # unreachable: {device} was resolved above
-            raise InputError(str(exc)) from exc
-        return _as_pdf_path(name)
-
-    if not has_counter(template):
-        return _unique_output(expand(1))
-    number = 1
-    while True:
-        candidate = expand(number)
-        try:
-            candidate.touch(exist_ok=False)
-        except FileExistsError:
-            number += 1
-        except OSError as exc:
-            raise InputError(f"cannot create output file {candidate}: {exc}") from exc
-        else:
-            return candidate
+    # One timestamp for the whole search, and the same candidate order the
+    # GUI's preview walks; only the reservation below touches the disk.
+    candidates = output_candidates(
+        template, when=datetime.now().astimezone(), device=device
+    )
+    try:
+        return _reserve(candidates)
+    except ValueError as exc:  # unreachable: {device} was resolved above
+        raise InputError(str(exc)) from exc
 
 
 def _build_config(args: argparse.Namespace) -> ScanConfig:

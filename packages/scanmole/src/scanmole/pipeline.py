@@ -144,7 +144,13 @@ def publish_pdf(source: Path, output: Path) -> None:
         raise ProcessingError(f"cannot write output {output}: {exc}") from exc
     finally:
         if staged is not None:
-            staged.unlink(missing_ok=True)
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                # The directory can disappear mid-publication. Losing the
+                # stray staging file is not what the caller needs to hear
+                # about; the write failure above is.
+                LOGGER.debug("could not remove %s", staged, exc_info=True)
 
 
 def copy_kept_images(kept: list[KeptPage], destination: Path, stem: str) -> None:

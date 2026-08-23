@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -3061,3 +3062,59 @@ def test_a_read_only_gray_device_produces_adaptive_1_bit_pages(
 
     kept = (tmp_path / "kept" / "out" / "page_0001.pnm").read_bytes()
     assert kept.startswith(b"P4")  # gray in, adaptive 1-bit out
+
+
+def test_a_vanished_directory_reports_the_write_failure_not_the_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Publishing into a directory that disappeared must surface as the
+    # established ProcessingError. A cleanup error on the way out would
+    # replace it with something the caller cannot act on.
+    source = tmp_path / "finished.pdf"
+    source.write_bytes(b"%PDF-fake")
+    output = tmp_path / "gone" / "out.pdf"
+    output.parent.mkdir()
+    staged: list[Path] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def vanishing(
+        suffix: str | None = None,
+        prefix: str | None = None,
+        dir: str | None = None,  # mirrors tempfile's own name
+        text: bool = False,
+    ) -> tuple[int, str]:
+        handle, name = real_mkstemp(suffix, prefix, dir, text)
+        staged.append(Path(name))
+        return handle, name
+
+    def gone(*_args: object) -> None:
+        raise OSError("directory is gone")
+
+    monkeypatch.setattr("scanmole.pipeline.tempfile.mkstemp", vanishing)
+    monkeypatch.setattr("scanmole.pipeline.os.replace", gone)
+
+    with pytest.raises(ProcessingError, match="cannot write output"):
+        publish_pdf(source, output)
+
+    # The staging file was still cleaned up where that was possible.
+    assert staged and not staged[0].exists()
+
+
+def test_a_cleanup_failure_does_not_mask_the_publishing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "finished.pdf"
+    source.write_bytes(b"%PDF-fake")
+    output = tmp_path / "out.pdf"
+
+    def failing_replace(*_args: object) -> None:
+        raise OSError("write failed")
+
+    def failing_unlink(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("cannot clean up")
+
+    monkeypatch.setattr("scanmole.pipeline.os.replace", failing_replace)
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with pytest.raises(ProcessingError, match="cannot write output"):
+        publish_pdf(source, output)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -71,3 +72,95 @@ def test_has_counter_matches_braced_counters_only() -> None:
 def test_sanitize_component_keeps_safe_characters_only() -> None:
     assert sanitize_component("v4l:/dev/video0") == "v4l-dev-video0"
     assert sanitize_component("...") == "unknown"
+
+
+def _candidates(template: str, count: int, **kwargs: object) -> list[str]:
+    from scanmole.naming import output_candidates
+
+    when = kwargs.pop("when", None) or datetime(2026, 8, 23, 14, 5, 9)
+    device = kwargs.pop("device", None)
+    stream = output_candidates(template, when=when, device=device)  # type: ignore[arg-type]
+    return [next(stream).name for _ in range(count)]
+
+
+def test_a_counter_template_numbers_its_candidates_from_one() -> None:
+    assert _candidates("{YYYY}_scan_{NNN}.pdf", 3) == [
+        "2026_scan_001.pdf",
+        "2026_scan_002.pdf",
+        "2026_scan_003.pdf",
+    ]
+
+
+def test_a_template_without_a_counter_falls_back_to_a_suffix() -> None:
+    assert _candidates("report.pdf", 3) == [
+        "report.pdf",
+        "report_2.pdf",
+        "report_3.pdf",
+    ]
+
+
+def test_candidates_end_in_pdf_and_expand_the_home_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scanmole.naming import output_candidates
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    when = datetime(2026, 8, 23, 14, 5, 9)
+
+    stream = output_candidates("~/scans/report", when=when, device=None)
+    first = next(stream)
+
+    assert first == tmp_path / "scans" / "report.pdf"  # suffix added, ~ expanded
+    assert next(stream).name == "report_2.pdf"
+
+
+def test_candidates_sanitize_the_device_and_refuse_a_missing_one() -> None:
+    assert _candidates("{device}_{N}.pdf", 1, device="epsonds:net:10.0.0.2") == [
+        "epsonds-net-10.0.0.2_1.pdf"
+    ]
+    with pytest.raises(ValueError, match=r"\{device\}"):
+        _candidates("{device}.pdf", 1)
+
+
+def test_one_timestamp_serves_a_whole_candidate_search() -> None:
+    # The search must not straddle a second boundary: every candidate in
+    # one search carries the timestamp the search started with.
+    from scanmole.naming import output_candidates
+
+    when = datetime(2026, 8, 23, 14, 5, 9)
+    stream = output_candidates("{hh}{mm}{ss}_{NN}.pdf", when=when, device=None)
+
+    assert [next(stream).name for _ in range(3)] == [
+        "140509_01.pdf",
+        "140509_02.pdf",
+        "140509_03.pdf",
+    ]
+
+
+def test_ordinary_paths_keep_their_established_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scanmole.naming import as_pdf_path
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sub").mkdir()
+
+    assert as_pdf_path("report") == tmp_path / "report.pdf"  # relative, cwd-anchored
+    assert as_pdf_path("sub/../report.PDF") == tmp_path / "report.PDF"
+    assert as_pdf_path(str(tmp_path / "sub" / "x.pdf")) == tmp_path / "sub" / "x.pdf"
+
+
+def test_concurrent_reservations_still_never_collide(tmp_path: Path) -> None:
+    # The reservation is what makes two runs pick different names, and it
+    # is unchanged: only the final component stopped being resolved.
+    from scanmole.cli import _resolve_output
+
+    args = type(
+        "Args", (), {"output": str(tmp_path / "batch_{NN}.pdf"), "outbase": None}
+    )()
+    reserved = [_resolve_output(args, None) for _ in range(5)]
+
+    assert len(set(reserved)) == 5
+    assert [path.name for path in reserved] == [
+        f"batch_{index:02d}.pdf" for index in range(1, 6)
+    ]
