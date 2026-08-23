@@ -2476,3 +2476,85 @@ def test_the_settings_event_stays_null_without_evidence(
     assert set(settings) == {"event", "device", "source", "mode", "resolution"}
     assert settings["source"] is None
     assert settings["mode"] is None
+
+
+def test_a_read_only_gray_faint_scan_emits_no_mode_and_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A device fixed in Gray serves the faint request through the software
+    # conversion. Nothing may be emitted for the mode, the depth the
+    # guarded threshold needs is emitted because that option is writable,
+    # and the frontend is told the mode the scan actually runs in.
+    caps = parse_capabilities(
+        "    --source ADF [ADF]\n"
+        "    --mode Lineart|Gray|Color [Gray] [read-only]\n"
+        "    --depth 8|16 [8]\n"
+        "    --resolution 300 [300]\n"
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
+    issued: list[list[str]] = []
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        issued.append(cmd)
+        page = tmp_path / "page_0001.pnm"
+        page.write_bytes(b"P5\n1 1\n255\n\xc8")
+        on_page(page)
+        return 0, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    stream = io.StringIO()
+
+    scan_to_files(
+        _config(source="adf", mode="lineart", lineart_threshold="auto"),
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=True, stream=stream),
+        lambda p, o: None,
+    )
+
+    assert "--mode" not in issued[0]
+    assert issued[0][issued[0].index("--depth") + 1] == "8"
+    settings = next(
+        json.loads(line)
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["event"] == "settings"
+    )
+    assert set(settings) == {"event", "device", "source", "mode", "resolution"}
+    assert settings["mode"] == "Gray"
+
+
+def test_a_read_only_plain_lineart_faint_scan_refuses_before_acquiring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The device is conclusively fixed in plain 1-bit, which cannot carry
+    # faint shades. Refusing has to happen before any paper moves, not
+    # after the first frame arrives.
+    caps = parse_capabilities(
+        "    --source ADF [ADF]\n"
+        "    --mode Lineart|Gray [Lineart] [read-only]\n"
+        "    --resolution 300 [300]\n"
+    )
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
+    runs: list[list[str]] = []
+
+    def fake_run(cmd: list[str], on_page: Callable[[Path], None]) -> tuple[int, str]:
+        runs.append(cmd)  # pragma: no cover -- must never be reached
+        return 0, ""
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+
+    with pytest.raises(DeviceError, match="only plain 1-bit"):
+        scan_to_files(
+            _config(source="adf", mode="lineart", lineart_threshold="auto"),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
+        )
+
+    assert runs == []
+    assert list(tmp_path.iterdir()) == []

@@ -536,8 +536,12 @@ def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
     threshold. A device that conclusively offers only ordinary 1-bit modes
     is UNSUPPORTED: an unenhanced 1-bit scan cannot preserve the faint
     shades the request is about, which is a failure to deliver, not a
-    warnable degradation. Missing or inactive evidence stays UNKNOWN
-    (best-effort; the pipeline still refuses an unenhanced 1-bit result).
+    warnable degradation. A read-only mode is state rather than a choice,
+    so the same rules run against its current value alone and nothing is
+    emitted for it: a device parked in Gray can still serve the request,
+    and one parked in plain 1-bit conclusively cannot. Missing or inactive
+    evidence stays UNKNOWN (best-effort; the pipeline still refuses an
+    unenhanced 1-bit result).
     """
     if caps is None:
         return Assessment(
@@ -547,8 +551,9 @@ def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
             consequence="capabilities could not be read; trying as requested",
             effective="lineart-auto",
         )
-    capability = writable_capability(caps, "mode")
-    if capability is None or not capability.choices:
+    capability = readable_capability(caps, "mode")
+    choices = _state_choices(capability)
+    if capability is None or not choices:
         inactive = caps.get("mode") is not None
         return Assessment(
             requested="lineart-auto",
@@ -558,8 +563,15 @@ def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
             "trying as requested",
             effective="lineart-auto",
         )
+    if not capability.settable:
+        return _unsettable(_match_software_faint(choices))
+    return _settable(_match_software_faint(choices))
+
+
+def _match_software_faint(choices: list[str]) -> Assessment:
+    """Match ``lineart-auto`` against the modes a device can deliver."""
     for fallback, reason in (("gray", "adaptive-gray"), ("color", "adaptive-color")):
-        got = _pick(capability.choices, _MODE_PREDICATES[fallback])
+        got = _pick(choices, _MODE_PREDICATES[fallback])
         if got is not None:
             return Assessment(
                 requested="lineart-auto",
@@ -573,7 +585,7 @@ def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
                 actual=got,
                 effective="lineart-auto",
             )
-    if _pick(capability.choices, _MODE_PREDICATES["lineart"]) is not None:
+    if _pick(choices, _MODE_PREDICATES["lineart"]) is not None:
         return Assessment(
             requested="lineart-auto",
             support=Support.UNSUPPORTED,
@@ -589,8 +601,7 @@ def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
         support=Support.UNSUPPORTED,
         reason="no-matching-mode",
         consequence=(
-            "device has no mode matching 'lineart'; "
-            f"available: {', '.join(capability.choices)}"
+            f"device has no mode matching 'lineart'; available: {', '.join(choices)}"
         ),
     )
 

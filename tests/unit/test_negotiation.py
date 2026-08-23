@@ -827,18 +827,22 @@ def test_an_engaged_read_only_sdtc_resolves_native_without_emitting_a_mode() -> 
     assert prober.calls == [()]
 
 
-def test_an_unengaged_read_only_enhancement_is_not_native() -> None:
+def test_an_unengaged_read_only_enhancement_cannot_serve_the_request() -> None:
     # The same read-only topology with the enhancement parked on another
-    # value proves nothing, and a read-only mode leaves nothing to set, so
-    # the verdict stays the existing inconclusive one.
+    # value: the device is conclusively fixed in plain 1-bit, which has
+    # already discarded the shades the request is about. That is a failure
+    # to deliver, not something to attempt and discover mid-batch.
     caps = _fixture("epson-perfection1660-epson2.txt")
     caps["mode"] = _fixed_at(caps["mode"], "Lineart")
     caps["halftoning"] = _fixed_at(caps["halftoning"], "Halftone A")
 
     plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
 
-    assert plan.mode.support is Support.UNKNOWN
+    assert plan.mode.support is Support.UNSUPPORTED
+    assert plan.mode.reason == "no-information-preserving-path"
+    assert plan.mode.backend_value is None
     assert plan.extra_options == ()
+    assert advisory_faint_assessment(caps).support is Support.UNSUPPORTED
 
     sdtc = _fixture("fujitsu-scansnap-ix500.txt")
     sdtc["mode"] = _fixed_at(sdtc["mode"], "Lineart")
@@ -846,20 +850,25 @@ def test_an_unengaged_read_only_enhancement_is_not_native() -> None:
 
     parked = resolve_faint_plan(_faint_plan(sdtc), sdtc, _Prober(sdtc))
 
-    assert parked.mode.support is Support.UNKNOWN
+    assert parked.mode.support is Support.UNSUPPORTED
     assert parked.extra_options == ()
 
 
 def test_a_read_only_mode_on_a_non_lineart_value_is_not_a_candidate() -> None:
     # Read-only means the scan runs in whatever the device reports; a
-    # device parked in Color cannot deliver a native 1-bit page.
+    # device parked in Color cannot deliver a native 1-bit page, but it
+    # can still serve the request through the software conversion.
     caps = _fixture("epson-perfection1660-epson2.txt")
     caps["mode"] = _fixed_at(caps["mode"], "Color")
     caps["halftoning"] = _fixed_at(caps["halftoning"], "Text Enhanced Technology")
 
     plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
 
-    assert plan.mode.support is not Support.NATIVE
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.reason == "adaptive-color"
+    assert plan.mode.actual == "Color"
+    assert plan.mode.backend_value is None
+    assert plan.extra_options == ()
 
 
 def test_the_advisory_verdict_follows_an_engaged_read_only_enhancement() -> None:
@@ -871,3 +880,131 @@ def test_the_advisory_verdict_follows_an_engaged_read_only_enhancement() -> None
 
     assert assessment.support is Support.NATIVE
     assert assessment.backend_value is None
+
+
+@pytest.mark.parametrize(
+    ("current", "reason"),
+    [("Gray", "adaptive-gray"), ("Color", "adaptive-color")],
+)
+def test_a_read_only_gray_or_color_still_serves_the_faint_request(
+    current: str, reason: str
+) -> None:
+    # A device parked in Gray or Color delivers exactly the brightness
+    # data the guarded threshold needs. It cannot be set, which says
+    # nothing about whether it can serve the request.
+    caps = parse_capabilities(
+        f"    --mode Lineart|Gray|Color [{current}] [read-only]\n"
+        "    --depth 8|16 [8]\n"
+        "    --resolution 300 [300]\n"
+    )
+    prober = _Prober(caps)
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, prober)
+
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.reason == reason
+    assert plan.mode.backend_value is None  # never emitted
+    assert plan.mode.actual == current  # but reported as the state it is
+    assert plan.mode.effective == "lineart-auto"
+    assert plan.extra_options == ()
+    # The guarded threshold needs true 8-bit data, and the depth option
+    # here is a separate, writable one.
+    assert plan.depth.backend_value == "8"
+    assert advisory_faint_assessment(caps).support is Support.EMULATED
+
+
+def test_a_read_only_depth_is_not_pinned_for_the_adaptive_path() -> None:
+    # Same request, but the depth cannot be set either. Nothing may be
+    # emitted for it; the verdict is unchanged.
+    caps = parse_capabilities(
+        "    --mode Lineart|Gray [Gray] [read-only]\n"
+        "    --depth 8|16 [8] [read-only]\n"
+        "    --resolution 300 [300]\n"
+    )
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+
+    assert plan.mode.support is Support.EMULATED
+    assert plan.depth.backend_value is None
+
+
+def test_a_read_only_mode_matching_nothing_known_is_unsupported() -> None:
+    caps = parse_capabilities(
+        "    --mode Lineart|Halftone [Halftone] [read-only]\n"
+        "    --resolution 300 [300]\n"
+    )
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+
+    assert plan.mode.support is Support.UNSUPPORTED
+    assert plan.mode.reason == "no-matching-mode"
+    assert "available: Halftone" in plan.mode.consequence
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        "    --mode Lineart|Gray [read-only]\n",  # read-only, no current value
+        "    --mode Lineart|Gray [Gray] [inactive]\n",  # inactive: no evidence
+    ],
+)
+def test_a_mode_without_usable_state_stays_unknown(listing: str) -> None:
+    caps = parse_capabilities(f"{listing}    --resolution 300 [300]\n")
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+
+    assert plan.mode.support is Support.UNKNOWN
+    assert plan.mode.actual is None
+    assert advisory_faint_assessment(caps).support is Support.UNKNOWN
+
+
+def test_the_writable_faint_fallback_is_unchanged() -> None:
+    # The settable path emits the fallback mode and reports the same
+    # string, exactly as before.
+    caps = parse_capabilities(
+        "    --mode Lineart|Gray|Color [Lineart]\n"
+        "    --depth 8|16 [8]\n"
+        "    --resolution 300 [300]\n"
+    )
+
+    plan = resolve_faint_plan(_faint_plan(caps), caps, _Prober(caps))
+
+    assert plan.mode.support is Support.EMULATED
+    assert plan.mode.reason == "adaptive-gray"
+    assert plan.mode.backend_value == "Gray"
+    assert plan.mode.actual == "Gray"
+    assert plan.depth.backend_value == "8"
+
+    color_only = parse_capabilities(
+        "    --mode Lineart|Color [Lineart]\n    --resolution 300 [300]\n"
+    )
+    fallback = resolve_faint_plan(
+        _faint_plan(color_only), color_only, _Prober(color_only)
+    )
+    assert fallback.mode.reason == "adaptive-color"
+    assert fallback.mode.backend_value == "Color"
+
+
+def test_the_gui_blocks_faint_on_a_device_fixed_in_plain_1_bit() -> None:
+    # The GUI grays out UNSUPPORTED choices, so a device that can only
+    # deliver plain 1-bit must not offer B/W (faint) at all.
+    caps = parse_capabilities(
+        "    --source ADF [ADF]\n"
+        "    --mode Lineart|Gray [Lineart] [read-only]\n"
+        "    --resolution 300 [300]\n"
+    )
+
+    modes = choice_support(caps).modes
+
+    assert modes["lineart-auto"] is Support.UNSUPPORTED
+    assert modes["lineart"] is Support.NATIVE  # ordinary B/W still works
+    # Gray degrades to the 1-bit the device is on, as it always has: that
+    # loses shades but still runs, which is not the same as being unable
+    # to deliver the faint request at all.
+    assert modes["gray"] is Support.DEGRADED
+
+    # A device fixed in Gray keeps the choice selectable instead.
+    gray = parse_capabilities(
+        "    --mode Lineart|Gray [Gray] [read-only]\n    --resolution 300 [300]\n"
+    )
+    assert choice_support(gray).modes["lineart-auto"] is Support.EMULATED

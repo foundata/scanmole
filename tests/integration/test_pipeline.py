@@ -1860,7 +1860,13 @@ def test_white_clipped_height_is_content_sized_not_stripped(
     assert height == round(297 * scale)  # unresolved height snapped to A4
 
 
-def _gray_scan_pages(specs: list[bytes], faint_native: bool = False):  # type: ignore[no-untyped-def]
+def _gray_scan_pages(  # type: ignore[no-untyped-def]
+    specs: list[bytes],
+    faint_native: bool = False,
+    settings: EffectiveSettings | None = None,
+):
+    negotiated = settings
+
     def fake_scan(
         config: ScanConfig,
         device: str,
@@ -1869,7 +1875,7 @@ def _gray_scan_pages(specs: list[bytes], faint_native: bool = False):  # type: i
         on_page: object,
         on_settings: object = None,
     ) -> ScanResult:
-        settings = EffectiveSettings(
+        settings = negotiated or EffectiveSettings(
             source="ADF Duplex",
             mode="Gray",
             resolution=300,
@@ -2761,27 +2767,15 @@ def test_an_engaged_read_only_enhancement_carries_its_p4_frames_through(
     assert (keep_dir / "out" / "page_0001.pnm").read_bytes() == native
 
 
-def test_an_unengaged_read_only_enhancement_still_refuses_plain_p4(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_an_unengaged_read_only_enhancement_never_reaches_acquisition(
+    tmp_path: Path,
 ) -> None:
-    # The same read-only topology with the enhancement parked proves
-    # nothing, so the delivered 1-bit frame is plain 1-bit and the run
-    # fails while preserving the page.
-    effective = _negotiated_faint(_read_only_lineart_caps(engaged=False), tmp_path)
-    assert effective.faint_native is False
-    assert effective.mode is None  # no native verdict, no established mode
-
-    native = b"P4\n16 16\n" + bytes([0xF0] * 2 * 16)
-    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
-    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
-    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _gray_scan_pages([native]))
-
-    with pytest.raises(ProcessingError, match="cannot preserve faint") as excinfo:
-        run_pipeline(_auto_config(tmp_path), EventWriter(enabled=False))
-
-    match = re.search(r"kept in (\S+)", str(excinfo.value))
-    assert match is not None
-    shutil.rmtree(Path(match.group(1)), ignore_errors=True)
+    # The same read-only topology with the enhancement parked: the device
+    # is conclusively fixed in plain 1-bit, so the request is refused
+    # while building the command. The pipeline's own 1-bit backstop is for
+    # capabilities that proved nothing, not for this.
+    with pytest.raises(DeviceError, match="only plain 1-bit"):
+        _negotiated_faint(_read_only_lineart_caps(engaged=False), tmp_path)
 
 
 def test_a_read_only_window_arms_content_sizing(
@@ -3012,3 +3006,58 @@ def _run_frame_with_settings(
         resolution=300,
     )
     assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+
+def test_a_read_only_gray_device_produces_adaptive_1_bit_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The whole path over the real negotiation: a device fixed in Gray
+    # cannot be set to anything, delivers gray frames, and the guarded
+    # adaptive threshold turns them into the 1-bit pages that were asked
+    # for. Before this the request was UNKNOWN and best-effort.
+    caps = parse_capabilities(
+        "    --source ADF [ADF]\n"
+        "    --mode Lineart|Gray|Color [Gray] [read-only]\n"
+        "    --depth 8|16 [8]\n"
+        "    --resolution 300 [300]\n"
+    )
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        source="adf",
+        mode="lineart",
+        lineart_threshold="auto",
+        page_size="a4",
+        keep_images=tmp_path / "kept",
+    )
+    plan = negotiate(
+        caps,
+        source=config.source,
+        mode=config.mode,
+        resolution=config.resolution,
+        lineart_threshold=config.lineart_threshold,
+    )
+    plan = resolve_faint_plan(plan, caps, lambda _settings: caps)
+    command, effective = build_scan_command(
+        config, "test:0", caps, str(tmp_path / "page_%04d.pnm"), plan
+    )
+
+    assert "--mode" not in command
+    assert command[command.index("--depth") + 1] == "8"
+    assert effective.mode == "Gray"
+    assert effective.faint_native is False
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _gray_scan_pages([_dark_page()], settings=effective),
+    )
+    monkeypatch.setattr(
+        "scanmole.pipeline.build_pdf",
+        lambda pages, output, dpi: output.write_bytes(b"%PDF-fake"),
+    )
+
+    assert run_pipeline(config, EventWriter(enabled=False)) == 0
+
+    kept = (tmp_path / "kept" / "out" / "page_0001.pnm").read_bytes()
+    assert kept.startswith(b"P4")  # gray in, adaptive 1-bit out
