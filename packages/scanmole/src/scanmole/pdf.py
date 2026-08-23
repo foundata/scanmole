@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,42 @@ LOGGER = logging.getLogger(__name__)
 
 PLUGIN_FILE = Path(__file__).with_name("ocrmypdf_plugin.py")
 """The ocrmypdf plugin shipped beside this module (see its docstring)."""
+
+JBIG2_ENCODER = "jbig2"
+"""The jbig2enc binary, named as it installs rather than as its project.
+
+Optional and deliberately never required: without it a scan is correct,
+only larger. ocrmypdf finds it on ``PATH`` by itself, so nothing here
+passes it along; the name exists so both frontends can ask the same
+question.
+"""
+
+
+def jbig2_missing() -> bool:
+    """Whether the jbig2enc binary is absent from ``PATH``."""
+    return shutil.which(JBIG2_ENCODER) is None
+
+
+def jbig2_would_help(config: ScanConfig) -> bool:
+    """Whether installing jbig2enc would shrink this run's output.
+
+    ocrmypdf recodes 1-bit images with jbig2enc during its optimization
+    pass, losslessly and often to a fraction of their size, and picks the
+    encoder up on its own. So the advice is worth giving only when that
+    pass runs at all and the pages it sees are 1-bit: a lineart request
+    produces those on every acquisition path except the one that
+    deliberately keeps the device's gray output (threshold ``0``).
+    Supplied images are whatever the user made them, so the requested
+    mode says nothing about them.
+    """
+    return (
+        config.ocr
+        and config.optimize > 0
+        and config.from_images is None
+        and config.mode == "lineart"
+        and config.lineart_threshold != 0
+        and jbig2_missing()
+    )
 
 
 def build_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
@@ -76,6 +113,11 @@ def run_ocr(
         "--scanmole-creator",
         CREATOR,
     ]
+    if jbig2_would_help(config):
+        LOGGER.info(
+            "Install jbig2enc for much smaller black and white PDFs; "
+            "ocrmypdf uses it automatically once it is on PATH"
+        )
     if deskew:
         command.append("--deskew")
     if config.rotate_pages:

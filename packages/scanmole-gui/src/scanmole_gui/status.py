@@ -282,6 +282,13 @@ class ResultBar:
         self._detail.add_css_class("monospace")
         self._detail.set_ellipsize(3)
         labels.append(self._detail)
+        # A separate label, because the detail above is shaped for a file
+        # name (monospace, ellipsized) and a sentence there would be cut
+        # off mid-word.
+        self._note = Gtk.Label(xalign=0.0, visible=False, wrap=True)
+        self._note.add_css_class("caption")
+        self._note.add_css_class("dim-label")
+        labels.append(self._note)
         self.widget.append(labels)
         self._show_btn = Gtk.Button(visible=False)
         self._show_btn.set_child(
@@ -330,16 +337,26 @@ class ResultBar:
         self._finish_btn.set_sensitive(True)
 
     def set_state(
-        self, state: str, title: str, detail: str = "", *, actions: bool = False
+        self,
+        state: str,
+        title: str,
+        detail: str = "",
+        *,
+        actions: bool = False,
+        note: str = "",
     ) -> None:
         """Put the bar into ``idle``/``running``/``success``/``error``.
 
         ``actions`` shows the Show/Open buttons; the window decides it,
         because only the window knows whether an output file exists.
+        ``note`` carries one advisory sentence about the finished result,
+        and is cleared by every state that does not repeat it.
         """
         self._title.set_text(title)
         self._detail.set_text(detail)
         self._detail.set_visible(bool(detail))
+        self._note.set_text(note)
+        self._note.set_visible(bool(note))
         running = state == "running"
         self._spinner.set_visible(running)
         if running:

@@ -62,6 +62,7 @@ from scanmole_gui.discovery import (  # noqa: E402
     parse_version,
 )
 from scanmole_gui.form import (  # noqa: E402
+    JBIG2_HINT,
     ScanForm,
     abbreviate_home,
     default_folder,
@@ -524,7 +525,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._clamp.set_maximum_size(1080 if wide else 640)
         self._clamp.set_tightening_threshold(900 if wide else 480)
 
-    def _set_result_bar(self, state: str, title: str, detail: str = "") -> None:
+    def _set_result_bar(
+        self, state: str, title: str, detail: str = "", note: str = ""
+    ) -> None:
         """Put the bottom bar into ``idle``/``running``/``success``/``error``.
 
         The Show/Open actions appear only when a finished output exists,
@@ -535,6 +538,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             title,
             detail,
             actions=state == "success" and self._last_output is not None,
+            note=note,
         )
 
     def _append_log(self, text: str) -> None:
@@ -1597,10 +1601,14 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if outcome.kind == "success":
             if outcome.output is not None:
                 self._last_output = outcome.output
+                # The advice lands where the user is looking at what it
+                # would have shrunk, so it is worth repeating here even
+                # though the form already carries it.
                 self._set_result_bar(
                     "success",
                     success_summary(outcome.pages, outcome.blanks),
                     outcome.output.name,
+                    JBIG2_HINT if self._form.jbig2_hint_applies() else "",
                 )
             else:
                 self._set_result_bar("idle", _("Finished."))

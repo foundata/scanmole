@@ -30,6 +30,7 @@ from scanmole.config import (  # noqa: E402  # pure type aliases
     SheetFlow,
 )
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE  # noqa: E402
+from scanmole.pdf import jbig2_missing  # noqa: E402
 from scanmole_gui.i18n import _  # noqa: E402  # after gi setup
 from scanmole_gui.modes import SCAN_MODES  # noqa: E402
 from scanmole_gui.probing import SOURCE_VALUES  # noqa: E402
@@ -105,6 +106,14 @@ AUTO_SIZE_PREFERENCES = (
     (_("ISO (A sizes)"), "iso"),
     (_("North America (Letter/Legal)"), "north-american"),
 )
+JBIG2_HINT = _(
+    "Install jbig2enc to make black and white PDFs much smaller; "
+    "ocrmypdf uses it automatically"
+)
+"""Advice shown only where it applies: an OCR run over 1-bit pages on a
+system without the optional encoder. Both the Processing group and the
+result bar say it, so they say it in the same words."""
+
 PDFA_LINK = "<a href='{url}'>PDF/A</a>"
 """The linked format name the archival switch names itself after."""
 
@@ -257,6 +266,7 @@ class ScanForm:
         self._updating_source = False
         self._res_syncing = False
         self._res_value = 300
+        self._jbig2_missing = jbig2_missing()
 
         self._build_scan_group()
         self._build_settings_groups()
@@ -753,6 +763,22 @@ class ScanForm:
         )
         self._ocr_row.connect("notify::active", self._on_ocr_toggled)
         self.processing_group.add(self._ocr_row)
+        # Only ever visible where the advice applies, so it is a note on
+        # the switch above rather than a setting of its own: no title, a
+        # dim caption, and nothing to activate.
+        self._jbig2_row = Adw.ActionRow(activatable=False, visible=False)
+        jbig2_hint = Gtk.Label(
+            label=JBIG2_HINT,
+            wrap=True,
+            xalign=0.0,
+            hexpand=True,
+            valign=Gtk.Align.CENTER,
+            max_width_chars=40,
+        )
+        jbig2_hint.add_css_class("caption")
+        jbig2_hint.add_css_class("dim-label")
+        self._jbig2_row.add_prefix(jbig2_hint)
+        self.processing_group.add(self._jbig2_row)
         self._lang_row = Adw.ComboRow(title=_("OCR Language"))
         # Same 20-character default-factory cap as the device row: without a
         # plain-label factory, "German + English (deu+eng)" gets ellipsized.
@@ -922,6 +948,29 @@ class ScanForm:
         enabled = bool(self._ocr_row.get_active())
         self._lang_row.set_sensitive(enabled)
         self._pdfa_row.set_sensitive(enabled)
+        self._refresh_jbig2_hint()
+
+    def jbig2_hint_applies(self) -> bool:
+        """Whether an encoder hint fits what the form currently asks for.
+
+        The engine decides this for the run it is given; the form has to
+        decide it for a run that has not happened yet, so it asks the
+        same two questions of its own rows and shares the engine's answer
+        about the binary. That answer is taken once per form: installing
+        the encoder while the window is open shows up on the next start.
+        """
+        return (
+            self._jbig2_missing
+            and bool(self._ocr_row.get_active())
+            and self._mode_row.value() in ("lineart", "lineart-auto")
+        )
+
+    def _refresh_jbig2_hint(self) -> None:
+        """Show the encoder hint only where it applies."""
+        if hasattr(self, "_jbig2_row"):
+            # The Scan group is built before Processing, so an early mode
+            # change can precede the row it drives.
+            self._jbig2_row.set_visible(self.jbig2_hint_applies())
 
     # ---------------------------------------------------------- resolution
 
@@ -1005,6 +1054,7 @@ class ScanForm:
 
     def _on_document_changed(self, *_args: object) -> None:
         """Refresh the size estimate and the filename preview."""
+        self._refresh_jbig2_hint()
         dpi = self.resolution()
         base = _SIZE_BASE_MB.get(self._mode_row.value(), 0.3)
         estimate = max(base * (dpi / 300.0) ** 2, 0.1)

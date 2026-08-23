@@ -165,3 +165,65 @@ def test_ocr_carries_the_creator_through_the_plugin(
     # The plugin ships with the engine, or ocrmypdf could not load it.
     assert PLUGIN_FILE.is_file()
     assert PLUGIN_FILE.parent.name == "scanmole"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        pytest.param({}, True, id="lineart-with-ocr"),
+        pytest.param({"ocr": False}, False, id="no-ocr"),
+        pytest.param({"optimize": 0}, False, id="optimization-off"),
+        pytest.param({"mode": "gray"}, False, id="gray-pages"),
+        pytest.param({"mode": "color"}, False, id="color-pages"),
+        pytest.param({"lineart_threshold": "auto"}, True, id="faint-lineart"),
+        pytest.param({"lineart_threshold": 0}, False, id="threshold-keeps-gray"),
+        pytest.param({"from_images": (Path("a.png"),)}, False, id="supplied-images"),
+    ],
+)
+def test_the_encoder_hint_only_covers_runs_it_would_shrink(
+    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object], expected: bool
+) -> None:
+    # jbig2enc recodes 1-bit images inside ocrmypdf's optimization pass,
+    # so every other shape of run is none of its business.
+    from scanmole.pdf import jbig2_would_help
+
+    monkeypatch.setattr("scanmole.pdf.shutil.which", lambda _name: None)
+    config = dataclasses.replace(_CONFIG, **{"ocr": True, **overrides})  # type: ignore[arg-type]
+
+    assert jbig2_would_help(config) is expected
+
+
+def test_an_installed_encoder_needs_no_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scanmole.pdf import JBIG2_ENCODER, jbig2_would_help
+
+    seen: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        seen.append(name)
+        return "/usr/local/bin/jbig2"
+
+    monkeypatch.setattr("scanmole.pdf.shutil.which", fake_which)
+
+    assert jbig2_would_help(dataclasses.replace(_CONFIG, ocr=True)) is False
+    assert seen == [JBIG2_ENCODER]  # named as it installs, not as its project
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_ocr_mentions_the_missing_encoder_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, installed: bool
+) -> None:
+    # Advisory only: the run is correct either way, so nothing about the
+    # command changes and no exception is raised.
+    calls = _record(monkeypatch)
+    monkeypatch.setattr(
+        "scanmole.pdf.shutil.which",
+        lambda _name: "/usr/bin/jbig2" if installed else None,
+    )
+
+    with caplog.at_level("INFO", logger="scanmole.pdf"):
+        run_ocr(Path("in.pdf"), Path("out.pdf"), dataclasses.replace(_CONFIG, ocr=True))
+
+    mentions = [text for text in caplog.messages if "jbig2enc" in text]
+    assert len(mentions) == (0 if installed else 1)
+    assert len(calls) == 1  # the command itself is untouched
+    assert not any("jbig2" in argument for argument in calls[0])

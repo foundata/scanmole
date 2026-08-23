@@ -77,6 +77,25 @@ def test_result_bar_states_and_actions() -> None:
     assert bar._icon.get_visible() is False
 
 
+def test_the_result_bar_note_wraps_and_clears_with_the_state() -> None:
+    # The detail beside it is shaped for a file name (monospace and
+    # ellipsized), so an advisory sentence gets a wrapping label of its
+    # own and never survives into the next state.
+    _init_adw()
+    from scanmole_gui.status import ResultBar
+
+    bar = ResultBar(on_show=lambda: None, on_open=lambda: None)
+
+    bar.set_state("success", "1 page saved", "out.pdf", note="Install jbig2enc")
+    assert bar._note.get_visible() is True
+    assert bar._note.get_text() == "Install jbig2enc"
+    assert bar._note.get_wrap() is True
+
+    bar.set_state("success", "1 page saved", "out.pdf")
+    assert bar._note.get_visible() is False
+    assert bar._note.get_text() == ""
+
+
 def test_render_session_update_texts() -> None:
     _init_adw()
     from scanmole_gui.session import SessionState, Update

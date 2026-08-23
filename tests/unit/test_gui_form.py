@@ -534,6 +534,34 @@ def test_the_one_shot_menu_names_the_switches_it_stands_in_for() -> None:
     assert dict(FLOW_ACTIONS)["Combine scans"] == "collect"
 
 
+@pytest.mark.parametrize(
+    ("missing", "ocr", "mode", "shown"),
+    [
+        pytest.param(True, True, "lineart", True, id="applies"),
+        pytest.param(True, True, "lineart-auto", True, id="faint-is-1-bit-too"),
+        pytest.param(True, False, "lineart", False, id="no-ocr-no-pass"),
+        pytest.param(True, True, "gray", False, id="gray-pages"),
+        pytest.param(True, True, "color", False, id="color-pages"),
+        pytest.param(False, True, "lineart", False, id="already-installed"),
+    ],
+)
+def test_the_encoder_hint_appears_only_where_it_applies(
+    monkeypatch: pytest.MonkeyPatch, missing: bool, ocr: bool, mode: str, shown: bool
+) -> None:
+    # The optional encoder only shrinks 1-bit pages, and only inside the
+    # optimization pass OCR runs, so nobody who cannot benefit sees it.
+    monkeypatch.setattr("scanmole_gui.form.jbig2_missing", lambda: missing)
+    events = Events()
+    form = _form(events)
+    form.apply_settings({})
+
+    form._ocr_row.set_active(ocr)
+    form._mode_row.select(mode)
+
+    assert form.jbig2_hint_applies() is shown
+    assert form._jbig2_row.get_visible() is shown
+
+
 def test_the_advanced_group_opens_the_settings_dialog() -> None:
     events = Events()
     form = _form(events)

@@ -314,7 +314,7 @@ To keep files small:
 
 1. Stay with the 300 dpi black-and-white default for usual documents. Use `--mode gray` or `--mode color` only when a document really needs it (photos, stamps, faint or colored originals): they store 8 or 24 bits per pixel instead of 1, and sizes explode. The same goes for resolutions above 300 dpi, since data grows quadratically with dpi. For wholly faint originals such as thermal-paper receipts or washed-out copies, the GUI's "B/W (faint)" mode (CLI: `--lineart-threshold auto`) keeps the small 1-bit output; it applies one guarded threshold per page, so a page mixing normal print with a much fainter region can still lose the faint part, and Gray remains the reliable choice for those.
 2. Use `-r 200` for documents where quality matters less; it roughly halves the data. Where no text layer is needed either, `--no-ocr` skips OCR entirely.
-3. Highly recommended: make sure `jbig2enc` is installed. ocrmypdf detects it automatically during its optimization pass and recodes 1-bit pages losslessly to a fraction of their size. `command -v jbig2` shows whether it is present; if it prints nothing, follow the [installation instructions](#installation).
+3. Highly recommended: make sure `jbig2enc` is installed. ocrmypdf detects it automatically during its optimization pass and recodes 1-bit pages losslessly to a fraction of their size. `command -v jbig2` shows whether it is present; if it prints nothing, follow the [installation instructions](#installation). ScanMole says so too, but only where it would help: an OCR run over black and white pages logs one line about it, and the GUI notes it under the OCR switch and beside the finished file.
 
 
 ### Why is a page missing from my PDF, or a blank page kept?<a id="faq-blank-pages"></a>
