@@ -426,7 +426,9 @@ def test_conclusive_sources_keep_their_duplex_verdict(tmp_path: Path) -> None:
 
 def test_unknown_source_still_refuses_a_single_sheet_scan(tmp_path: Path) -> None:
     # The single-sheet flow keeps its refusal: without proof it cannot
-    # promise one sheet is one frame or two.
+    # promise one sheet is one frame or two. Bounding the batch to one
+    # frame below does not settle it either, because a duplex sheet needs
+    # two, and the duplex request is exactly what is unproven here.
     with pytest.raises(DeviceError, match="could not be negotiated"):
         build_scan_command(
             _config(source="adf-duplex", sheet_flow="single"),
@@ -523,20 +525,6 @@ def test_the_unknown_source_warning_is_not_repeated_per_segment(
 
     assert "--batch-count=1" in first
     assert len(caplog.records) == 1
-
-
-def test_unknown_source_evidence_still_refuses_a_single_sheet_flow(
-    tmp_path: Path,
-) -> None:
-    # Bounding the batch does not make one frame one sheet: a duplex
-    # source needs two, and that is exactly what is unproven here.
-    with pytest.raises(DeviceError, match="could not be negotiated"):
-        build_scan_command(
-            _config(source="adf-duplex", sheet_flow="single"),
-            "test:0",
-            {"resolution": Capability(kind="range", minimum=50, maximum=600)},
-            str(tmp_path / "page_%04d.pnm"),
-        )
 
 
 def _window_caps(x: str, y: str) -> dict[str, Capability]:
