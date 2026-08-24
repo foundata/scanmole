@@ -82,6 +82,12 @@ def _scan_window(
         def _stop_sensor_polling(self) -> None:
             self.steps.append("stop-sensors")
 
+        def _start_negotiation(self) -> None:
+            self.steps.append("negotiate")
+
+        def _update_scan_enabled(self) -> None:
+            self.steps.append("enablement")
+
         def _save_settings(self) -> None:
             pass
 
@@ -362,6 +368,9 @@ def test_a_failed_start_completes_device_takeover_without_adopting_a_runner(
     # already stopped the poller, cancelled advisory work and reset the
     # flow, in that order. A raising start must not adopt a runner or
     # leave the searching latch set, and it shows the usual start alert.
+    # Device coordination then resumes right here: fresh negotiation
+    # first, so the enablement pass that follows cannot arm sensor
+    # polling from the evidence the takeover just invalidated.
     def refuse(_self: object, _argv: list[str], _cwd: Path) -> None:
         raise OSError("no such executable")
 
@@ -369,7 +378,297 @@ def test_a_failed_start_completes_device_takeover_without_adopting_a_runner(
 
     window._on_scan_clicked()
 
-    assert window.steps == ["stop-sensors", "cancel", "flow-reset"]
+    assert window.steps == [
+        "stop-sensors",
+        "cancel",
+        "flow-reset",
+        "negotiate",
+        "enablement",
+    ]
     assert window._runner is None  # nothing to block a later attempt
     assert window._searching is False  # the search latch is not left set
     assert [heading for heading, _b in window.alerts] == ["Could Not Start scanmole"]
+
+
+class _FakeGLib:
+    """Deterministic GLib stand-in: sources fire only when told to."""
+
+    SOURCE_REMOVE = False
+    SOURCE_CONTINUE = True
+
+    def __init__(self) -> None:
+        self.timeouts: dict[int, tuple[int, Any]] = {}
+        self.idles: list[Any] = []
+        self._next = 1
+
+    def timeout_add(self, ms: int, callback: Any) -> int:
+        self.timeouts[self._next] = (ms, callback)
+        self._next += 1
+        return self._next - 1
+
+    def timeout_add_seconds(self, seconds: int, callback: Any) -> int:
+        return self.timeout_add(seconds * 1000, callback)
+
+    def idle_add(self, callback: Any, *args: object) -> int:
+        self.idles.append((callback, args))
+        return 0
+
+    def source_remove(self, source: int) -> None:
+        self.timeouts.pop(source, None)
+
+
+def _capability(kind: Any = "bool", **kw: Any) -> Any:
+    from scanmole.options import Capability
+
+    return Capability(kind=kind, **kw)
+
+
+def _snapshot() -> dict[str, Any]:
+    """A duplex feeder with a scan button and a paper level."""
+    return {
+        "source": _capability(
+            "enum", choices=["ADF Front", "ADF Duplex"], current="ADF Duplex"
+        ),
+        "mode": _capability("enum", choices=["Lineart", "Gray", "Color"]),
+        "scan": _capability(current="no"),
+        "page-loaded": _capability(current="no"),
+    }
+
+
+def _takeover_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    start: Callable[..., None],
+) -> Any:
+    """A window stub with a real capability flow, arbiter and fake GLib.
+
+    Probe workers are never run: each spawn is recorded and the test
+    feeds ``_on_probe_done`` directly, so every step is deterministic.
+    """
+    from scanmole_gui import app as app_module
+    from scanmole_gui.app import MainWindow
+    from scanmole_gui.probing import CapabilityFlow
+    from scanmole_gui.sensorwatch import SensorArbiter
+
+    glib = _FakeGLib()
+    monkeypatch.setattr(app_module, "GLib", glib)
+    monkeypatch.setattr(
+        app_module, "ScanRunner", lambda **_kw: type("R", (), {"start": start})()
+    )
+    monkeypatch.setattr(app_module, "request_argv", lambda _r, _c: ["scanmole"])
+    monkeypatch.setattr(app_module, "SessionState", lambda **_kw: object())
+
+    class Window:
+        _on_scan_clicked = MainWindow._on_scan_clicked
+        _start_negotiation = MainWindow._start_negotiation
+        _render_capability_update = MainWindow._render_capability_update
+        _on_probe_done = MainWindow._on_probe_done
+        _update_scan_enabled = MainWindow._update_scan_enabled
+        _scan_allowed = MainWindow._scan_allowed
+        _update_selection_block = MainWindow._update_selection_block
+        _schedule_sensor_poll = MainWindow._schedule_sensor_poll
+        _sensor_polling_wanted = MainWindow._sensor_polling_wanted
+        _sensor_prefs = MainWindow._sensor_prefs
+        _stop_sensor_polling = MainWindow._stop_sensor_polling
+        _observe_sensors = MainWindow._observe_sensors
+        _sensor_trigger_allowed = MainWindow._sensor_trigger_allowed
+        _window_suspended = MainWindow._window_suspended
+
+        def __init__(self) -> None:
+            self.glib = glib
+            self._flow = CapabilityFlow()
+            self._sensor_arbiter = SensorArbiter()
+            self._sensor_poll_id: int | None = None
+            self._sensor_poll_busy = False
+            self._runner = None
+            self._searching = False
+            self._released = False
+            self._closing = False
+            self._cli_blocked = False
+            self._selection_block_reason: str | None = None
+            self._settings: dict[str, object] = {"hardware_button": "same"}
+            self._scanmole = "scanmole"
+            self.device = "epsonds:net:host"
+            self.spawned: list[Any] = []
+            self.alerts: list[tuple[str, str]] = []
+            self.logs: list[str] = []
+            self.folder = tmp_path / "out"
+
+            window = self
+
+            class Advisory:
+                generation = 0
+
+                @staticmethod
+                def spawn_worker(_target: Any, *args: object) -> None:
+                    # (token, request, generation) of a probe worker; the
+                    # test completes it via _on_probe_done itself.
+                    window.spawned.append(args)
+
+                @staticmethod
+                def cancel_pending(*_a: object, **_kw: object) -> bool:
+                    return True
+
+            self._advisory = Advisory()
+
+            class Form:
+                @staticmethod
+                def folder() -> str:
+                    return str(window.folder)
+
+                @staticmethod
+                def source_value() -> str:
+                    return "adf-duplex"
+
+                @staticmethod
+                def sheet_flow_value() -> str:
+                    return "stack"
+
+                @staticmethod
+                def scan_request(device: object, folder: Path, **_kw: object) -> Any:
+                    return type(
+                        "Request",
+                        (),
+                        {"drop_blanks": True, "output": str(folder / "out.pdf")},
+                    )()
+
+                @staticmethod
+                def selection_blocked_reason() -> str | None:
+                    return None
+
+                set_running = staticmethod(lambda _running: None)
+                set_scan_enabled = staticmethod(lambda _enabled: None)
+                set_source_availability = staticmethod(lambda _blocked: None)
+                set_mode_availability = staticmethod(lambda _blocked: None)
+                select_source = staticmethod(lambda _value: None)
+                refresh_document_hints = staticmethod(lambda: None)
+
+            self._form = Form()
+
+        def _selected_device(self) -> str | None:
+            return self.device
+
+        def _alert(self, heading: str, body: str) -> None:
+            self.alerts.append((heading, body))
+
+        def _append_log(self, text: str) -> None:
+            self.logs.append(text)
+
+        def _set_result_bar(self, *_args: object, **_kw: object) -> None:
+            pass
+
+        def _save_settings(self) -> None:
+            pass
+
+        # Worker and tick targets handed to the fakes; never run by the
+        # test, which drives _on_probe_done and the timeouts directly.
+        _probe_worker = staticmethod(lambda *_a: None)
+        _sensor_poll_tick = staticmethod(lambda: False)
+
+        # Runner callbacks: the stub runner never invokes them.
+        _schedule = staticmethod(lambda _cb: None)
+        _after_seconds = staticmethod(lambda _s, _cb: None)
+        _on_stdout_line = staticmethod(lambda *_a: None)
+        _on_stderr_line = staticmethod(lambda *_a: None)
+        _on_process_exit = staticmethod(lambda *_a: None)
+        _on_kill_escalated = staticmethod(lambda *_a: None)
+
+    window: Any = Window()
+    return window
+
+
+def _complete_next_probe(window: Any) -> None:
+    """Feed the snapshot back for the most recently spawned probe."""
+    token, request, generation = window.spawned.pop()
+    window._on_probe_done(token, request, _snapshot(), generation)
+
+
+def _settle_negotiation(window: Any) -> None:
+    """Complete the bare probe and its source-applied follow-up."""
+    _complete_next_probe(window)  # bare: derives source availability
+    _complete_next_probe(window)  # refinement under the selected source
+
+
+@_NEEDS_GI
+def test_a_failed_start_negotiates_again_without_waiting_for_a_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The takeover reset the capability flow for a scan that never
+    # started. Waiting for the quiet presence poll would not repair
+    # that: an unchanged listing skips negotiation, so the flow's base
+    # snapshot would stay empty for good. The failed start itself must
+    # start a fresh bare negotiation for the selected device.
+    def refuse(_self: object, _argv: list[str], _cwd: Path) -> None:
+        raise OSError("no such executable")
+
+    window = _takeover_window(tmp_path, monkeypatch, start=refuse)
+    window._start_negotiation()
+    _settle_negotiation(window)
+    assert window._flow.last_caps is not None
+
+    window._on_scan_clicked()
+
+    # A fresh bare probe of the current selection is already on its way;
+    # no timer is armed for it, so no poll interval is involved.
+    assert window._runner is None
+    assert window._flow.probe_active is True
+    assert len(window.spawned) == 1
+    _token, request, _generation = window.spawned[0]
+    assert request.device == window.device
+    assert request.settings == ()  # bare first, exactly like startup
+    # The existing failure surface is unchanged.
+    assert [heading for heading, _b in window.alerts] == ["Could Not Start scanmole"]
+    assert any(
+        line.startswith("[gui] failed to start scanmole:") for line in window.logs
+    )
+
+
+@_NEEDS_GI
+def test_no_sensor_poll_restarts_from_retained_caps_after_a_failed_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The flow reset cleared the base snapshot but kept ``last_caps``,
+    # so sensor settings for the selected source are not derivable: a
+    # poll armed from the retained caps would read the backend's default
+    # source. Until the fresh probe is accepted, every enablement pass
+    # (the quiet presence poll runs one) must leave the poller unarmed.
+    def refuse(_self: object, _argv: list[str], _cwd: Path) -> None:
+        raise OSError("no such executable")
+
+    window = _takeover_window(tmp_path, monkeypatch, start=refuse)
+    window._start_negotiation()
+    _settle_negotiation(window)
+    assert window.glib.timeouts  # idle polling armed before the click
+
+    window._on_scan_clicked()
+
+    assert window._flow.sensor_settings(window.device, "adf-duplex") == ()
+    assert window.glib.timeouts == {}  # the takeover disarmed the poller
+    window._update_scan_enabled()  # what an unchanged quiet poll runs
+    assert window.glib.timeouts == {}  # still gated on the fresh probe
+
+
+@_NEEDS_GI
+def test_sensor_polling_resumes_after_the_fresh_probe_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Once the recovery negotiation's source-applied probe lands, the
+    # ordinary rules apply again: polling is wanted and reads under the
+    # selected source, and the accepted live probe is the baseline.
+    def refuse(_self: object, _argv: list[str], _cwd: Path) -> None:
+        raise OSError("no such executable")
+
+    window = _takeover_window(tmp_path, monkeypatch, start=refuse)
+    window._start_negotiation()
+    _settle_negotiation(window)
+    window._on_scan_clicked()
+
+    _settle_negotiation(window)
+
+    assert window._flow.probe_active is False
+    assert window._flow.sensor_settings(window.device, "adf-duplex") == (
+        ("--source", "ADF Duplex"),
+    )
+    assert len(window.glib.timeouts) == 1  # the idle poller is armed again
+    assert window._runner is None

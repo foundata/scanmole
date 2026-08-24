@@ -1386,6 +1386,16 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                     _("Could Not Start scanmole"),
                     f"{exc}\n\n" + _("Install the scanmole CLI somewhere in PATH."),
                 )
+            # The takeover tore down device coordination for a scan that
+            # never started; resume it now rather than waiting for the
+            # quiet presence poll, whose unchanged result would skip the
+            # negotiation for good. Negotiation first: with a probe in
+            # flight the enablement pass cannot arm sensor polling from
+            # the retained caps, whose source settings the reset made
+            # underivable (the poll would read the backend's default
+            # source).
+            self._start_negotiation()
+            self._update_scan_enabled()
             return
         self._runner = runner
         self._set_result_bar("running", _("Starting scanmole\u2026"))
