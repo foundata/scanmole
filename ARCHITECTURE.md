@@ -641,7 +641,7 @@ Not every backend can scan 1-bit: eSCL/airscan devices typically offer only Colo
 
 #### Rescuing a page the fixed cut blanked<a id="pipeline-lineart-rescue"></a>
 
-There is one precise exception to "every decision metric is fixed-0.5": a page whose fixed conversion comes out blank (entirely faint text turns all white at 0.5) gets one guarded rescue chance before it is dropped. The Otsu and coverage guards must accept the split, and the candidate must additionally contain locally coherent text-like ink.
+There is one precise exception to "every decision metric is fixed-0.5": a page whose fixed conversion comes out blank (entirely faint text turns all white at 0.5) gets one guarded rescue chance before it is dropped. It is decided in `scanmole/blankpage.py` from the raster and the configuration alone, emitting nothing and knowing nothing of the batch. The Otsu and coverage guards must accept the split, and the candidate must additionally contain locally coherent text-like ink.
 
 **The projection-based content box is deliberately not trusted here.** Distributed bimodal pepper noise (1% of a page at one gray value) passes Otsu near 0.67 and spans nearly the full frame in the row/column projections; that page is the pinned false-positive regression.
 
@@ -668,7 +668,7 @@ That accepts text lines and normally sized page numbers while rejecting uniform 
 
 Duplex scanning of mostly single-sided paper produces ~50% blank pages; dropping them is a core feature, and it must work identically on every backend (unlike `--swskip`, which only the `fujitsu` backend offers). The measurement is a ~40-line stdlib PNM parser; ImageMagick could do it but is heavyweight, brings security-policy landmines, and costs one process spawn per page.
 
-**Rule:** a page is blank iff its **mean brightness, normalized to [0,1], is > 0.995**, i.e. less than 0.5% "ink". A threshold of `0` disables blank detection.
+**Rule:** a page is blank iff its **mean brightness, normalized to [0,1], is > 0.995**, i.e. less than 0.5% "ink". A threshold of `0` disables blank detection. The rule lives in `scanmole/blankpage.py` beside the one mechanism that can overturn it, so the threshold a rescue has to clear is the threshold that classified the page.
 
 **The measured region follows the sizing path:**
 

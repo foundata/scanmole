@@ -6,6 +6,7 @@ off so the test needs only ``img2pdf``; it is skipped when that is absent.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import io
 import json
@@ -279,7 +280,7 @@ def test_failed_adoption_never_rescues(
     # Coherence evidence alone must not flip the verdict: if the atomic
     # adoption fails, the fixed all-white page stands and stays dropped.
     monkeypatch.setattr(
-        "scanmole.pipeline._adopt_candidate", lambda staging, page: False
+        "scanmole.blankpage._adopt_candidate", lambda staging, page: False
     )
 
     events = _run_capture(
@@ -296,7 +297,7 @@ def test_failed_candidate_staging_never_rescues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "scanmole.pipeline._stage_adaptive", lambda page, snapshot, fraction: None
+        "scanmole.blankpage._stage_adaptive", lambda page, snapshot, fraction: None
     )
 
     events = _run_capture(
@@ -676,3 +677,42 @@ def test_a_read_only_gray_device_produces_adaptive_1_bit_pages(
 
     kept = (tmp_path / "kept" / "out" / "page_0001.pnm").read_bytes()
     assert kept.startswith(b"P4")  # gray in, adaptive 1-bit out
+
+
+# ------------------------------------------------------- module boundary
+
+
+def test_the_blank_rule_and_its_one_override_live_together() -> None:
+    # The rescue exists to overturn a blank verdict, so both rules share a
+    # module: splitting them would let the threshold drift between the
+    # classification and the rescue that has to clear it.
+    from scanmole import blankpage, pipeline
+
+    assert callable(blankpage.blank_verdict)
+    assert callable(blankpage.adaptive_outcome)
+
+    source = Path(pipeline.__file__ or "")
+    borrowed: set[str] = set()
+    for node in ast.walk(ast.parse(source.read_text())):
+        if isinstance(node, ast.ImportFrom) and node.module == "scanmole.blankpage":
+            borrowed.update(alias.name for alias in node.names)
+
+    assert borrowed == {"adaptive_outcome", "blank_verdict"}
+
+
+def test_deciding_a_page_needs_nothing_from_the_pipeline() -> None:
+    # The verdict is reached from a raster and a config alone. An import
+    # back into the orchestration would make the two inseparable and the
+    # rescue untestable without a whole run.
+    from scanmole import blankpage as blankpage_module
+
+    source = Path(blankpage_module.__file__ or "")
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source.read_text())):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    assert "scanmole.pipeline" not in imported
+    assert not any(name.startswith("scanmole.events") for name in imported)

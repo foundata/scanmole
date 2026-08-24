@@ -84,6 +84,7 @@ scanmole/                      # repository root (uv workspace)
 │   │       ├── deskew.py      # host raster deskew: tesseract angle + Pillow rotation
 │   │       ├── deskew_policy.py # who straightens a page, from the capabilities
 │   │       ├── pnm.py         # stdlib PNM parsing + blank detection
+│   │       ├── blankpage.py   # the blank verdict and the faint page's one rescue
 │   │       ├── pdf.py         # img2pdf + ocrmypdf wrappers
 │   │       ├── ocrmypdf_plugin.py # names ScanMole in the OCR output's Creator
 │   │       ├── events.py      # JSON-lines event protocol writer
