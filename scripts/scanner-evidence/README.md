@@ -71,6 +71,58 @@ The recurrence runs must reuse the same physical R1 sheet, reloaded for every re
 
 Capture `scanimage -A` listings for the bare device and for every applied state that changes behavior (source applied, mode applied, backend-specific toggles applied), into the external evidence root first. Before any listing becomes a fixture in `tests/fixtures/scanimage-A/`, review it line by line for serial numbers, hostnames, IP addresses and other identifying values, replace them with obvious stable placeholders, and document the exact substitution in that directory's README. USB eSCL listings are typically clean; fujitsu device strings carry the serial in the device name line.
 
+## Qualifying a backend deskew mechanism<a id="deskew-qualification"></a>
+
+ScanMole straightens pages itself by default. A backend mechanism (`--swdeskew`, `--adf-skew`, or whatever a future backend calls it) may take that job automatically only after passing the gate below, which is why `scanmole/deskew_policy.py` ships with an empty `QUALIFIED_FOR_AUTO`. Passing it adds a `(backend, option)` **pair** to that set: qualification describes a driver together with the option that drives it, not a device. A model list would have to grow with every product shipped against the same driver and would say nothing about the driver that does the work; an option name on its own is worse, since two backends can spell the same word and mean different code. Only the SANE prefix of a device identifier is ever used, so serials and hostnames stay out of every decision and every artifact.
+
+The oracle is `skew_oracle.py` in this directory, and it deliberately does not use Tesseract. Tesseract is what ScanMole's own path measures with, so grading a backend against it would only establish that the two agree. The oracle measures printed geometry instead: the R1 recurrence sheet carries three rules 60 mm apart, spanning most of the page width and parallel to the top edge on paper, so the angle they come back at is the page's residual skew.
+
+That spacing is what identifies them. A frame-edge shadow spans the full width and is perfectly straight, and on the iX100 one was accepted as a flawless rule at zero degrees until this was fixed; a triplet whose gaps match the printed sheet cannot be imitated that way. Where only two rules survive, which a real frame did at 1.87 degrees of skew, the pair is still measured **and the frame is marked incomplete**, because a shadow must never fill the third slot. Two triplets that fit equally well are ambiguous and report nothing rather than a guess.
+
+Every frame must be measurable and complete for the group to pass, and the expected repetition count is given with `--expect`: a group of one clean result and ninety-nine unreadable frames is missing evidence, not a 100% pass. It reads raw PNM frames in place, reports no angle for a sheet without rules (a factory-blank duplex back, correctly), and prints only measurements and labels the operator chose, never paths, device identifiers or timestamps.
+
+It needs nothing but a Python interpreter, so it runs against an external corpus without the workspace:
+
+```sh
+python3 scripts/scanner-evidence/skew_oracle.py \
+    --label gray-300-cw --expect 5 -r 300 \
+    ~/scanmole-evidence/<device>/runs/<run>/page_*.pnm
+```
+
+Capture with the **same physical sheets** throughout, so paper differences cannot masquerade as mechanism differences, and **alternate the run order** between backend-off and backend-on so feeder warm-up and roller wear land on both arms. Each pair is: backend deskew off plus ScanMole's host path, against backend deskew on with the host path out of the way (`--deskew-method scanner`).
+
+Minimum matrix, per mechanism:
+
+- P4, Gray and Color at 300 dpi
+- nominally straight, clockwise and counter-clockwise feeds
+- five repetitions per mode and direction
+- simplex and duplex wherever the device supports both
+- three repetitions at 150 and 600 dpi per supported mode and direction
+- dense text (D or S sheets), sparse content (P1), footer (F1), the edge targets (R1) and blank backs
+
+The oracle reports two numbers per page and they answer different questions. The **rigid residual** is the median of the three rules' angles: the page rotation a mechanism is responsible for removing. The **non-rigid spread** is the widest disagreement between those rules: the sheet arriving deformed rather than merely turned. A single rotation cannot remove deformation, and no amount of deformation excuses leaving the rotation in, so the spread is never subtracted from the residual and never relaxes a threshold. Compare its median and 95th percentile between the backend-off, host and backend arms: a mechanism must not make it materially worse than the host path does.
+
+Required result, measured by the oracle and by inspecting the frames. The first three apply to the **rigid residual** only:
+
+- at least 95% of pages at or below 0.10 degrees residual
+- no page above 0.20 degrees
+- absolute signed median at or below 0.05 degrees
+- median and 95th percentile no worse than the host path over the same sheets
+- every intentional printed target retained
+- no blank-verdict changes
+- no darker backing edge, and automatic geometry no less stable
+- no raster family or depth loss (a 1-bit request must not come back gray, and 16-bit must not be reduced)
+- sharpness on the R1 edge targets no more than 10% worse than the host path
+- no acquisition, processing or duplex-order failures
+
+One measured observation about the sheets themselves, which changes what to report and not what to require. A sheet does not necessarily arrive rigidly rotated. On the ScanSnap iX100, over eight feeds of one sheet, the three rules of a single page disagreed by 0.01 to 0.29 degrees, and the top rule read more clockwise than the bottom one on **every** frame, corrected or not: the sheet is turned slightly as it travels, and no single rotation can straighten all of it.
+
+That does not soften anything above. The rigid median stays subject to the absolute gates exactly as written; the non-rigid spread is reported beside it and never relaxes them, because a rotation left in place is a rotation left in place whatever else the sheet did. What the spread is for is comparison: measure its distribution on the backend-off, host and backend arms of the same sheets, and a mechanism that materially widens it relative to the host path has made the page worse even where its median looks fine. A frame too deformed or ambiguous to measure does not disappear from the denominator either; it is missing evidence and prevents qualification until it is replaced by a frame that can be measured.
+
+A missing raster family, a mode the device cannot be put into, or any failed criterion leaves the mechanism **unqualified**. There is no partial credit and no mode-specific trust: a mechanism qualifies for everything or for nothing, because the selector the user sees has no per-mode axis and inventing one would move the decision somewhere nobody can see it.
+
+A clean exit from the oracle means the angle criteria passed, not that a mechanism is qualified: retained targets, blank verdicts, borders, raster depth, sharpness and failure counts are judged separately, from the frames themselves. Raw captures stay outside Git as always. What may come back is the aggregate table the oracle prints and the `(backend, option)` pair added to `QUALIFIED_FOR_AUTO`, with the measured summary in its docstring.
+
 ## Handing a corpus to analysis
 
 Analysis works directly on the external evidence root, read-only. Scratch scripts and derived measurements belong next to the corpus (for example in an `analysis/` sibling of `runs/`), not in the repository. What may come back into Git is only: sanitized capability fixtures, synthetic regressions derived from measured constants, and separately approved replay fixtures within the documented budgets.
