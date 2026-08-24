@@ -71,17 +71,21 @@ scanmole/                      # repository root (uv workspace)
 │   │       ├── pipeline.py    # orchestration: scan → blank-drop → PDF → OCR
 │   │       ├── scanner.py     # scanimage acquisition, streaming page delivery
 │   │       ├── scancommand.py # the scanimage command line + EffectiveSettings
+│   │       ├── sheetflow.py   # sheet flows and the collect wait loop
 │   │       ├── options.py     # -A capability parsing + source/mode/page-size mapping
 │   │       ├── negotiation.py # what a device supports, and how well
 │   │       ├── assessment.py  # the shared support model (Support/Assessment/Plan)
 │   │       ├── faint.py       # lineart-auto: native text enhancement or software
 │   │       ├── naming.py      # output filename templates (shared with the GUI preview)
 │   │       ├── devices.py     # device discovery
+│   │       ├── sensors.py     # hardware sensor evidence (scan button, paper loaded)
 │   │       ├── autocrop.py    # automatic paper-edge detection
+│   │       ├── sizing.py      # page sizes where no paper edge is detectable
 │   │       ├── deskew.py      # host raster deskew: tesseract angle + Pillow rotation
 │   │       ├── deskew_policy.py # who straightens a page, from the capabilities
 │   │       ├── pnm.py         # stdlib PNM parsing + blank detection
 │   │       ├── pdf.py         # img2pdf + ocrmypdf wrappers
+│   │       ├── ocrmypdf_plugin.py # names ScanMole in the OCR output's Creator
 │   │       ├── events.py      # JSON-lines event protocol writer
 │   │       ├── errors.py      # ScanMoleError hierarchy (exit codes)
 │   │       ├── external.py    # subprocess helpers, timeouts, install hints
@@ -101,6 +105,7 @@ scanmole/                      # repository root (uv workspace)
 │           ├── session.py     # session state fold + completion (GTK-free)
 │           ├── runner.py      # scan subprocess supervision (GTK-free)
 │           ├── probing.py     # capability probe flow (GTK-free)
+│           ├── sensorwatch.py # idle sensor gate and arming rules (GTK-free)
 │           ├── preview.py     # advisory output-name inspection (GTK-free)
 │           ├── previewflow.py # the filename preview's debounce, worker and monitor
 │           ├── discovery.py   # device listing decisions (GTK-free)
