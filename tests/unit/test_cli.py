@@ -383,17 +383,79 @@ def test_blank_threshold_zero_and_fractions_still_parse(tmp_path: Path) -> None:
     assert _build_config(frac).blank_threshold == 0.98
 
 
-def test_the_deskew_help_names_the_owners_in_order() -> None:
-    # The help is where a user learns what the flag will actually do,
-    # and the cascade gained a middle step: the host straightens the
-    # raster itself where the device offers nothing, so OCR is the last
-    # resort rather than the first fallback.
+def test_the_deskew_method_defaults_to_automatic(tmp_path: Path) -> None:
+    config = _build_config(_parse(["-o", str(tmp_path / "a.pdf")]))
+
+    assert config.deskew_method == "auto"
+
+
+@pytest.mark.parametrize("method", ["auto", "scanmole", "scanner"])
+def test_every_deskew_method_reaches_the_config(tmp_path: Path, method: str) -> None:
+    config = _build_config(
+        _parse(["--deskew-method", method, "-o", str(tmp_path / "a.pdf")])
+    )
+
+    assert config.deskew_method == method
+
+
+def test_an_unknown_deskew_method_is_a_usage_error(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as info:
+        _parse(["--deskew-method", "hardware", "-o", str(tmp_path / "a.pdf")])
+
+    assert info.value.code == 2  # a normal argparse usage error
+
+
+def test_the_method_survives_no_deskew_instead_of_conflicting(
+    tmp_path: Path,
+) -> None:
+    # Turning deskew off is not a statement about who would own it. The
+    # two settings are orthogonal, and the GUI persists the method while
+    # the switch is off, so rejecting the combination would make a saved
+    # profile unusable from the command line.
+    config = _build_config(
+        _parse(
+            ["--no-deskew", "--deskew-method", "scanner", "-o", str(tmp_path / "a.pdf")]
+        )
+    )
+
+    assert config.deskew is False
+    assert config.deskew_method == "scanner"
+
+
+def _deskew_help() -> str:
+    """The --deskew entry alone, whitespace normalized."""
+    rendered = " ".join(build_parser().format_help().split())
+    start = rendered.index("--deskew, --no-deskew")
+    # Ends at the next option's own definition, not at the first mention
+    # of its name, which this entry makes on purpose.
+    following = rendered.index("--deskew-method {auto,scanmole,scanner}", start)
+    return rendered[start:following]
+
+
+def test_the_deskew_help_defers_to_the_method_instead_of_promising_an_owner() -> None:
+    # Turning deskew on says nothing about who does it: that is
+    # --deskew-method's answer, and it is no longer "the device wherever
+    # it offers an option". The switch must not promise an owner it does
+    # not choose, or a user reads ownership off the wrong flag.
+    entry = _deskew_help()
+
+    assert "--deskew-method" in entry
+    for promise in (
+        "on the device where it offers deskew",
+        "via the device where it offers deskew",
+        "backend",
+        "scanner",
+    ):
+        assert promise not in entry, promise
+
+
+def test_the_deskew_method_help_states_the_unstoppable_exception() -> None:
+    # "auto means ScanMole" is true of every device that can be told not
+    # to deskew, and false of one whose option is read-only and on. The
+    # help has to carry the exception, because that device exists.
     rendered = " ".join(build_parser().format_help().split())
 
-    assert (
-        "on the device where it offers deskew, otherwise on the scanned "
-        "raster here, otherwise during OCR" in rendered
-    )
+    assert "'auto' picks (ScanMole, unless the device deskews unstoppably)" in rendered
 
 
 def test_deskew_defaults_on_and_can_be_disabled(tmp_path: Path) -> None:

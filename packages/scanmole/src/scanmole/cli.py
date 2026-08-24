@@ -236,9 +236,20 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "straighten skewed pages: on the device where it offers deskew, "
-            "otherwise on the scanned raster here, otherwise during OCR "
+            "straighten supported scanned pages using the selected "
+            "--deskew-method, with OCR fallback where applicable "
             "(default: on)"
+        ),
+    )
+    parser.add_argument(
+        "--deskew-method",
+        choices=("auto", "scanmole", "scanner"),
+        default="auto",
+        help=(
+            "which mechanism straightens the pages: 'scanmole' rotates the "
+            "raster here, 'scanner' leaves it to the device and refuses if "
+            "it cannot, 'auto' picks (ScanMole, unless the device deskews "
+            "unstoppably); no effect with --no-deskew (default: %(default)s)"
         ),
     )
     parser.add_argument(
@@ -471,6 +482,7 @@ def _build_config(args: argparse.Namespace) -> ScanConfig:
         auto_size_preference=args.auto_size_preference,
         despeckle=args.despeckle,
         deskew=args.deskew,
+        deskew_method=args.deskew_method,
         crop=args.crop,
         ocr=args.ocr,
         lang=args.lang,
