@@ -69,7 +69,8 @@ scanmole/                      # repository root (uv workspace)
 │   │   └── src/scanmole/      # import package
 │   │       ├── cli.py         # argparse + main() -> int
 │   │       ├── pipeline.py    # orchestration: scan → blank-drop → PDF → OCR
-│   │       ├── scanner.py     # scanimage acquisition, streaming page delivery
+│   │       ├── scanner.py     # negotiated acquisition + collect orchestration
+│   │       ├── scanstream.py  # scanimage streaming, callback delivery, drain/reap
 │   │       ├── scancommand.py # the scanimage command line + EffectiveSettings
 │   │       ├── sheetflow.py   # sheet flows and the collect wait loop
 │   │       ├── options.py     # -A capability parsing + source/mode/page-size mapping

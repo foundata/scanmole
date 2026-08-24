@@ -240,6 +240,8 @@ Note the deliberate asymmetry: any failure after pages were acquired (processing
 
 Acquisition drives `scanimage --batch` as a subprocess instead of binding libsane in-process: SANE backends are C plugins, some proprietary, and a segfault there costs one job (exit code plus stderr) instead of the interpreter. `scanimage` also owns the subtle ADF batch loop, and every acquisition is one loggable command a user can replay in a terminal, which collapses "is it us or the backend?" investigations. Accepted costs: text-parsing `-A` (fixture-pinned) and page-granular instead of scanline progress.
 
+Three modules split the job along its seams. `scanmole/scancommand.py` assembles the argv and the `EffectiveSettings` it implies from capabilities alone. `scanmole/scanstream.py` drives the started subprocess: page announcements to the caller's callback from a reader thread, stderr progress, the scan timeout, TERM-to-KILL escalation and one unconditional shutdown-and-drain path with fixed cause precedence; it raises or returns and knows nothing about preservation or recovery. `scanmole/scanner.py` orchestrates on top: negotiation and staged probing, the `settings` event, collect segments, exit-code interpretation including the feeder-empty 7, and the post-batch sweep that recovers completed pages scanimage did not announce; the recovery policies themselves stay with it and `scanmole/pipeline.py`. `scanmole.scanner` re-exports both the command builders and `run_scanimage`, so a caller that drives a scan reaches everything through one module.
+
 
 ### Command shape<a id="acquisition-command"></a>
 
