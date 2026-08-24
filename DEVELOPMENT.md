@@ -75,6 +75,7 @@ scanmole/                      # repository root (uv workspace)
 │   │       ├── devices.py     # device discovery
 │   │       ├── autocrop.py    # automatic paper-edge detection
 │   │       ├── deskew.py      # host raster deskew: tesseract angle + Pillow rotation
+│   │       ├── deskew_policy.py # who straightens a page, from the capabilities
 │   │       ├── pnm.py         # stdlib PNM parsing + blank detection
 │   │       ├── pdf.py         # img2pdf + ocrmypdf wrappers
 │   │       ├── events.py      # JSON-lines event protocol writer
