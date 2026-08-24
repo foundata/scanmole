@@ -190,7 +190,7 @@ def build_about_dialog(
     name = Gtk.Label(label="ScanMole", xalign=0.0)
     name.add_css_class("title-4")
     id_labels.append(name)
-    tagline = Gtk.Label(label=_("Easy document scanning for Linux"), xalign=0.0)
+    tagline = Gtk.Label(label=_("Easy-to-use document scanner for Linux"), xalign=0.0)
     tagline.add_css_class("dim-label")
     id_labels.append(tagline)
     identity.append(id_labels)

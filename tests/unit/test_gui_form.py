@@ -761,7 +761,7 @@ def test_the_preview_row_shows_the_bare_next_file_name() -> None:
     assert "monospace" in form._name_preview.get_css_classes()
     row = _find_row(form.output_group, "Preview")
     assert row is not None
-    assert row.get_subtitle() == "Expected output filename"
+    assert row.get_subtitle() == "Expected filename"
 
 
 def test_archival_toggle_round_trips_and_follows_ocr() -> None:

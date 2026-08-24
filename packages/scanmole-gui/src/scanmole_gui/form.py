@@ -484,7 +484,8 @@ class ScanForm:
         self._stack_row = Adw.SwitchRow(
             title=_("Scan all pages in feeder"),
             subtitle=_(
-                "Scan every page in the document feeder. Turn off to scan one sheet."
+                "Scan every page in the document feeder. "
+                "Turn off to scan single sheets."
             ),
             active=True,
         )
@@ -680,9 +681,7 @@ class ScanForm:
 
         # Advisory: the name is whatever looked free at the last refresh,
         # while the CLI reserves the real one when the scan starts.
-        preview_row = Adw.ActionRow(
-            title=_("Preview"), subtitle=_("Expected output filename")
-        )
+        preview_row = Adw.ActionRow(title=_("Preview"), subtitle=_("Expected filename"))
         self._name_preview = Gtk.Label(xalign=1.0, valign=Gtk.Align.CENTER)
         self._name_preview.add_css_class("monospace")
         self._name_preview.add_css_class("dim-label")

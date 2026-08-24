@@ -384,7 +384,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         credit_title.add_css_class("heading")
         credit_labels.append(credit_title)
         credit_tagline = Gtk.Label(
-            label=_("Easy document scanning for Linux"), xalign=0.0
+            label=_("Easy-to-use document scanner for Linux"), xalign=0.0
         )
         credit_tagline.add_css_class("dim-label")
         credit_labels.append(credit_tagline)
