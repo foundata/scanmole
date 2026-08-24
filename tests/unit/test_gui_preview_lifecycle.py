@@ -123,6 +123,11 @@ def _preview_window(
             self.monitors = monitors
             self.started = 0
             self._pending_work: list[Callable[[], None]] = []
+            # Visibility changes also poke the device controller; the
+            # preview tests only need it to accept the call.
+            self._deviceflow = type(
+                "D", (), {"view_state_changed": staticmethod(lambda: None)}
+            )()
 
             window = self
 

@@ -127,7 +127,12 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
         def shutdown(self) -> None:
             self.shutdowns += 1
 
-    from scanmole_gui.advisory import AdvisoryCommands
+    class DeviceFlowDouble:
+        def __init__(self) -> None:
+            self.stops = 0
+
+        def stop(self) -> None:
+            self.stops += 1
 
     class Window:
         _shutdown_now = MainWindow._shutdown_now
@@ -136,18 +141,16 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
             self.persisted = 0
             self._preview = _PreviewFlowDouble()
             self._released = False
-            self._advisory = AdvisoryCommands()
+            self._deviceflow = DeviceFlowDouble()
             self._runner: Runner | None = Runner()
 
         def _persist_ui_state(self) -> None:
             self.persisted += 1
 
-        def _stop_sensor_polling(self) -> None:
-            pass
-
     window = Window()
     window._shutdown_now()  # type: ignore[misc]
     assert window.persisted == 1
+    assert window._deviceflow.stops == 1  # device work released for good
     assert window._runner is not None and window._runner.shutdowns == 1
     # The preview owns a debounce, a worker and a directory monitor, none
     # of which may outlive the main loop that would have run them.
@@ -157,6 +160,42 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
     idle._runner = None
     idle._shutdown_now()  # type: ignore[misc]
     assert idle.persisted == 1  # state persists even without a scan
+
+
+@_NEEDS_GI
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_view_state_wiring_follows_what_the_runtime_can_deliver() -> None:
+    # Suspension notification exists from GTK 4.12; the window connects
+    # it only where the runtime has it, and older runtimes keep working
+    # with the visibility and focus signals alone.
+    from scanmole_gui.app import MainWindow
+
+    class Window:
+        _watch_view_state = MainWindow._watch_view_state
+
+        def __init__(self, *, suspendable: bool) -> None:
+            self.connected: list[str] = []
+            if suspendable:
+                self.is_suspended = lambda: False
+            self._on_visible_changed = lambda *a: None
+            self._on_active_changed = lambda *a: None
+            self._on_suspended_changed = lambda *a: None
+
+        def connect(self, signal: str, handler: object) -> None:
+            self.connected.append(signal)
+
+    modern: Any = Window(suspendable=True)
+    modern._watch_view_state()
+    assert modern.connected == [
+        "notify::visible",
+        "notify::is-active",
+        "notify::suspended",
+    ]
+
+    older: Any = Window(suspendable=False)
+    older._watch_view_state()  # no error, and nothing it cannot deliver
+    assert older.connected == ["notify::visible", "notify::is-active"]
 
 
 @_NEEDS_GI
@@ -174,6 +213,11 @@ def test_start_predicate_requires_a_device_outside_a_search() -> None:
         def set_scan_enabled(self, enabled: bool) -> None:
             self.enabled = enabled
 
+    class DeviceFlowDouble:
+        def __init__(self) -> None:
+            self.searching = False
+            self.cli_blocked = False
+
     class Window:
         _update_scan_enabled = MainWindow._update_scan_enabled
         _scan_allowed = MainWindow._scan_allowed
@@ -181,32 +225,35 @@ def test_start_predicate_requires_a_device_outside_a_search() -> None:
         def __init__(self) -> None:
             self._form = Form()
             self._runner = None
-            self._cli_blocked = False
+            self._deviceflow = DeviceFlowDouble()
             self._selection_block_reason: str | None = None
-            self._searching = False
             self.device: str | None = "sane:0"
 
         def _selected_device(self) -> str | None:
             return self.device
 
-        def _schedule_sensor_poll(self) -> None:
-            pass
-
     window = Window()
     window._update_scan_enabled()  # type: ignore[misc]
     assert window._form.enabled is True  # idle, device selected
 
-    for attribute, value in (
-        ("device", None),  # nothing to scan with
-        ("_searching", True),  # discovery still running
-        ("_cli_blocked", True),  # incompatible CLI
-        ("_selection_block_reason", "no duplex"),  # blocked saved choice
-        ("_runner", object()),  # a scan already runs
-    ):
+    def searching(window: Any) -> None:
+        window._deviceflow.searching = True  # discovery still running
+
+    def blocked_cli(window: Any) -> None:
+        window._deviceflow.cli_blocked = True  # incompatible CLI
+
+    cases: tuple[tuple[str, Any], ...] = (
+        ("no device", lambda w: setattr(w, "device", None)),
+        ("searching", searching),
+        ("blocked CLI", blocked_cli),
+        ("blocked choice", lambda w: setattr(w, "_selection_block_reason", "x")),
+        ("running scan", lambda w: setattr(w, "_runner", object())),
+    )
+    for name, prepare in cases:
         window = Window()
-        setattr(window, attribute, value)
+        prepare(window)
         window._update_scan_enabled()  # type: ignore[misc]
-        assert window._form.enabled is False, attribute
+        assert window._form.enabled is False, name
 
 
 @_NEEDS_DESKTOP
@@ -295,7 +342,6 @@ def test_shutdown_after_a_close_never_persists_again() -> None:
     # application shutdown signal then reaches the destroyed window via
     # the app's own reference, where get_width() reads 0. A second
     # persist there overwrote the just-saved geometry with zeros.
-    from scanmole_gui.advisory import AdvisoryCommands
     from scanmole_gui.app import MainWindow
 
     class Runner:
@@ -305,6 +351,10 @@ def test_shutdown_after_a_close_never_persists_again() -> None:
         def shutdown(self) -> None:
             self.shutdowns += 1
 
+    class DeviceFlowDouble:
+        def stop(self) -> None:
+            pass
+
     class Window:
         _shutdown_now = MainWindow._shutdown_now
 
@@ -312,14 +362,11 @@ def test_shutdown_after_a_close_never_persists_again() -> None:
             self.persisted = 0
             self._preview = _PreviewFlowDouble()
             self._released = True  # the close request already ran
-            self._advisory = AdvisoryCommands()
+            self._deviceflow = DeviceFlowDouble()
             self._runner: Runner | None = Runner()
 
         def _persist_ui_state(self) -> None:
             self.persisted += 1
-
-        def _stop_sensor_polling(self) -> None:
-            pass
 
     window = Window()
     window._shutdown_now()  # type: ignore[misc]
@@ -392,28 +439,8 @@ def test_restored_window_size_heals_persisted_zeros() -> None:
     )
 
 
-class _FakeGLib:
-    """Records timeout scheduling; sources fire only when told to."""
-
-    SOURCE_REMOVE = False
-    SOURCE_CONTINUE = True
-
-    def __init__(self) -> None:
-        self.timeouts: list[tuple[int, object]] = []
-        self.removed: list[int] = []
-        self._next = 1
-
-    def timeout_add_seconds(self, seconds: int, callback: object) -> int:
-        self.timeouts.append((seconds, callback))
-        self._next += 1
-        return self._next - 1
-
-    def source_remove(self, source: int) -> None:
-        self.removed.append(source)
-
-
 class _PresenceForm:
-    """Records every widget write of the device-apply path."""
+    """Records every widget write of the device-render path."""
 
     def __init__(self) -> None:
         self.writes: list[tuple[str, object]] = []
@@ -435,37 +462,37 @@ class _PresenceForm:
         self.scan_enabled = enabled
 
 
-def _presence_window(
-    monkeypatch: pytest.MonkeyPatch, devices: list[dict[str, str]]
-) -> Any:
-    from scanmole_gui.advisory import AdvisoryCommands
+def _listing_window(devices: list[dict[str, str]]) -> Any:
+    """A window stub carrying only the device-listing render path.
+
+    The decisions behind the outcome (quiet comparison, staleness, the
+    poll chain) belong to the controller and are pinned in
+    ``test_gui_deviceflow.py``; this stub renders decided outcomes.
+    """
     from scanmole_gui.app import MainWindow
 
-    fake_glib = _FakeGLib()
-    monkeypatch.setattr("scanmole_gui.app.GLib", fake_glib)
+    class DeviceFlowDouble:
+        searching = False
+        cli_blocked = False
 
     class Window:
-        _apply_devices = MainWindow._apply_devices
-        _poll_devices = MainWindow._poll_devices
+        _render_device_listing = MainWindow._render_device_listing
+        _discovery_failure_text = MainWindow._discovery_failure_text
         _scan_allowed = MainWindow._scan_allowed
         _update_scan_enabled = MainWindow._update_scan_enabled
 
         def __init__(self) -> None:
-            self.glib = fake_glib
             self._released = False
-            self._advisory = AdvisoryCommands()
-            self._searching = True
             self._runner = None
-            self._cli_blocked = False
-            self._version_alert_shown = False
             self._selection_block_reason = None
+            self._version_alert_shown = False
+            self._settings: dict[str, object] = {}
+            self._deviceflow = DeviceFlowDouble()
             self._devices = list(devices)
-            self._device_poll_id: int | None = None
             self._form = _PresenceForm()
             self.bars: list[str] = []
             self.logs: list[str] = []
-            self.negotiations = 0
-            self.refreshes: list[bool] = []
+            self.alerts: list[str] = []
 
         def _selected_device(self) -> str | None:
             return self._devices[0]["device"] if self._devices else None
@@ -476,17 +503,8 @@ def _presence_window(
         def _append_log(self, text: str) -> None:
             self.logs.append(text)
 
-        def _start_negotiation(self) -> None:
-            self.negotiations += 1
-
-        def _schedule_sensor_poll(self) -> None:
-            pass
-
-        def _refresh_devices(self, *, quiet: bool = False) -> None:
-            self.refreshes.append(quiet)
-
-        def is_suspended(self) -> bool:
-            return False
+        def _alert(self, heading: str, body: str) -> None:
+            self.alerts.append(heading)
 
     return Window()
 
@@ -497,72 +515,75 @@ _IX100 = {"device": "fujitsu:ScanSnap iX100:X", "vendor": "FUJITSU", "model": "i
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_a_quiet_unchanged_presence_check_touches_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = _presence_window(monkeypatch, [_IX100])
+def test_an_unchanged_presence_outcome_touches_nothing() -> None:
+    from scanmole_gui.deviceflow import ListingOutcome
 
-    window._apply_devices([dict(_IX100)], "", _IX100["device"], 0, True)
+    window = _listing_window([_IX100])
+
+    window._render_device_listing(
+        ListingOutcome(devices=[dict(_IX100)], unchanged=True, poll_scheduled=True)
+    )
 
     assert window._form.writes == []  # no model rebuild, no subtitle
     assert window.bars == []  # no "Found 1 scanner." repaint
-    assert window.negotiations == 0  # no probe churn
-    assert window._searching is False
-    # The next presence check is armed at the slow cadence.
-    assert [seconds for seconds, _cb in window.glib.timeouts] == [45]
 
 
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_a_changed_list_still_applies_fully(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = _presence_window(monkeypatch, [_IX100])
+def test_a_changed_listing_still_applies_fully() -> None:
+    from scanmole_gui.deviceflow import ListingOutcome
+
+    window = _listing_window([_IX100])
     second = {"device": "epsonds:net:host", "vendor": "EPSON", "model": "DS"}
 
-    window._apply_devices([dict(_IX100), second], "", _IX100["device"], 0, True)
+    window._render_device_listing(
+        ListingOutcome(
+            devices=[dict(_IX100), second],
+            prefer=str(_IX100["device"]),
+        )
+    )
 
     assert ("devices", ("FUJITSU iX100", "EPSON DS")) in [
         (kind, value) for kind, value in window._form.writes
     ]
-    assert window.negotiations == 1
     assert len(window._devices) == 2
+    assert any("Found 2 scanners." in title for title in window.bars)
 
 
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_a_vanished_selected_device_is_reported_and_gates_start(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = _presence_window(monkeypatch, [_IX100])
+def test_a_vanished_selected_device_is_reported_and_gates_start() -> None:
+    from scanmole_gui.deviceflow import ListingOutcome
 
-    window._apply_devices([], "", _IX100["device"], 0, True)
+    window = _listing_window([_IX100])
+
+    window._render_device_listing(ListingOutcome(devices=[], vanished=True))
 
     subtitles = [value for kind, value in window._form.writes if kind == "subtitle"]
     assert subtitles and "disconnected" in str(subtitles[-1])
     assert any("disappeared" in line for line in window.logs)
     assert window._form.scan_enabled is False  # no device: Start gated
-    # An empty list polls at the fast pickup cadence again.
-    assert [seconds for seconds, _cb in window.glib.timeouts] == [15]
 
 
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")  # gi's own import noise
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_the_poll_keeps_running_while_a_device_is_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = _presence_window(monkeypatch, [_IX100])
-    window._searching = False
+def test_the_compatibility_alert_appears_exactly_once() -> None:
+    from scanmole_gui.deviceflow import DiscoveryFailure, ListingOutcome
 
-    window._poll_devices()
+    window = _listing_window([])
+    outcome = ListingOutcome(
+        devices=[],
+        cli_version="0.9.0",
+        needed=">= 2, < 3",
+        failure=DiscoveryFailure.INCOMPATIBLE_CLI,
+    )
 
-    assert window.refreshes == [True]  # quiet presence check, not a UI search
+    window._render_device_listing(outcome)
+    window._render_device_listing(outcome)
 
-    blocked = _presence_window(monkeypatch, [_IX100])
-    blocked._searching = False
-    blocked._cli_blocked = True
-    blocked._poll_devices()
-    assert blocked.refreshes == []  # a blocked CLI stops the polling
+    assert window.alerts == ["Incompatible scanmole CLI"]  # one-time alert
+    subtitles = [value for kind, value in window._form.writes if kind == "subtitle"]
+    assert subtitles and "Incompatible scanmole CLI" in str(subtitles[-1])

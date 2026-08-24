@@ -42,13 +42,20 @@ def _scan_window(
             self._runner = None
             self._searching = False
 
-            def cancel_pending(*_args: object, **_kw: object) -> bool:
-                self.steps.append("cancel")
+            def pause_for_scan(*_args: object) -> bool:
+                self.steps.append("pause")
                 return True
 
-            self._advisory = type("A", (), {"cancel_pending": cancel_pending})()
-            self._flow = type(
-                "F", (), {"reset": lambda *_a: self.steps.append("flow-reset")}
+            def resume_after_scan(*_args: object) -> None:
+                self.steps.append("resume")
+
+            self._deviceflow = type(
+                "D",
+                (),
+                {
+                    "pause_for_scan": pause_for_scan,
+                    "resume_after_scan": resume_after_scan,
+                },
             )()
             self._scanmole = "scanmole"
             self.alerts: list[tuple[str, str]] = []
@@ -78,12 +85,6 @@ def _scan_window(
                     pass
 
             self._form = Form()
-
-        def _stop_sensor_polling(self) -> None:
-            self.steps.append("stop-sensors")
-
-        def _start_negotiation(self) -> None:
-            self.steps.append("negotiate")
 
         def _update_scan_enabled(self) -> None:
             self.steps.append("enablement")
@@ -365,12 +366,12 @@ def test_a_failed_start_completes_device_takeover_without_adopting_a_runner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The takeover runs before the spawn, so a start that raises has
-    # already stopped the poller, cancelled advisory work and reset the
-    # flow, in that order. A raising start must not adopt a runner or
-    # leave the searching latch set, and it shows the usual start alert.
-    # Device coordination then resumes right here: fresh negotiation
-    # first, so the enablement pass that follows cannot arm sensor
-    # polling from the evidence the takeover just invalidated.
+    # already paused device coordination (the controller pins its
+    # internal stop-cancel-reset order in test_gui_deviceflow). A
+    # raising start must not adopt a runner, and it shows the usual
+    # start alert. Coordination then resumes right here: the resume
+    # negotiates before the enablement pass that follows, so nothing can
+    # arm sensor polling from the evidence the takeover invalidated.
     def refuse(_self: object, _argv: list[str], _cwd: Path) -> None:
         raise OSError("no such executable")
 
@@ -378,15 +379,8 @@ def test_a_failed_start_completes_device_takeover_without_adopting_a_runner(
 
     window._on_scan_clicked()
 
-    assert window.steps == [
-        "stop-sensors",
-        "cancel",
-        "flow-reset",
-        "negotiate",
-        "enablement",
-    ]
+    assert window.steps == ["pause", "resume", "enablement"]
     assert window._runner is None  # nothing to block a later attempt
-    assert window._searching is False  # the search latch is not left set
     assert [heading for heading, _b in window.alerts] == ["Could Not Start scanmole"]
 
 
@@ -441,18 +435,19 @@ def _takeover_window(
     *,
     start: Callable[..., None],
 ) -> Any:
-    """A window stub with a real capability flow, arbiter and fake GLib.
+    """A window stub wired to a real controller with held workers.
 
     Probe workers are never run: each spawn is recorded and the test
-    feeds ``_on_probe_done`` directly, so every step is deterministic.
+    feeds the controller's completion handler directly, so every step
+    is deterministic.
     """
     from scanmole_gui import app as app_module
+    from scanmole_gui import deviceflow as deviceflow_module
     from scanmole_gui.app import MainWindow
-    from scanmole_gui.probing import CapabilityFlow
-    from scanmole_gui.sensorwatch import SensorArbiter
+    from scanmole_gui.deviceflow import DeviceFlow
 
     glib = _FakeGLib()
-    monkeypatch.setattr(app_module, "GLib", glib)
+    monkeypatch.setattr(deviceflow_module, "GLib", glib)
     monkeypatch.setattr(
         app_module, "ScanRunner", lambda **_kw: type("R", (), {"start": start})()
     )
@@ -461,31 +456,21 @@ def _takeover_window(
 
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
-        _start_negotiation = MainWindow._start_negotiation
+        _device_context = MainWindow._device_context
         _render_capability_update = MainWindow._render_capability_update
-        _on_probe_done = MainWindow._on_probe_done
         _update_scan_enabled = MainWindow._update_scan_enabled
         _scan_allowed = MainWindow._scan_allowed
         _update_selection_block = MainWindow._update_selection_block
-        _schedule_sensor_poll = MainWindow._schedule_sensor_poll
-        _sensor_polling_wanted = MainWindow._sensor_polling_wanted
         _sensor_prefs = MainWindow._sensor_prefs
-        _stop_sensor_polling = MainWindow._stop_sensor_polling
-        _observe_sensors = MainWindow._observe_sensors
         _sensor_trigger_allowed = MainWindow._sensor_trigger_allowed
+        _on_sensor_trigger = MainWindow._on_sensor_trigger
         _window_suspended = MainWindow._window_suspended
 
         def __init__(self) -> None:
             self.glib = glib
-            self._flow = CapabilityFlow()
-            self._sensor_arbiter = SensorArbiter()
-            self._sensor_poll_id: int | None = None
-            self._sensor_poll_busy = False
             self._runner = None
-            self._searching = False
             self._released = False
             self._closing = False
-            self._cli_blocked = False
             self._selection_block_reason: str | None = None
             self._settings: dict[str, object] = {"hardware_button": "same"}
             self._scanmole = "scanmole"
@@ -496,21 +481,6 @@ def _takeover_window(
             self.folder = tmp_path / "out"
 
             window = self
-
-            class Advisory:
-                generation = 0
-
-                @staticmethod
-                def spawn_worker(_target: Any, *args: object) -> None:
-                    # (token, request, generation) of a probe worker; the
-                    # test completes it via _on_probe_done itself.
-                    window.spawned.append(args)
-
-                @staticmethod
-                def cancel_pending(*_a: object, **_kw: object) -> bool:
-                    return True
-
-            self._advisory = Advisory()
 
             class Form:
                 @staticmethod
@@ -545,9 +515,41 @@ def _takeover_window(
                 refresh_document_hints = staticmethod(lambda: None)
 
             self._form = Form()
+            self._deviceflow = DeviceFlow(
+                scanmole="scanmole",
+                context=self._device_context,  # type: ignore[misc]
+                on_searching=lambda: None,
+                on_listing=lambda _outcome: None,
+                on_capabilities=self._render_capability_update,  # type: ignore[misc]
+                on_trigger=self._on_sensor_trigger,  # type: ignore[misc]
+                on_log=self._append_log,
+            )
+
+            class Advisory:
+                generation = 0
+
+                @staticmethod
+                def spawn_worker(_target: Any, *args: object) -> None:
+                    # (token, request, generation) of a probe worker; the
+                    # test feeds the completion handler itself.
+                    window.spawned.append(args)
+
+                @staticmethod
+                def cancel_pending(*_a: object, **_kw: object) -> bool:
+                    Advisory.generation += 1
+                    return True
+
+                @staticmethod
+                def adopter(_generation: int) -> Any:
+                    return lambda _process: None
+
+            self._deviceflow._advisory = Advisory()  # type: ignore[assignment]
 
         def _selected_device(self) -> str | None:
             return self.device
+
+        def get_visible(self) -> bool:
+            return True
 
         def _alert(self, heading: str, body: str) -> None:
             self.alerts.append((heading, body))
@@ -560,11 +562,6 @@ def _takeover_window(
 
         def _save_settings(self) -> None:
             pass
-
-        # Worker and tick targets handed to the fakes; never run by the
-        # test, which drives _on_probe_done and the timeouts directly.
-        _probe_worker = staticmethod(lambda *_a: None)
-        _sensor_poll_tick = staticmethod(lambda: False)
 
         # Runner callbacks: the stub runner never invokes them.
         _schedule = staticmethod(lambda _cb: None)
@@ -581,7 +578,7 @@ def _takeover_window(
 def _complete_next_probe(window: Any) -> None:
     """Feed the snapshot back for the most recently spawned probe."""
     token, request, generation = window.spawned.pop()
-    window._on_probe_done(token, request, _snapshot(), generation)
+    window._deviceflow._probe_done(token, request, _snapshot(), generation)
 
 
 def _settle_negotiation(window: Any) -> None:
@@ -603,16 +600,16 @@ def test_a_failed_start_negotiates_again_without_waiting_for_a_poll(
         raise OSError("no such executable")
 
     window = _takeover_window(tmp_path, monkeypatch, start=refuse)
-    window._start_negotiation()
+    window._deviceflow.device_changed()
     _settle_negotiation(window)
-    assert window._flow.last_caps is not None
+    assert window._deviceflow.last_caps is not None
 
     window._on_scan_clicked()
 
     # A fresh bare probe of the current selection is already on its way;
     # no timer is armed for it, so no poll interval is involved.
     assert window._runner is None
-    assert window._flow.probe_active is True
+    assert window._deviceflow._flow.probe_active is True
     assert len(window.spawned) == 1
     _token, request, _generation = window.spawned[0]
     assert request.device == window.device
@@ -631,21 +628,22 @@ def test_no_sensor_poll_restarts_from_retained_caps_after_a_failed_start(
     # The flow reset cleared the base snapshot but kept ``last_caps``,
     # so sensor settings for the selected source are not derivable: a
     # poll armed from the retained caps would read the backend's default
-    # source. Until the fresh probe is accepted, every enablement pass
-    # (the quiet presence poll runs one) must leave the poller unarmed.
+    # source. Until the fresh probe is accepted, every poll attempt (an
+    # unchanged quiet presence result ends in one) must stay unarmed.
     def refuse(_self: object, _argv: list[str], _cwd: Path) -> None:
         raise OSError("no such executable")
 
     window = _takeover_window(tmp_path, monkeypatch, start=refuse)
-    window._start_negotiation()
+    window._deviceflow.device_changed()
     _settle_negotiation(window)
     assert window.glib.timeouts  # idle polling armed before the click
 
     window._on_scan_clicked()
 
-    assert window._flow.sensor_settings(window.device, "adf-duplex") == ()
+    flow = window._deviceflow
+    assert flow._flow.sensor_settings(window.device, "adf-duplex") == ()
     assert window.glib.timeouts == {}  # the takeover disarmed the poller
-    window._update_scan_enabled()  # what an unchanged quiet poll runs
+    flow._schedule_sensor_poll()  # what an unchanged quiet poll attempts
     assert window.glib.timeouts == {}  # still gated on the fresh probe
 
 
@@ -660,14 +658,15 @@ def test_sensor_polling_resumes_after_the_fresh_probe_is_accepted(
         raise OSError("no such executable")
 
     window = _takeover_window(tmp_path, monkeypatch, start=refuse)
-    window._start_negotiation()
+    window._deviceflow.device_changed()
     _settle_negotiation(window)
     window._on_scan_clicked()
 
     _settle_negotiation(window)
 
-    assert window._flow.probe_active is False
-    assert window._flow.sensor_settings(window.device, "adf-duplex") == (
+    flow = window._deviceflow
+    assert flow._flow.probe_active is False
+    assert flow._flow.sensor_settings(window.device, "adf-duplex") == (
         ("--source", "ADF Duplex"),
     )
     assert len(window.glib.timeouts) == 1  # the idle poller is armed again

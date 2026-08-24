@@ -167,23 +167,21 @@ def test_a_worker_resuming_after_the_cancel_cannot_leak_a_child() -> None:
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_scan_start_cancels_advisory_work_before_the_runner(
+def test_scan_start_pauses_device_work_before_the_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The engine probes the device authoritatively at scan start; the
-    # advisory children must be gone before the runner launches.
+    # controller's takeover (which cancels the advisory children, see
+    # test_gui_deviceflow for its internal order) must complete before
+    # the runner launches.
     from scanmole_gui.app import MainWindow
 
     order: list[str] = []
 
-    class Advisory:
-        def cancel_pending(self, **_kw: object) -> bool:
-            order.append("cancel")
+    class DeviceFlowDouble:
+        def pause_for_scan(self) -> bool:
+            order.append("pause")
             return True
-
-    class Flow:
-        def reset(self) -> None:
-            order.append("reset")
 
     class Form:
         def folder(self) -> str:
@@ -224,15 +222,10 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
 
-        def _stop_sensor_polling(self) -> None:
-            order.append("stop-poller")
-
         def __init__(self) -> None:
             self._runner = None
             self._preview = _PreviewFlowDouble()
-            self._advisory = Advisory()
-            self._flow = Flow()
-            self._searching = True
+            self._deviceflow = DeviceFlowDouble()
             self._form = Form()
             self._scanmole = "scanmole"
             self._session = None
@@ -261,15 +254,9 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
     monkeypatch.setattr("scanmole_gui.app.ScanRunner", Runner)
     window._on_scan_clicked()  # type: ignore[misc]
 
-    # The idle sensor poller stops before the scan takeover cancels the
-    # advisory children, which happens before the runner starts.
-    assert (
-        order.index("stop-poller")
-        < order.index("cancel")
-        < order.index("reset")
-        < order.index("start")
-    )
-    assert window._searching is False  # a cancelled search cannot stay latched
+    # The whole takeover completes before the runner starts, and the
+    # settings snapshot lands in between, exactly as before.
+    assert order.index("pause") < order.index("save") < order.index("start")
 
 
 @_NEEDS_GI
@@ -278,13 +265,31 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
 def test_no_advisory_child_survives_into_the_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # End to end with the real supervisor: a live advisory child at scan
-    # click is gone by the time the runner starts.
+    # End to end with the real controller and supervisor: a live
+    # advisory child at scan click is gone by the time the runner starts.
     from scanmole_gui.app import MainWindow
-    from scanmole_gui.probing import CapabilityFlow
+    from scanmole_gui.deviceflow import DeviceContext, DeviceFlow
     from scanmole_gui.request import ScanRequest
 
-    supervisor = AdvisoryCommands()
+    noop: Any = lambda *_a, **_k: None  # noqa: E731
+    controller = DeviceFlow(
+        scanmole="scanmole",
+        context=lambda: DeviceContext(
+            selected_device=None,
+            remembered_device="",
+            source="adf-duplex",
+            sensor_prefs=("off", False),
+            start_allowed=False,
+            visible=True,
+            suspended=False,
+        ),
+        on_searching=noop,
+        on_listing=noop,
+        on_capabilities=noop,
+        on_trigger=noop,
+        on_log=noop,
+    )
+    supervisor = controller._advisory
     child = subprocess.Popen(["sleep", "30"], start_new_session=True)
     supervisor.adopt(child, supervisor.generation)
     seen: list[int | None] = []
@@ -326,15 +331,10 @@ def test_no_advisory_child_survives_into_the_runner(
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
 
-        def _stop_sensor_polling(self) -> None:
-            pass
-
         def __init__(self) -> None:
             self._runner = None
             self._preview = _PreviewFlowDouble()
-            self._advisory = supervisor
-            self._flow = CapabilityFlow()
-            self._searching = False
+            self._deviceflow = controller
             self._form = Form()
             self._scanmole = "scanmole"
             self._session = None
@@ -368,43 +368,10 @@ def test_no_advisory_child_survives_into_the_runner(
 @_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_released_or_cancelled_callbacks_never_touch_the_window() -> None:
-    # Pending main-loop callbacks may fire after the window released its
-    # advisory work (close, shutdown) or after a cancellation invalidated
-    # their generation: they must drop without touching any widget (the
-    # stand-in has no form or flow, so a touch raises AttributeError).
-    from scanmole_gui.app import MainWindow
-    from scanmole_gui.probing import ProbeRequest
-
-    class Window:
-        _apply_devices = MainWindow._apply_devices
-        _on_probe_done = MainWindow._on_probe_done
-
-        def __init__(self, released: bool) -> None:
-            self._released = released
-            self._advisory = AdvisoryCommands()
-            self._searching = True
-
-    released = Window(released=True)
-    released._apply_devices([], "", "", released._advisory.generation)  # type: ignore[misc]
-    assert released._searching is False  # the latch never sticks
-
-    stale = Window(released=False)
-    stale._advisory.cancel_pending()  # bumps the generation
-    stale._apply_devices([], "", "", stale._advisory.generation - 1)  # type: ignore[misc]
-    assert stale._searching is False
-    stale._on_probe_done(  # type: ignore[misc]
-        1, ProbeRequest("dev"), None, stale._advisory.generation - 1
-    )
-
-
-@_NEEDS_GI
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_scan_exit_starts_a_fresh_negotiation() -> None:
-    # The takeover reset the capability flow; the device is free again
-    # once the scan exits, so availability renegotiates right away. A
-    # stale runner's exit must not.
+def test_scan_exit_resumes_device_coordination() -> None:
+    # The takeover paused device work; the device is free again once the
+    # scan exits, so the controller resumes (which renegotiates) right
+    # away. A stale runner's exit must not.
     from pathlib import Path
 
     from scanmole_gui.app import MainWindow
@@ -416,12 +383,17 @@ def test_scan_exit_starts_a_fresh_negotiation() -> None:
         def set_running(self, running: bool) -> None:
             pass
 
+    class DeviceFlowDouble:
+        def resume_after_scan(self) -> None:
+            calls.append("resume")
+
     class Window:
         _on_process_exit = MainWindow._on_process_exit
 
         def __init__(self, runner: object) -> None:
             self._runner = runner
             self._preview = _PreviewFlowDouble()
+            self._deviceflow = DeviceFlowDouble()
             self._form = Form()
             self._session = SessionState(drop_blanks=True)
             self._run_folder = Path("/nonexistent")
@@ -433,9 +405,6 @@ def test_scan_exit_starts_a_fresh_negotiation() -> None:
         def _append_log(self, text: str) -> None:
             pass
 
-        def _start_negotiation(self) -> None:
-            calls.append("negotiate")
-
         def _set_result_bar(self, *a: object, **k: object) -> None:
             pass
 
@@ -445,7 +414,7 @@ def test_scan_exit_starts_a_fresh_negotiation() -> None:
     runner = object()
     window = Window(runner)
     window._on_process_exit(runner, 0)  # type: ignore[misc, arg-type]
-    assert calls == ["negotiate"]
+    assert calls == ["resume"]
     assert window._runner is None
     # The run either produced the previewed name or freed nothing, so the
     # next free name is a different question either way.
@@ -486,8 +455,12 @@ def test_settings_reset_renegotiates_the_connected_device(
         def _apply_saved_settings(self) -> None:
             order.append("apply")
 
-        def _start_negotiation(self) -> None:
-            order.append("negotiate")
+        class _DeviceFlow:
+            @staticmethod
+            def settings_reset() -> None:
+                order.append("negotiate")
+
+        _deviceflow = _DeviceFlow()
 
         def is_maximized(self) -> bool:
             return False

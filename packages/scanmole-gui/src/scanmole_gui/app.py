@@ -36,30 +36,24 @@ from gi.repository import (  # noqa: E402  # after require_version
 # The GUI holds no pipeline logic; the pure naming helper is imported only so
 # the live filename preview matches what the CLI will produce.
 from scanmole.config import SheetFlow  # noqa: E402  # a pure type alias
-from scanmole.external import run_command  # noqa: E402  # supervised capture
 from scanmole.negotiation import (  # noqa: E402
-    ADVISORY_PROBE_TIMEOUT_SECONDS,
     Support,
     assess_resolution,
-    probe_snapshot,
-)
-from scanmole.sensors import (  # noqa: E402
-    SENSOR_PROBE_TIMEOUT_SECONDS,
-    SensorSnapshot,
-    assess_sensors,
 )
 from scanmole_gui import __version__, desktop  # noqa: E402
-from scanmole_gui.advisory import AdvisoryCommands  # noqa: E402
+from scanmole_gui.deviceflow import (  # noqa: E402
+    DeviceContext,
+    DeviceFlow,
+    DiscoveryFailure,
+    ListingOutcome,
+    SensorTrigger,
+)
 from scanmole_gui.dialogs import (  # noqa: E402
     build_about_dialog,
     build_more_languages_dialog,
     build_settings_dialog,
 )
-from scanmole_gui.discovery import (  # noqa: E402
-    display_name,
-    evaluate_listing,
-    parse_version,
-)
+from scanmole_gui.discovery import display_name  # noqa: E402
 from scanmole_gui.form import (  # noqa: E402
     JBIG2_HINT,
     ScanForm,
@@ -69,15 +63,10 @@ from scanmole_gui.form import (  # noqa: E402
 )
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
 from scanmole_gui.previewflow import PreviewFlow, PreviewInputs  # noqa: E402
-from scanmole_gui.probing import (  # noqa: E402
-    CapabilityFlow,
-    CapabilityUpdate,
-    ProbeRequest,
-)
+from scanmole_gui.probing import CapabilityUpdate  # noqa: E402
 from scanmole_gui.protocol import RawLine, decode_stdout  # noqa: E402
 from scanmole_gui.request import request_argv  # noqa: E402
 from scanmole_gui.runner import SIGKILL_GRACE_SECONDS, ScanRunner  # noqa: E402
-from scanmole_gui.sensorwatch import AdvisoryGate, SensorArbiter  # noqa: E402
 from scanmole_gui.session import (  # noqa: E402
     SessionState,
     Update,
@@ -106,35 +95,6 @@ PROJECT_URL = "https://foundata.com/en/projects/scanmole/"
 CONFIG_FILE = Path(GLib.get_user_config_dir()) / "scanmole" / "gui.json"
 ICON_DIR = Path(__file__).resolve().parent / "icons"
 LOGO_FILE = ICON_DIR / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
-
-DEVICE_POLL_SECONDS = 15
-"""Pause between device searches while no scanner has been found.
-
-Counted from the end of the previous search, so slow probes never shrink
-the quiet gap. A probe costs a second or two of backend I/O plus discovery
-traffic (sane-airscan emits mDNS/WSD queries): cheap at this cadence, so no
-backoff; a suspended (minimized/hidden) window defers instead.
-"""
-
-DEVICE_PRESENCE_POLL_SECONDS = 45
-"""Pause between presence checks while a scanner is on the list.
-
-The same passive discovery, run forever: it notices the selected device
-disappearing (standby, unplugged) and additional scanners appearing,
-without ever opening a device (an open would keep it from sleeping).
-Presence changes are rare, so the cadence is slower than the empty-list
-pickup, and an unchanged result is applied quietly: no widget writes,
-no renegotiation, no result-bar repaint.
-"""
-
-SENSOR_POLL_SECONDS = 2.5
-"""Pause between completed idle sensor polls.
-
-A read costs well under a second on measured hardware and a button
-press latches until read there, so this cadence sees single presses
-without churning the device; the engine's own collect wait polls
-faster because a sheet is imminently expected there.
-"""
 
 # Above the layout breakpoint and tall enough for both columns, so a first
 # start shows every setting instead of hiding some below the fold. A screen
@@ -284,21 +244,22 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         the window actually closes, because the close it asks for can
         still be refused; only then does the application learn of it."""
         self._close_patience = 0
-        self._searching = False
-        self._device_poll_id: int | None = None
-        self._advisory = AdvisoryCommands()
-        # Once released (window close, application shutdown), advisory
+        # Once released (window close, application shutdown), late
         # results must no longer touch the widgets.
         self._released = False
-        self._flow = CapabilityFlow()
-        # Idle hardware-sensor watching: the gate serializes advisory
-        # device access (discovery and probes have priority, sensor polls
-        # skip their tick), the arbiter turns reads into one trigger per
-        # fresh edge.
-        self._gate = AdvisoryGate()
-        self._sensor_arbiter = SensorArbiter()
-        self._sensor_poll_id: int | None = None
-        self._sensor_poll_busy = False
+        # Asynchronous device coordination (discovery, capability probes,
+        # idle sensor polling) lives in its own lifecycle owner; the
+        # window renders its typed outcomes and keeps every decision that
+        # needs a widget, a translation or the Start predicate.
+        self._deviceflow = DeviceFlow(
+            scanmole=self._scanmole,
+            context=self._device_context,
+            on_searching=self._render_search_started,
+            on_listing=self._render_device_listing,
+            on_capabilities=self._render_capability_update,
+            on_trigger=self._on_sensor_trigger,
+            on_log=self._append_log,
+        )
         # The filename preview: a debounced, generation-tagged look at the
         # output folder plus the monitor that notices someone else writing
         # into it. Local filesystem work, deliberately separate from the
@@ -310,13 +271,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             render=lambda text: self._form.set_preview(text),
         )
         self._selection_block_reason: str | None = None
+        # The rendered device list: what each dropdown row stands for.
+        # The controller keeps its own canonical copy for its unchanged
+        # and vanished decisions.
         self._devices: list[dict[str, str]] = []
         self._run_folder = Path(default_folder())
         self._last_output: Path | None = None
-        self._cli_version: str | None = None
-        # Set from the hello handshake: a truthy value blocks scanning because
-        # the CLI's major version does not match this GUI (see ARCHITECTURE.md).
-        self._cli_blocked = False
         self._version_alert_shown = False
         self._settings_dialog: Adw.PreferencesDialog | None = None
         # The language this process actually runs with; a differing persisted
@@ -326,13 +286,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._build_ui()
         self._apply_saved_settings()
         self.connect("close-request", self._on_close_request)
-        # Coming back to the window is a chance for the folder to have
-        # changed while nothing was watching it; going away is a reason to
-        # stop watching. Named handlers, because the direction decides.
-        self.connect("notify::visible", self._on_visible_changed)
-        self.connect("notify::is-active", self._on_active_changed)
+        self._watch_view_state()
 
-        self._refresh_devices()
+        self._deviceflow.start()
 
     # ------------------------------------------------------------------ UI
 
@@ -548,7 +504,9 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     def _apply_saved_settings(self) -> None:
         """Restore the form and application look from the persisted settings."""
-        self._flow.preferred_source = str(self._settings.get("source", "adf-duplex"))
+        self._deviceflow.preferred_source = str(
+            self._settings.get("source", "adf-duplex")
+        )
         self._form.apply_settings(self._settings)
         self._apply_color_scheme(str(self._settings.get("color_scheme") or ""))
 
@@ -567,148 +525,91 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             "device": self._selected_device() or "",
             # The user's own choice, not a temporary sole-source adoption:
             # a duplex-capable scanner must get the preference back.
-            "source": self._flow.preferred_source,
+            "source": self._deviceflow.preferred_source,
             **self._form.persisted_values(),
         }
         store_settings(CONFIG_FILE, self._settings)
 
     # ----------------------------------------------------------- devices
 
-    def _refresh_devices(self, *_args: object, quiet: bool = False) -> None:
-        """Start an asynchronous ``scanmole --list-devices`` in a worker thread.
+    def _device_context(self) -> DeviceContext:
+        """One fresh snapshot of the window state device work reads.
 
-        A quiet search (the background presence check) paints nothing at
-        start and applies an unchanged result without touching a widget;
-        only a real change goes through the full apply.
+        Visibility and suspension are answered separately: an ordinarily
+        hidden window reports ``get_visible() == False`` without being
+        compositor-suspended, and ``is_suspended`` (GTK 4.12+; older
+        runtimes never report it) can hold while the widget still counts
+        as visible. Neither answer is derived from the other.
         """
-        if self._runner is not None or self._searching:
-            return
-        self._searching = True
-        if not quiet:
-            self._form.set_refresh_enabled(False)
-            # No Start during a search: the CLI would only repeat the same
-            # discovery and fail without a scanner.
-            self._update_scan_enabled()
-            self._form.set_device_subtitle(_("Searching for scanners…"))
-        prefer = self._selected_device() or str(self._settings.get("device") or "")
-        self._advisory.spawn_worker(
-            self._devices_worker, prefer, self._advisory.generation, quiet
+        return DeviceContext(
+            selected_device=self._selected_device(),
+            remembered_device=str(self._settings.get("device") or ""),
+            source=self._form.source_value(),
+            sensor_prefs=self._sensor_prefs(),
+            start_allowed=self._scan_allowed(),
+            visible=bool(self.get_visible()),
+            suspended=self._window_suspended(),
         )
 
-    def _devices_worker(
-        self, prefer: str, generation: int, quiet: bool = False
-    ) -> None:
-        """Worker thread: query devices and hand results back to the main loop.
+    def _refresh_devices(self, *_args: object) -> None:
+        """The Refresh action: ask the controller for a new search."""
+        self._deviceflow.refresh()
 
-        The parsing and the compatibility decision live in the GTK-free
-        :mod:`scanmole_gui.discovery`; this thread only runs the command
-        (through the supervised engine helper, so a wedged backend probe
-        cannot leave descendants behind on timeout) and translates the
-        typed outcome for the user.
+    def _render_search_started(self) -> None:
+        """Paint the state of a non-quiet search that just started."""
+        self._form.set_refresh_enabled(False)
+        # No Start during a search: the CLI would only repeat the same
+        # discovery and fail without a scanner.
+        self._update_scan_enabled()
+        self._form.set_device_subtitle(_("Searching for scanners…"))
+
+    def _discovery_failure_text(self, outcome: ListingOutcome) -> str:
+        """The localized message for one typed discovery failure."""
+        if outcome.failure is None:
+            return ""
+        if outcome.failure is DiscoveryFailure.INCOMPATIBLE_CLI:
+            return _(
+                "Incompatible scanmole CLI: found version %(found)s, "
+                "but this GUI needs %(needed)s."
+            ) % {
+                "found": outcome.cli_version or _("unknown"),
+                "needed": outcome.needed,
+            }
+        if outcome.failure is DiscoveryFailure.FAILED_EXIT:
+            return _("Device search failed (exit %(code)d).") % {
+                "code": outcome.failed_exit
+            }
+        if outcome.failure is DiscoveryFailure.CLI_MISSING:
+            return _("scanmole CLI not found — install it or add it to PATH.")
+        if outcome.failure is DiscoveryFailure.TIMED_OUT:
+            return _("Device search timed out.")
+        if outcome.failure is DiscoveryFailure.OS_ERROR:
+            return _("Device search failed: %(error)s") % {
+                "error": outcome.error_detail
+            }
+        return _("Device search failed unexpectedly.")
+
+    def _render_device_listing(self, outcome: ListingOutcome) -> None:
+        """Populate the device dropdown from one decided search result.
+
+        An ``unchanged`` quiet result applies nothing: no model rebuild
+        (which would fire ``notify::selected`` and renegotiate), no
+        subtitle, no result-bar repaint. The routine presence check
+        therefore costs no visible churn.
         """
-        adopt = self._advisory.adopter(generation)
-        # Priority access: an in-flight sensor poll finishes first, so the
-        # discovery command never races it on the device.
-        held = self._gate.acquire("discovery")
-        if self._cli_version is None:
-            self._cli_version = self._probe_cli_version(adopt)
-        devices: list[dict[str, str]] = []
-        err = ""
-        try:
-            result = run_command(
-                [self._scanmole, "--list-devices", "--json"],
-                timeout_seconds=120,
-                on_spawn=adopt,
-            )
-            if result.stderr.strip():
-                GLib.idle_add(self._append_log, result.stderr.strip())
-            listing = evaluate_listing(result.stdout, result.returncode)
-            if listing.cli_version is not None:
-                self._cli_version = listing.cli_version
-            self._cli_blocked = listing.needed is not None
-            devices = listing.devices
-            if listing.needed is not None:
-                err = _(
-                    "Incompatible scanmole CLI: found version %(found)s, "
-                    "but this GUI needs %(needed)s."
-                ) % {
-                    "found": listing.cli_version or _("unknown"),
-                    "needed": listing.needed,
-                }
-            elif listing.failed_exit is not None:
-                err = _("Device search failed (exit %(code)d).") % {
-                    "code": listing.failed_exit
-                }
-        except FileNotFoundError:
-            err = _("scanmole CLI not found — install it or add it to PATH.")
-        except subprocess.TimeoutExpired:
-            err = _("Device search timed out.")
-        except OSError as exc:
-            err = _("Device search failed: %(error)s") % {"error": exc}
-        except Exception:  # defensive: the UI must never stay dead
-            LOGGER.debug("device search failed unexpectedly", exc_info=True)
-            err = _("Device search failed unexpectedly.")
-        finally:
-            if held:
-                self._gate.release()
-            # Always reaches the main loop, or the refresh button and the
-            # "Searching for scanners…" subtitle would stay stuck forever.
-            GLib.idle_add(self._apply_devices, devices, err, prefer, generation, quiet)
-
-    def _probe_cli_version(
-        self, adopt: Callable[[subprocess.Popen[bytes]], None]
-    ) -> str | None:
-        """Return the supervised CLI's version string, or ``None``."""
-        try:
-            result = run_command(
-                [self._scanmole, "--version"],
-                timeout_seconds=30,
-                on_spawn=adopt,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        return parse_version(result.stdout)
-
-    def _apply_devices(
-        self,
-        devices: list[dict[str, str]],
-        err: str,
-        prefer: str,
-        generation: int,
-        quiet: bool = False,
-    ) -> None:
-        """Populate the device dropdown on the main loop.
-
-        A quiet search whose result matches the current list applies
-        nothing: no model rebuild (which would fire ``notify::selected``
-        and renegotiate), no subtitle, no result-bar repaint. The routine
-        presence check therefore costs no visible churn.
-        """
-        if self._released or generation != self._advisory.generation:
-            # The search was cancelled underneath this result (a scan took
-            # the device, the window is closing): stay quiet, but never
-            # leave the search latch stuck.
-            self._searching = False
-            return
-        self._searching = False
         self._form.set_refresh_enabled(self._runner is None)
-        unchanged = (
-            quiet and not err and not self._cli_blocked and devices == self._devices
-        )
-        if not unchanged:
-            if self._cli_blocked and err and not self._version_alert_shown:
+        if not outcome.unchanged:
+            err = self._discovery_failure_text(outcome)
+            if (
+                outcome.failure is DiscoveryFailure.INCOMPATIBLE_CLI
+                and not self._version_alert_shown
+            ):
                 self._version_alert_shown = True
                 self._alert(_("Incompatible scanmole CLI"), err)
-            # The selected device dropping off the list is worth a word:
-            # standby and unplugging look identical here, and the poll
-            # reselects it silently once it reappears.
-            vanished = (
-                bool(prefer)
-                and any(d.get("device") == prefer for d in self._devices)
-                and not any(d.get("device") == prefer for d in devices)
-            )
+            devices = outcome.devices
             self._devices = devices
             names = [display_name(device, _("Unknown device")) for device in devices]
+            prefer = outcome.prefer
             # The row itself must stay sensitive either way: disabling it
             # would also disable its refresh-button suffix, leaving no way
             # to rescan.
@@ -724,7 +625,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                     ngettext("Found %d scanner.", "Found %d scanners.", len(devices))
                     % len(devices),
                 )
-                self._start_negotiation()
             else:
                 self._form.show_devices(names, 0)
                 self._form.set_device_tooltip("")
@@ -732,58 +632,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
                     err
                     or (
                         _("Scanner disappeared — in standby or disconnected?")
-                        if vanished
+                        if outcome.vanished
                         else _("No scanners found — connect one and press Refresh.")
                     )
                 )
                 self._set_result_bar("idle", _("No scanners found."))
                 if err:
                     self._append_log(f"[gui] {err}")
-            if vanished:
+            if outcome.vanished:
                 self._append_log(
                     "[gui] the selected scanner disappeared (standby or disconnected?)"
                 )
-        # Presence polling never stops (issue #7 covered plugging in after
-        # start; the same passive search now also notices standby and new
-        # devices): fast pickup while the list is empty, a slow quiet check
-        # while a device is present. One-shot chain, so the pause counts
-        # from the end of a search, and every completed search (auto or
-        # manual refresh) restarts the countdown. The predicate is
-        # re-evaluated only now: a scan needs an actual selected device.
+        # The predicate is re-evaluated only now: a scan needs an actual
+        # selected device outside a running search.
         self._update_scan_enabled()
-        if self._device_poll_id is not None:
-            GLib.source_remove(self._device_poll_id)
-            self._device_poll_id = None
-        if not self._cli_blocked:
-            self._device_poll_id = GLib.timeout_add_seconds(
-                DEVICE_POLL_SECONDS if not devices else DEVICE_PRESENCE_POLL_SECONDS,
-                self._poll_devices,
-            )
-
-    def _poll_devices(self) -> bool:
-        """One automatic quiet re-search: pickup while empty, presence check.
-
-        Discovery stays passive (no device is opened), so this can run
-        forever without keeping a scanner from its standby.
-        """
-        self._device_poll_id = None
-        if self._cli_blocked:
-            return bool(GLib.SOURCE_REMOVE)
-        suspended = self.is_suspended() if hasattr(self, "is_suspended") else False
-        if self._runner is not None or self._searching or suspended:
-            # Transient: defer a full interval; the next completed search
-            # would reschedule anyway, this covers scans and hidden windows.
-            self._device_poll_id = GLib.timeout_add_seconds(
-                DEVICE_POLL_SECONDS
-                if not self._devices
-                else DEVICE_PRESENCE_POLL_SECONDS,
-                self._poll_devices,
-            )
-            return bool(GLib.SOURCE_REMOVE)
-        if not self._devices:
-            self._append_log("[gui] no scanner yet — searching again")
-        self._refresh_devices(quiet=True)
-        return bool(GLib.SOURCE_REMOVE)  # the search result schedules the next
 
     def _selected_device(self) -> str | None:
         """Return the SANE id of the selected device, or ``None``."""
@@ -795,10 +657,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_device_selected(self) -> None:
         """A device was picked: expose its id and probe its capabilities."""
         self._form.set_device_tooltip(self._selected_device() or "")
-        # Another device's latches are meaningless here: the next
-        # observation of the new device is a baseline.
-        self._sensor_arbiter.reset()
-        self._start_negotiation()
+        self._deviceflow.device_changed()
 
     # -------------------------------------------- capability negotiation
 
@@ -807,71 +666,16 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
         Whether the change is manual (a preference) or programmatic (a
         reconciliation select) is widget-callback context only the form
-        has; the GTK-free flow owns everything else.
+        has; the controller and the GTK-free flow own everything else.
         """
-        # Sensor evidence is source-dependent state: what the previous
-        # source latched says nothing about this one, so the next
-        # observation is a baseline again.
-        self._sensor_arbiter.reset()
-        update = self._flow.change_source(
-            self._selected_device(),
-            self._runner is not None,
-            self._form.source_value(),
-            manual=manual,
-        )
-        self._render_capability_update(update)
-
-    def _start_negotiation(self) -> None:
-        """Kick off an advisory capability probe for the selected device.
-
-        Two stages: a bare probe derives source availability, a follow-up
-        with the negotiated source applied refines the mode-dependent
-        options. The GTK-free flow serializes probes, drops stale results
-        and never probes while a scan owns the device. Advisory only: the
-        engine re-negotiates before every scan.
-        """
-        update = self._flow.select_device(
-            self._selected_device(),
-            self._runner is not None,
-            self._form.source_value(),
-        )
-        self._render_capability_update(update)
-
-    def _probe_worker(self, token: int, request: ProbeRequest, generation: int) -> None:
-        held = self._gate.acquire("probe")
-        try:
-            snapshot = probe_snapshot(
-                request.device,
-                request.settings,
-                ADVISORY_PROBE_TIMEOUT_SECONDS,
-                on_spawn=self._advisory.adopter(generation),
-            )
-        finally:
-            if held:
-                self._gate.release()
-        GLib.idle_add(self._on_probe_done, token, request, snapshot, generation)
-
-    def _on_probe_done(
-        self, token: int, request: ProbeRequest, snapshot: object, generation: int
-    ) -> None:
-        if self._released or generation != self._advisory.generation:
-            return  # cancelled underneath: the result must not render
-        update = self._flow.probe_completed(
-            token, request, snapshot, self._selected_device(), self._form.source_value()
-        )
-        if update.sensor_caps is not None:
-            # A live probe read the device and consumed any sensor latch,
-            # and the flow accepted it for the current selection: fold it
-            # into the arbiter exactly once. A rejected result describes
-            # another device or a source the user has left, and a cached
-            # snapshot is not fresh evidence at all.
-            self._observe_sensors(
-                assess_sensors(update.sensor_caps), defer_trigger=True
-            )
-        self._render_capability_update(update)
+        self._deviceflow.source_changed(manual)
 
     def _render_capability_update(self, update: CapabilityUpdate) -> None:
-        """Apply one flow outcome to the widgets, log and workers."""
+        """Apply one flow outcome to the widgets and the log.
+
+        The controller already started whatever probe worker the update
+        requested; only rendering is left here.
+        """
         if update.log_probe_failure:
             self._append_log(
                 "[gui] capability probe failed; leaving all options selectable"
@@ -887,11 +691,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             self._form.select_source(update.select_source)
         if update.mode_blocked is not None:
             self._form.set_mode_availability(update.mode_blocked)
-        if update.start_probe is not None:
-            token, request = update.start_probe
-            self._advisory.spawn_worker(
-                self._probe_worker, token, request, self._advisory.generation
-            )
         if update.refresh:
             self._form.refresh_document_hints()
             self._update_selection_block()
@@ -914,18 +713,20 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """
         return (
             self._runner is None
-            and not self._cli_blocked
+            and not self._deviceflow.cli_blocked
             and self._selection_block_reason is None
-            and not self._searching
+            and not self._deviceflow.searching
             and self._selected_device() is not None
         )
 
     def _update_scan_enabled(self) -> None:
-        """Mirror the Start predicate onto the primary action."""
+        """Mirror the Start predicate onto the primary action.
+
+        The idle sensor poller follows the same predicate, but through
+        the controller's own lifecycle transitions rather than from
+        here: every one of its outcomes ends in a schedule attempt.
+        """
         self._form.set_scan_enabled(self._scan_allowed())
-        # Every predicate transition is also a chance for the idle sensor
-        # poller to start or stop; the schedule attempt checks everything.
-        self._schedule_sensor_poll()
 
     # ------------------------------------------------ idle sensor polling
 
@@ -935,66 +736,6 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             hardware_button_value(self._settings),
             bool(self._settings.get("insert_to_scan")),
         )
-
-    def _sensor_polling_wanted(self) -> bool:
-        """Whether an idle sensor poll should run right now.
-
-        Capability-driven and preference-gated: the window alive and
-        visible, Start currently allowed (which covers the running scan,
-        an active search, a blocked CLI and the selected device), no
-        capability probe active, and an enabled trigger whose sensor the
-        device's last advisory listing actually carries. Pairing the two
-        matters: a paper level is no evidence of a scan button, so a
-        button mapping alone must not poll a device that has none. Never
-        a device list.
-        """
-        mapping, insert = self._sensor_prefs()
-        if self._released or self._closing:
-            return False
-        if not self._scan_allowed():
-            return False
-        if self._flow.probe_active:
-            return False
-        caps = self._flow.last_caps
-        if caps is None:
-            return False
-        sensors = assess_sensors(caps)
-        return (mapping != "off" and sensors.scan is not None) or (
-            insert and sensors.page_loaded is not None
-        )
-
-    def _schedule_sensor_poll(self) -> None:
-        """Arm the next idle poll if wanted and none is armed or running."""
-        if self._sensor_poll_id is not None or self._sensor_poll_busy:
-            return
-        if not self._sensor_polling_wanted():
-            return
-        self._sensor_poll_id = GLib.timeout_add(
-            round(SENSOR_POLL_SECONDS * 1000), self._sensor_poll_tick
-        )
-
-    def _sensor_poll_tick(self) -> bool:
-        """One poll attempt; the completion callback schedules the next."""
-        self._sensor_poll_id = None
-        if not self._sensor_polling_wanted():
-            return bool(GLib.SOURCE_REMOVE)
-        if self._window_suspended() or not self._gate.try_acquire("sensor"):
-            # Transient (hidden window, discovery or a probe owns the
-            # device): skip this tick, try again a full interval later.
-            self._schedule_sensor_poll()
-            return bool(GLib.SOURCE_REMOVE)
-        device = self._selected_device()
-        if device is None:  # pragma: no cover -- the predicate guards this
-            self._gate.release()
-            return bool(GLib.SOURCE_REMOVE)
-        self._sensor_poll_busy = True
-        self._advisory.spawn_worker(
-            self._sensor_worker,
-            device,
-            self._flow.sensor_settings(device, self._form.source_value()),
-            self._advisory.generation,
-        )
-        return bool(GLib.SOURCE_REMOVE)
 
     # ------------------------------------------------- filename preview
 
@@ -1010,12 +751,38 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             device=self._selected_device(),
         )
 
+    def _watch_view_state(self) -> None:
+        """Connect the view-state signals this runtime can deliver.
+
+        Coming back to the window is a chance for the folder to have
+        changed while nothing was watching it; going away is a reason to
+        stop watching. Named handlers, because the direction decides.
+        Suspension notification needs GTK 4.12: older runtimes never
+        report it and keep the visibility and focus signals alone, so a
+        press latched across an unreported suspension stays a documented
+        gap there.
+        """
+        self.connect("notify::visible", self._on_visible_changed)
+        self.connect("notify::is-active", self._on_active_changed)
+        if hasattr(self, "is_suspended"):
+            self.connect("notify::suspended", self._on_suspended_changed)
+
     def _on_visible_changed(self, *_args: object) -> None:
         """Watch the folder while visible, and only while visible."""
         if self.get_visible():
             self._preview.request()
         else:
             self._preview.suspend()
+        self._deviceflow.view_state_changed()
+
+    def _on_suspended_changed(self, *_args: object) -> None:
+        """Compositor suspension changed: one view-state transition.
+
+        A button latched while a still-visible window was suspended must
+        resume as baseline state, never as a trigger; the controller
+        re-baselines when the window becomes watchable again.
+        """
+        self._deviceflow.view_state_changed()
 
     def _on_active_changed(self, *_args: object) -> None:
         """Refresh when the window regains focus, never when it loses it.
@@ -1035,112 +802,38 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         """
         return bool(self.is_suspended()) if hasattr(self, "is_suspended") else False
 
-    def _sensor_worker(
-        self, device: str, settings: tuple[tuple[str, str], ...], generation: int
-    ) -> None:
-        """Worker thread: one gated sensor read, result to the main loop.
-
-        ``settings`` applies the selected source, exactly as the engine's
-        own sensor reads do: a paper level read from the device's default
-        source would answer a question nobody asked.
-        """
-        try:
-            caps = probe_snapshot(
-                device,
-                settings,
-                SENSOR_PROBE_TIMEOUT_SECONDS,
-                on_spawn=self._advisory.adopter(generation),
-            )
-        finally:
-            self._gate.release()
-        snapshot = assess_sensors(caps) if caps is not None else None
-        GLib.idle_add(self._on_sensor_poll_done, snapshot, generation)
-
-    def _on_sensor_poll_done(
-        self, snapshot: SensorSnapshot | None, generation: int
-    ) -> None:
-        """Fold one poll result on the main loop and arm the next poll."""
-        self._sensor_poll_busy = False
-        if self._released or generation != self._advisory.generation:
-            return  # cancelled underneath (scan takeover, window close)
-        if snapshot is None:
-            # A device-open failure: stop watching, let ordinary discovery
-            # take over; the arbiter keeps the outage to one log line.
-            if self._sensor_arbiter.mark_offline():
-                self._append_log(
-                    "[gui] scanner stopped answering sensor reads; "
-                    "searching for devices"
-                )
-            if self._runner is None and not self._searching:
-                self._refresh_devices()
-            return
-        self._observe_sensors(snapshot)
-        self._schedule_sensor_poll()
-
-    def _observe_sensors(
-        self, snapshot: SensorSnapshot, *, defer_trigger: bool = False
-    ) -> None:
-        """Run one observation through the arbiter and map its triggers.
-
-        ``defer_trigger`` starts a resulting scan from an idle callback
-        instead of inline: a live capability probe's evidence arrives in
-        the middle of flow bookkeeping that must finish first.
-        """
-        observation = self._sensor_arbiter.observe(snapshot)
-        mapping, insert = self._sensor_prefs()
-        flow: SheetFlow | None = None
-        reason = ""
-        # An explicit button mapping wins over an insertion seen in the
-        # same observation; either trigger is consumed here, and a
-        # blocked Start ignores it without queueing anything.
-        if observation.button and mapping != "off":
-            flow = {
-                "same": self._form.sheet_flow_value(),
-                "single": "single",
-                "collect": "collect",
-            }[mapping]
-            reason = "hardware button"
-        elif observation.insert and insert:
-            flow = self._form.sheet_flow_value()
-            reason = "paper inserted"
-        if flow is None:
-            return
-        if not self._sensor_trigger_allowed():
-            return  # consumed and ignored, never queued
-        self._append_log(f"[gui] {reason}: starting a scan")
-        if defer_trigger:
-            chosen = flow
-            GLib.idle_add(lambda: self._trigger_sensor_scan(chosen))
-        else:
-            self._trigger_sensor_scan(flow)
-
     def _sensor_trigger_allowed(self) -> bool:
         """Whether a sensor edge may start a scan right now.
 
-        The Start predicate plus window visibility: a poll skips its tick
-        while the window is hidden, so a read that was already in flight
-        when it went away must not start a scan either. The edge is
-        consumed rather than remembered, which is also what keeps a latch
-        from firing once the window comes back.
+        The Start predicate plus real visibility and suspension: a poll
+        skips its tick while the window is hidden or suspended, so a
+        read that was already in flight when it went away must not start
+        a scan either. The edge is consumed rather than remembered,
+        which is also what keeps a latch from firing once the window
+        comes back.
         """
-        return self._scan_allowed() and not self._window_suspended()
+        return (
+            self._scan_allowed()
+            and bool(self.get_visible())
+            and not self._window_suspended()
+        )
 
-    def _trigger_sensor_scan(self, flow: SheetFlow) -> bool:
-        """Start a sensor-triggered scan; re-checks the Start predicate."""
-        if not self._released and self._sensor_trigger_allowed():
-            self._on_scan_clicked(flow)
-        return bool(GLib.SOURCE_REMOVE)
+    def _on_sensor_trigger(self, trigger: SensorTrigger) -> None:
+        """One consumed sensor edge: resolve the flow, re-check, launch.
 
-    def _stop_sensor_polling(self) -> None:
-        """Disarm the poller and forget the arming state.
-
-        Whatever latches while polling is stopped (a press during a
-        scan) is baseline state when polling resumes, never a trigger.
+        ``same`` resolves against the form's current sheet flow at this
+        moment, and the authoritative Start predicate decides again; a
+        trigger it declines was already consumed and is never queued.
         """
-        if self._sensor_poll_id is not None:
-            GLib.source_remove(self._sensor_poll_id)
-            self._sensor_poll_id = None
-        self._sensor_arbiter.reset()
+        if self._released or not self._sensor_trigger_allowed():
+            return
+        flow: SheetFlow = {
+            "same": self._form.sheet_flow_value(),
+            "single": "single",
+            "collect": "collect",
+        }[trigger.mapping]
+        self._append_log(f"[gui] {trigger.reason}: starting a scan")
+        self._on_scan_clicked(flow)
 
     def _update_selection_block(self) -> None:
         """Disable Start while the active saved choice is unavailable.
@@ -1164,7 +857,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         A prepared assessment from the advisory capability snapshot, so
         the form renders the hint without importing engine internals.
         """
-        assessment = assess_resolution(self._flow.last_caps, dpi)
+        assessment = assess_resolution(self._deviceflow.last_caps, dpi)
         return (
             int(assessment.effective)
             if assessment.support is Support.DEGRADED
@@ -1224,13 +917,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_hardware_button_selected(self, value: str) -> None:
         """Persist the button mapping and re-evaluate the idle poller."""
         self._store_pref("hardware_button", value)
-        self._schedule_sensor_poll()
+        self._deviceflow.preferences_changed()
 
     def _on_insert_to_scan_toggled(self, value: bool) -> None:
         """Persist insert-to-scan and re-evaluate the idle poller."""
         self._settings["insert_to_scan"] = value
         store_settings(CONFIG_FILE, self._settings)
-        self._schedule_sensor_poll()
+        self._deviceflow.preferences_changed()
 
     def _on_restart_clicked(self, *_args: object) -> None:
         """Ask to close, and re-execute afterwards (see ``main``)."""
@@ -1278,7 +971,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # like at startup, so the sole-source adoption can move the
         # selection off a blocked default. Cached snapshots make this
         # instant; without a device it is a no-op.
-        self._start_negotiation()
+        self._deviceflow.settings_reset()
         # Also resize back to the default geometry; without this the close
         # handler would immediately re-persist the current size and the reset
         # would never reach the window.
@@ -1305,7 +998,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
     def _on_about_clicked(self, *_args: object) -> None:
         """Show a flat, single-page About dialog (no nested subpages)."""
         build_about_dialog(
-            cli_version=self._cli_version,
+            cli_version=self._deviceflow.cli_version,
             logo_file=LOGO_FILE,
             project_url=PROJECT_URL,
         ).present(self)
@@ -1327,23 +1020,18 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         except OSError as exc:
             self._alert(_("Cannot Create Output Folder"), f"{folder}\n\n{exc}")
             return
-        # The idle sensor poller stops first: the scan owns the device
-        # from here, and a press latched during the run must resume as
-        # baseline state, never as a trigger.
-        self._stop_sensor_polling()
-        # Acquisition probes the device authoritatively at scan start; a
-        # still-running advisory probe would race it on the same scanner
-        # (DEVICE_BUSY on some backends), so stop the advisory children
-        # and join their workers boundedly before launching. A worker
-        # thread that outlives the bound is harmless: any child it still
-        # spawns carries a stale generation and is killed on adoption.
-        if not self._advisory.cancel_pending():
+        # The scan takeover: acquisition probes the device authoritatively
+        # at scan start; a still-running advisory probe would race it on
+        # the same scanner (DEVICE_BUSY on some backends). The controller
+        # stops the idle sensor poller first (a press latched during the
+        # run must resume as baseline state, never as a trigger), then
+        # cancels the advisory children and joins their workers boundedly
+        # before the runner launches, clears the search latch and resets
+        # the cancelled capability state. A worker thread that outlives
+        # the bound is harmless: any child it still spawns carries a stale
+        # generation and is killed on adoption.
+        if not self._deviceflow.pause_for_scan():
             self._append_log("[gui] advisory worker still busy; child stopped")
-        self._searching = False
-        # The cancelled probes' completions never arrive; reset the flow
-        # so nothing queues behind a phantom running probe. A fresh
-        # negotiation starts after the scan exits.
-        self._flow.reset()
         self._save_settings()
 
         persisted_flow = self._form.sheet_flow_value()
@@ -1389,12 +1077,11 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             # The takeover tore down device coordination for a scan that
             # never started; resume it now rather than waiting for the
             # quiet presence poll, whose unchanged result would skip the
-            # negotiation for good. Negotiation first: with a probe in
-            # flight the enablement pass cannot arm sensor polling from
-            # the retained caps, whose source settings the reset made
-            # underivable (the poll would read the backend's default
-            # source).
-            self._start_negotiation()
+            # negotiation for good. The resume negotiates first, so
+            # sensor polling cannot rearm from the retained caps, whose
+            # source settings the reset made underivable (a poll would
+            # read the backend's default source).
+            self._deviceflow.resume_after_scan()
             self._update_scan_enabled()
             return
         self._runner = runner
@@ -1483,7 +1170,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._append_log(f"[gui] scanmole exited with code {exit_code}")
         # The scan takeover reset the capability flow; renegotiate the
         # selected device's availability now that it is free again.
-        self._start_negotiation()
+        self._deviceflow.resume_after_scan()
 
         outcome = complete(self._session, exit_code, self._run_folder)
         if outcome.kind == "cancelled":
@@ -1556,8 +1243,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         if not self._released:
             self._persist_ui_state()
         self._released = True
-        self._stop_sensor_polling()
-        self._advisory.cancel_pending(close=True)
+        self._deviceflow.stop()
         runner = self._runner
         if runner is not None:
             runner.shutdown()
@@ -1623,9 +1309,8 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # No advisory child may outlive the window, and no late advisory
         # result may touch it while it is closing.
         self._released = True
-        self._stop_sensor_polling()
+        self._deviceflow.stop()
         self._preview.stop()
-        self._advisory.cancel_pending(close=True)
         runner = self._runner
         if runner is not None and runner.is_running():
             # Closing must not orphan the engine mid-batch: run the normal
