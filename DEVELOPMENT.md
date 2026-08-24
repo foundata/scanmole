@@ -245,6 +245,8 @@ Adding a language (e.g. `es`):
 
 No code changes are needed. Compiled `.mo` catalogs are committed because the build backend cannot run msgfmt; the extracted `po/scanmole-gui.pot` stays generated. Translatable strings use `%`-style named placeholders and `ngettext` for plurals.
 
+German avoids direct address: no "Sie" and no "du". Use the impersonal infinitive instead, so "Datei auswählen" rather than "Wählen Sie eine Datei aus". English msgids may keep "you"; only the translation is constrained.
+
 
 ## Recommended development workflow<a id="development-workflow"></a>
 
