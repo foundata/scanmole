@@ -134,13 +134,19 @@ class _BlockingCallback:
 
 
 def _interrupting_wait(
-    monkeypatch: pytest.MonkeyPatch, trigger: threading.Event
+    monkeypatch: pytest.MonkeyPatch,
+    trigger: threading.Event,
+    raised: threading.Event | None = None,
 ) -> None:
     """Deliver KeyboardInterrupt inside the first ``process.wait()`` call.
 
     Deterministic stand-in for a SIGINT arriving while the batch runs: the
     scan-timeout wait blocks until the callback has provably entered, then
     raises. Later ``wait()`` calls (the reap) behave normally.
+
+    ``raised`` is set immediately before the interrupt, so a test that needs
+    something to happen strictly after it can wait for that rather than hope
+    for it.
     """
     real_wait = subprocess.Popen.wait
     state = {"armed": True}
@@ -149,6 +155,8 @@ def _interrupting_wait(
         if state["armed"]:
             state["armed"] = False
             assert trigger.wait(10)
+            if raised is not None:
+                raised.set()
             raise KeyboardInterrupt
         return real_wait(self, timeout)
 
@@ -291,13 +299,19 @@ def test_interrupt_before_a_drain_failure_keeps_precedence(
     # replace it.
     pages = [tmp_path / f"page_{n:04d}.pnm" for n in (1, 2)]
     entered = threading.Event()
+    interrupted = threading.Event()
 
     def failing_late(path: Path) -> None:
         entered.set()
         if path.name == "page_0002.pnm":
+            # The ordering is the whole point, so it is waited for rather
+            # than raced: the controller only enters the interruptible wait
+            # while no failure is recorded, so a second page failing first
+            # would test the opposite precedence under the same name.
+            assert interrupted.wait(10)
             raise RuntimeError("late failure")
 
-    _interrupting_wait(monkeypatch, entered)
+    _interrupting_wait(monkeypatch, entered, raised=interrupted)
     announce = "; ".join(f"echo '{page}'" for page in pages)
 
     with pytest.raises(KeyboardInterrupt):
