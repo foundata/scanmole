@@ -92,6 +92,7 @@ LOGGER = logging.getLogger(__name__)
 
 APP_ID = "com.foundata.ScanMole"
 PROJECT_URL = "https://foundata.com/en/projects/scanmole/"
+FUNDING_URL = "https://buy-me-a.coffee/scanmole/"
 CONFIG_FILE = Path(GLib.get_user_config_dir()) / "scanmole" / "gui.json"
 ICON_DIR = Path(__file__).resolve().parent / "icons"
 LOGO_FILE = ICON_DIR / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
@@ -1005,6 +1006,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             cli_version=self._deviceflow.cli_version,
             logo_file=LOGO_FILE,
             project_url=PROJECT_URL,
+            funding_url=FUNDING_URL,
         ).present(self)
 
     # ----------------------------------------------------------- scanning

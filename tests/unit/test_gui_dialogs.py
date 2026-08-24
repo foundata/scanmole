@@ -136,9 +136,58 @@ def test_about_dialog_reports_versions() -> None:
     from scanmole_gui.dialogs import build_about_dialog
 
     dialog = build_about_dialog(
-        cli_version="9.9.9", logo_file=Path("/nonexistent.svg"), project_url="https://x"
+        cli_version="9.9.9",
+        logo_file=Path("/nonexistent.svg"),
+        project_url="https://x",
+        funding_url="https://y",
     )
     assert dialog.get_title() == "About ScanMole"
+
+
+def test_about_dialog_links_to_the_project_and_its_funding() -> None:
+    _init_adw()
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gtk
+
+    from scanmole_gui.dialogs import build_about_dialog
+
+    dialog = build_about_dialog(
+        cli_version="9.9.9",
+        logo_file=Path("/nonexistent.svg"),
+        project_url="https://example.test/scanmole/",
+        funding_url="https://coffee.test/scanmole/",
+    )
+
+    buttons: list[Any] = []
+
+    def walk(widget: Any) -> None:
+        if isinstance(widget, Gtk.LinkButton):
+            buttons.append(widget)
+        child = widget.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(dialog.get_child())
+
+    # Source and issues are anchors on the project page, so moving the
+    # project only ever means changing the one URL it is built from.
+    assert [button.get_uri() for button in buttons] == [
+        "https://example.test/scanmole/",
+        "https://example.test/scanmole/#source",
+        "https://example.test/scanmole/#issues",
+        "https://coffee.test/scanmole/",
+    ]
+    # The scheme is noise a reader does not need; funding names the offer
+    # instead of the host, which says nothing about what the link does.
+    assert [button.get_label() for button in buttons] == [
+        "example.test/scanmole",
+        "example.test/scanmole/#source",
+        "example.test/scanmole/#issues",
+        "Buy us a coffee",
+    ]
 
 
 def test_more_languages_dialog_uses_the_entered_code() -> None:

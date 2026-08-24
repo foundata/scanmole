@@ -155,11 +155,19 @@ def build_settings_dialog(
     return dialog
 
 
+def _link_text(url: str) -> str:
+    """The URL as a reader sees it: no scheme and no trailing slash."""
+    return url.removeprefix("https://").removeprefix("http://").rstrip("/")
+
+
 def build_about_dialog(
-    *, cli_version: str | None, logo_file: Path, project_url: str
+    *, cli_version: str | None, logo_file: Path, project_url: str, funding_url: str
 ) -> Adw.Dialog:
     """Build the flat, single-page About dialog (no nested subpages)."""
-    dialog = Adw.Dialog(title=_("About ScanMole"), content_width=440)
+    # Wide enough for the longest link row to render whole; the dialog
+    # would otherwise grow past its request and wrap the description
+    # paragraph at a width nothing asked for.
+    dialog = Adw.Dialog(title=_("About ScanMole"), content_width=540)
     toolbar = Adw.ToolbarView()
     toolbar.add_top_bar(Adw.HeaderBar())
     content = Gtk.Box(
@@ -215,15 +223,30 @@ def build_about_dialog(
     description.add_css_class("dim-label")
     content.append(description)
 
-    website = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-    website_label = Gtk.Label(label=_("Website:"), valign=Gtk.Align.CENTER)
-    website.append(website_label)
-    link = Gtk.LinkButton.new_with_label(
-        project_url, "foundata.com/en/projects/scanmole"
-    )
-    link.set_halign(Gtk.Align.START)
-    website.append(link)
-    content.append(website)
+    # One block rather than four separately spaced rows: they are the same
+    # kind of pointer and read as a list. The glyphs are text, since the
+    # icon theme carries no name for a code or a bug symbol and neither is
+    # worth shipping an SVG for.
+    source_url = f"{project_url}#source"
+    issues_url = f"{project_url}#issues"
+    links = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    for lead, url, text in (
+        (_("Website:"), project_url, _link_text(project_url)),
+        ("</> " + _("Source Code:"), source_url, _link_text(source_url)),
+        (_("Report Issues:"), issues_url, _link_text(issues_url)),
+        (
+            _("Funding: Like this project?") + " ♥",
+            funding_url,
+            _("Buy us a coffee"),
+        ),
+    ):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        row.append(Gtk.Label(label=lead, valign=Gtk.Align.CENTER))
+        link = Gtk.LinkButton.new_with_label(url, text)
+        link.set_halign(Gtk.Align.START)
+        row.append(link)
+        links.append(row)
+    content.append(links)
 
     toolbar.set_content(content)
     dialog.set_child(toolbar)
