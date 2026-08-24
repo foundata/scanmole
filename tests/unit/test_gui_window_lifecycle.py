@@ -38,10 +38,18 @@ def _scan_window(
         _on_scan_clicked = MainWindow._on_scan_clicked
 
         def __init__(self) -> None:
+            self.steps: list[str] = []
             self._runner = None
             self._searching = False
-            self._advisory = type("A", (), {"cancel_pending": lambda *_a: True})()
-            self._flow = type("F", (), {"reset": lambda *_a: None})()
+
+            def cancel_pending(*_args: object, **_kw: object) -> bool:
+                self.steps.append("cancel")
+                return True
+
+            self._advisory = type("A", (), {"cancel_pending": cancel_pending})()
+            self._flow = type(
+                "F", (), {"reset": lambda *_a: self.steps.append("flow-reset")}
+            )()
             self._scanmole = "scanmole"
             self.alerts: list[tuple[str, str]] = []
             self.logs: list[str] = []
@@ -72,7 +80,7 @@ def _scan_window(
             self._form = Form()
 
         def _stop_sensor_polling(self) -> None:
-            pass
+            self.steps.append("stop-sensors")
 
         def _save_settings(self) -> None:
             pass
@@ -344,3 +352,24 @@ def test_a_restart_reaches_the_application_only_through_a_real_close() -> None:
     declined._session = SessionState(drop_blanks=True, pages=0)
     declined.close()  # an ordinary close, much later
     assert declined.restart_reached_the_app() is False
+
+
+@_NEEDS_GI
+def test_a_failed_start_completes_device_takeover_without_adopting_a_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The takeover runs before the spawn, so a start that raises has
+    # already stopped the poller, cancelled advisory work and reset the
+    # flow, in that order. A raising start must not adopt a runner or
+    # leave the searching latch set, and it shows the usual start alert.
+    def refuse(_self: object, _argv: list[str], _cwd: Path) -> None:
+        raise OSError("no such executable")
+
+    window = _scan_window(tmp_path, monkeypatch, start=refuse)
+
+    window._on_scan_clicked()
+
+    assert window.steps == ["stop-sensors", "cancel", "flow-reset"]
+    assert window._runner is None  # nothing to block a later attempt
+    assert window._searching is False  # the search latch is not left set
+    assert [heading for heading, _b in window.alerts] == ["Could Not Start scanmole"]
