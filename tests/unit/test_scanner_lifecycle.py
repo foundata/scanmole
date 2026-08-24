@@ -1,7 +1,8 @@
-"""Tests for batch acquisition, without scanner hardware.
+"""Tests for the scanimage streaming lifecycle, without scanner hardware.
 
-``run_scanimage`` is exercised with a shell stand-in for scanimage;
-``scan_to_files`` with monkeypatched probing and scanning.
+``run_scanimage`` is exercised with a shell stand-in for scanimage. The
+acquisition orchestration built on top of it is pinned in the scanner
+acquisition, negotiation and collect modules.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from scanmole.errors import DeviceError, ProcessingError, ScanMoleError
-from scanmole.scanner import (
+from scanmole.scanstream import (
     run_scanimage,
 )
 
@@ -192,7 +193,7 @@ def test_interrupt_waits_for_the_active_callback_and_buffered_pages(
 def test_timeout_waits_for_the_active_callback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("scanmole.scanner.SCAN_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr("scanmole.scanstream.SCAN_TIMEOUT_SECONDS", 0.2)
     page = tmp_path / "page_0001.pnm"
     callback = _BlockingCallback()
 
@@ -338,8 +339,8 @@ def test_callback_failure_aborts_a_term_ignoring_scan_promptly(
     # ignores TERM must not leave the controller inside the hour-long scan
     # wait; the KILL escalation applies and the *callback* failure is what
     # gets reported, not a bogus scan timeout.
-    monkeypatch.setattr("scanmole.scanner.SCAN_TIMEOUT_SECONDS", 20)
-    monkeypatch.setattr("scanmole.scanner.REAP_GRACE_SECONDS", 0.3, raising=False)
+    monkeypatch.setattr("scanmole.scanstream.SCAN_TIMEOUT_SECONDS", 20)
+    monkeypatch.setattr("scanmole.scanstream.REAP_GRACE_SECONDS", 0.3, raising=False)
     page = tmp_path / "page_0001.pnm"
     error = RuntimeError("boom")
 
@@ -361,8 +362,8 @@ def test_scan_timeout_keeps_precedence_over_a_later_callback_failure(
     # The callback blocks past the scan deadline and only fails afterwards
     # (released by the timeout path's kill): the genuine acquisition
     # timeout fired first and must stay the reported cause.
-    monkeypatch.setattr("scanmole.scanner.SCAN_TIMEOUT_SECONDS", 0.2)
-    monkeypatch.setattr("scanmole.scanner.REAP_GRACE_SECONDS", 0.3, raising=False)
+    monkeypatch.setattr("scanmole.scanstream.SCAN_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr("scanmole.scanstream.REAP_GRACE_SECONDS", 0.3, raising=False)
     page = tmp_path / "page_0001.pnm"
     release = threading.Event()
     real_kill = subprocess.Popen.kill
@@ -421,7 +422,7 @@ def test_persistent_close_failure_is_recorded_not_retried(
             stream.close()  # really close: no fd may leak to the GC
         raise OSError(9, "Bad file descriptor")
 
-    monkeypatch.setattr("scanmole.scanner._close_stream", failing_close)
+    monkeypatch.setattr("scanmole.scanstream._close_stream", failing_close)
     seen: list[Path] = []
 
     with pytest.raises(OSError, match="Bad file descriptor"):
@@ -429,3 +430,118 @@ def test_persistent_close_failure_is_recorded_not_retried(
 
     assert seen == [page]  # the batch itself completed before cleanup failed
     assert _no_scanner_threads()
+
+
+# ------------------------------------------------------- module boundary
+
+
+def test_the_streaming_entry_point_stays_reachable_through_acquisition() -> None:
+    # The pipeline and the acquisition tests have always monkeypatched
+    # scanmole.scanner.run_scanimage. Splitting the stream into its own
+    # module is not a reason for a caller that drives a scan to learn
+    # where the driving is implemented.
+    from scanmole import scanner, scanstream
+
+    assert scanner.run_scanimage is scanstream.run_scanimage
+    assert scanner.run_scanimage.__module__ == "scanmole.scanstream"
+    assert "run_scanimage" in scanner.__all__
+
+
+def test_scan_to_files_goes_through_the_patchable_facade_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Downstream code intercepts acquisition at scanmole.scanner
+    # .run_scanimage; scan_to_files must resolve that module-level name,
+    # not a closed-over or re-imported one.
+    from scanmole.config import ScanConfig
+    from scanmole.events import EventWriter
+    from scanmole.options import Capability
+
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], on_page: object) -> tuple[int, str]:
+        commands.append(command)
+        page = tmp_path / "page_0001.pnm"
+        page.write_bytes(b"P5\n1 1\n255\n0")
+        assert callable(on_page)
+        on_page(page)
+        return 0, ""
+
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities",
+        lambda device, settings=(): {
+            "resolution": Capability(kind="range", minimum=50, maximum=600)
+        },
+    )
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", fake_run)
+    from scanmole.scanner import scan_to_files
+
+    config = ScanConfig(
+        device="test:0",
+        source="adf",
+        mode="gray",
+        resolution=300,
+        page_size="a4",
+        despeckle=1,
+        deskew=False,
+        crop=False,
+        ocr=False,
+        lang="deu",
+        rotate_pages=True,
+        optimize=1,
+        pdfa=False,
+        blank_threshold=0.995,
+        keep_blanks=False,
+        from_images=None,
+        keep_images=None,
+        output=tmp_path / "out.pdf",
+    )
+    result = scan_to_files(
+        config,
+        "test:0",
+        tmp_path,
+        EventWriter(enabled=False, stream=None),
+        lambda path, origin: None,
+    )
+
+    assert commands  # the fake intercepted the acquisition
+    assert [page.name for page in result.pages] == ["page_0001.pnm"]
+
+
+def test_streaming_needs_nothing_from_acquisition_policy() -> None:
+    # The direction of the split, read off the import graph rather than
+    # the prose: the stream drives a started command and knows nothing
+    # about negotiation, capabilities, sensors, sheet flow, events or
+    # configuration. Otherwise the two are separated on paper only.
+    import ast
+
+    from scanmole import scanstream
+
+    tree = ast.parse(Path(scanstream.__file__).read_text())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    scanmole_imports = {name for name in imported if name.startswith("scanmole")}
+    assert scanmole_imports == {"scanmole.errors", "scanmole.external"}
+
+
+def test_acquisition_keeps_no_streaming_implementation() -> None:
+    # After the move the acquisition module orchestrates scans through the
+    # facade name only: no reader threads, no subprocess streaming of its
+    # own. Thread use is the streaming tell.
+    import ast
+
+    from scanmole import scanner
+
+    tree = ast.parse(Path(scanner.__file__).read_text())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    assert "threading" not in imported
+    assert "scanmole.scanstream" in imported
