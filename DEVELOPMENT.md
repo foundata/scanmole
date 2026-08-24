@@ -110,6 +110,7 @@ scanmole/                      # repository root (uv workspace)
 │           ├── preview.py     # advisory output-name inspection (GTK-free)
 │           ├── previewflow.py # the filename preview's debounce, worker and monitor
 │           ├── discovery.py   # device listing decisions (GTK-free)
+│           ├── deviceflow.py  # device-coordination lifecycle owner (GLib, no widgets)
 │           ├── settings.py    # gui.json load/store (GTK-free)
 │           ├── desktop.py     # desktop entry + icon install (GTK-free)
 │           ├── modes.py       # scan mode table (GTK-free)

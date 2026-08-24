@@ -851,8 +851,10 @@ ocrmypdf drives tesseract underneath; the default `deu+eng` needs both language 
 
 - The engine's `run_command` reports each spawned child through its `on_spawn` hook.
 - Scan start cancels the advisory children and joins their workers boundedly before acquisition probes the device authoritatively. Window close, application shutdown and an interrupt landing outside the main loop all run the same cancellation, so no probe process can outlive the GUI holding the scanner.
-- Every cancellation bumps a generation that pending main-loop callbacks compare against, so a cancelled search or probe never renders. A child adopted with a stale generation is killed at once, so a worker resuming past the cancellation (the discovery worker's second command, for example) cannot leak a fresh child behind the snapshot.
-- The takeover also resets the capability flow, whose running probe's completion will never arrive, and the window renegotiates the device's availability once the scan exits.
+- Every cancellation bumps a generation that pending main-loop callbacks compare against, so a cancelled search or probe never renders. Each device search additionally carries an ownership token: the worker returns typed data only, and solely the completion holding the current token may clear the search latch or update the CLI compatibility verdict, so a cancelled worker finishing late cannot poison the search that replaced it. A child adopted with a stale generation is killed at once, so a worker resuming past the cancellation (the discovery worker's second command, for example) cannot leak a fresh child behind the snapshot.
+- The takeover also resets the capability flow, whose running probe's completion will never arrive, and the controller renegotiates the device's availability when it resumes: after the scan exits, and immediately after a runner that failed to start, so recovery never waits for the quiet presence poll.
+
+**One lifecycle owner composes these policies.** `scanmole_gui/deviceflow.py`'s `DeviceFlow` owns asynchronous device coordination end to end: the worker threads, the discovery and sensor poll timers, staleness decisions and the pause/resume around a scan. It composes the modules above without absorbing them, so each policy keeps its owner: listing parsing and the compatibility refusal stay in `discovery.py`, the staged capability-flow policy in `probing.py`, advisory child supervision in `advisory.py`, and the device-access gate with the sensor arming rules in `sensorwatch.py`. The controller asks for window state through one frozen `DeviceContext` snapshot callback (selection, source, trigger preferences, the Start predicate's verdict, visibility) and answers through focused typed outcomes: a device-listing outcome with a typed failure kind, the capability update, a sensor-trigger request and diagnostic log lines. It schedules on GLib but never imports Gtk and holds no widget reference. `MainWindow` renders those outcomes and reconstructs every localized string from the typed fields, keeps the authoritative Start predicate, and re-checks it before a sensor-trigger request may start a scan; a declined trigger is consumed, never queued.
 
 **The GTK side is split into focused view components:**
 
@@ -865,7 +867,7 @@ ocrmypdf drives tesseract underneath; the default `deu+eng` needs both language 
 
 Orchestration events leave the form through explicit callbacks and capability-derived hints enter as prepared values, so the form adds no engine imports. Its page carries what a scan usually needs, and an Advanced group opens the settings dialog; the rarer rows are shown there instead, in groups the form still owns and the dialog hands back when it closes, so one object keeps reading and persisting them.
 
-**`MainWindow` keeps what is inherently orchestration:** composing the responsive layout, device workers and GLib scheduling, the capability flow, runner creation and identity, scan/cancel/close/shutdown sequencing, dialog lifecycles and the XDG path adapters. Stale runs are dropped by runner identity, so a slow old child can never repaint a newer session.
+**`MainWindow` keeps what is inherently the window's:** composing the responsive layout, rendering the device controller's typed outcomes as localized text, the authoritative Start predicate, runner creation and identity, scan/cancel/close/shutdown sequencing, dialog lifecycles and the XDG path adapters. Stale runs are dropped by runner identity, so a slow old child can never repaint a newer session.
 
 
 ### The filename preview<a id="gui-preview"></a>
@@ -900,7 +902,7 @@ Orchestration events leave the form through explicit callbacks and capability-de
 
 **Idle hardware watching is capability-driven, never a device list.** An advisory worker reads the sensors every few seconds under a GTK-free gate (`scanmole_gui/sensorwatch.py`) that serializes all advisory device access with priority for discovery and probes (a sensor poll never waits, it skips its tick). It runs only while all of these hold:
 
-- the window is visible;
+- the window is visible and not compositor-suspended;
 - a device is selected whose listing carries the sensor an enabled preference actually reads (a button mapping needs `scan`, insert-to-scan needs `page-loaded`; a paper level is no evidence of a scan button, so neither preference polls for the other's sensor);
 - Start is allowed;
 - neither a scan, a discovery, a capability probe nor another sensor read owns the device.
@@ -922,7 +924,7 @@ A pure arbiter turns reads into at most one trigger per fresh edge:
 - Cached snapshots never are, because nothing was read and no latch was consumed.
 - A source change re-baselines the arbiter, since what the previous source latched says nothing about the new one.
 
-**Visibility gates the trigger, not just the tick:** a read already in flight when the window went away consumes its edge instead of scanning, which is also what stops that edge from firing when the window comes back. Starting any scan stops the poller before the scan takeover cancels the advisory commands, so a press latched during the run resumes as baseline state.
+**Visibility gates the polling and the trigger.** Hidden (`get_visible()` false) and compositor-suspended (`is_suspended`, GTK 4.12+) are separate answers and either one makes the sensor tick and the quiet presence poll skip and re-arm, so the scanner is never opened for a window nobody sees. A read already in flight when the window went away consumes its edge instead of scanning, and showing the window re-baselines the arbiter first, so a press latched while it was hidden is state, never a request. Starting any scan stops the poller before the scan takeover cancels the advisory commands, so a press latched during the run resumes as baseline state.
 
 
 ### Window layout<a id="gui-layout"></a>
