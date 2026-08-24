@@ -200,6 +200,59 @@ def test_page_size_gates_the_family_preference() -> None:
     assert form.persisted_values()["auto_size_preference"] == "iso"
 
 
+def test_deskew_gates_the_method_row_without_losing_it() -> None:
+    events = Events()
+    form = _form(events)
+    form.apply_settings({"deskew_method": "scanner"})
+
+    assert form._deskew_method_row.get_sensitive() is True
+    form._deskew_row.set_active(False)
+    assert form._deskew_method_row.get_sensitive() is False
+    # Nothing owns a request that was not made, but the answer to "who
+    # would" survives, so turning deskew back on restores the choice.
+    assert form.persisted_values()["deskew_method"] == "scanner"
+    form._deskew_row.set_active(True)
+    assert form._deskew_method_row.get_sensitive() is True
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        pytest.param({}, id="missing"),
+        pytest.param({"deskew_method": ""}, id="empty"),
+        pytest.param({"deskew_method": "hardware"}, id="unknown"),
+        pytest.param({"deskew_method": None}, id="null"),
+        pytest.param({"deskew_method": 7}, id="wrong-type"),
+    ],
+)
+def test_an_unusable_saved_method_falls_back_to_automatic(
+    stored: dict[str, object],
+) -> None:
+    # gui.json is hand-editable and travels between versions, so a value
+    # that means nothing here must not decide who straightens a page,
+    # and must not stop the window from opening either.
+    form = _form(Events())
+    # Start somewhere else on purpose: a fresh form already sits on
+    # "auto", so landing there proves nothing unless the bad value had a
+    # different selection to fail to move.
+    form.apply_settings({"deskew_method": "scanner"})
+    assert form.persisted_values()["deskew_method"] == "scanner"
+
+    form.apply_settings(stored)
+
+    assert form.persisted_values()["deskew_method"] == "auto"
+    assert form.scan_request("dev", Path("out")).deskew_method == "auto"
+
+
+def test_the_chosen_method_reaches_the_request_and_the_settings() -> None:
+    form = _form(Events())
+
+    form.apply_settings({"deskew_method": "scanmole"})
+
+    assert form.persisted_values()["deskew_method"] == "scanmole"
+    assert form.scan_request("dev", Path("out")).deskew_method == "scanmole"
+
+
 def test_ocr_gates_the_language_row_and_custom_codes_join_the_list() -> None:
     events = Events()
     form = _form(events)
@@ -651,6 +704,7 @@ def test_the_rarer_rows_wait_in_the_borrowed_settings_groups() -> None:
     ]
     assert _group_titles(form.settings_processing_group) == [
         "Deskew",
+        "Deskew method",
         "Create <a href='https://en.wikipedia.org/wiki/PDF/A'>PDF/A</a> files",
     ]
     assert _group_titles(form.settings_behaviour_group) == [

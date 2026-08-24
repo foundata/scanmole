@@ -61,6 +61,8 @@ def test_argv_matches_the_cli_contract_exactly() -> None:
         "-l",
         "deu+eng",
         "--deskew",
+        "--deskew-method",
+        "auto",
         "--pdfa",
         "-o",
         "/data/scan.pdf",
@@ -89,7 +91,9 @@ def test_argv_variants_cover_every_switch() -> None:
         "auto",
     ]
     assert "--no-ocr" in argv and "-l" not in argv
-    assert "--no-deskew" in argv
+    # No owner to name once nothing straightens: the CLI would ignore it
+    # and a reader of the command line should not have to.
+    assert "--no-deskew" in argv and "--deskew-method" not in argv
     assert "--keep-blanks" in argv
 
 

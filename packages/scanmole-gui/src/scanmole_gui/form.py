@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from functools import lru_cache
 from pathlib import Path
+from typing import cast
 
 import gi
 
@@ -27,6 +28,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402  # after require_ver
 # the live filename preview matches what the CLI will produce.
 from scanmole.config import (  # noqa: E402  # pure type aliases
     AutoSizePreference,
+    DeskewMethod,
     SheetFlow,
 )
 from scanmole.naming import DEFAULT_OUTPUT_TEMPLATE  # noqa: E402
@@ -106,6 +108,15 @@ AUTO_SIZE_PREFERENCES = (
     (_("ISO (A sizes)"), "iso"),
     (_("North America (Letter/Legal)"), "north-american"),
 )
+# Who straightens a skewed page. "Automatic" is a decision ScanMole makes
+# and may change once a scanner mechanism has been measured; the other
+# two are demands, and a run refuses rather than quietly using the other
+# one. The CLI value travels beside the label, never the translation.
+DESKEW_METHODS = (
+    (_("Automatic (Recommended)"), "auto"),
+    (_("ScanMole"), "scanmole"),
+    (_("Scanner"), "scanner"),
+)
 JBIG2_HINT = _(
     "Install jbig2enc to make black and white PDFs much smaller; "
     "ocrmypdf uses it automatically"
@@ -171,6 +182,20 @@ def hardware_button_value(settings: Mapping[str, object]) -> str:
 # Rough size per page at 300 dpi, from measured fleet scans; scaled by dpi².
 # Content-dependent, so only ever presented as an approximation.
 _SIZE_BASE_MB = {"lineart": 0.1, "lineart-auto": 0.1, "gray": 0.3, "color": 0.5}
+
+
+def _deskew_method_value(stored: object) -> DeskewMethod:
+    """A usable deskew method from whatever the settings file held.
+
+    Missing, empty and unrecognized all resolve to ``auto``: the file is
+    hand-editable and travels between versions, and the recommended
+    choice is the safe reading of "no usable answer here". Silently
+    correcting beats refusing to start over one bad string.
+    """
+    for _label, value in DESKEW_METHODS:
+        if stored == value:
+            return cast(DeskewMethod, value)
+    return "auto"
 
 
 @lru_cache(maxsize=1)
@@ -425,6 +450,19 @@ class ScanForm:
             active=True,
         )
         self.settings_processing_group.add(self._deskew_row)
+        # Grays out while deskew is off, because there is nothing to own
+        # then, and keeps its value so turning deskew back on restores
+        # the choice rather than resetting it to automatic.
+        self._deskew_method_row = Adw.ComboRow(
+            title=_("Deskew method"),
+            subtitle=_("Which mechanism straightens the pages"),
+        )
+        self._deskew_method_row.set_factory(plain_string_factory())
+        self._deskew_method_row.set_model(
+            Gtk.StringList.new([label for label, _value in DESKEW_METHODS])
+        )
+        self.settings_processing_group.add(self._deskew_method_row)
+        self._deskew_row.connect("notify::active", self._on_deskew_changed)
         # Archival output is produced by the OCR stage, so like the
         # language it only means something while OCR runs. The format
         # name links to its own article; the link is assembled here so
@@ -1059,6 +1097,10 @@ class ScanForm:
             self._size_pref_row.set_sensitive(automatic)
         self._on_document_changed()
 
+    def _on_deskew_changed(self, *_args: object) -> None:
+        """Gate the method: nothing owns a request that was not made."""
+        self._deskew_method_row.set_sensitive(bool(self._deskew_row.get_active()))
+
     def refresh_document_hints(self) -> None:
         """Re-render the size estimate and hints (e.g. new capabilities)."""
         self._on_document_changed()
@@ -1174,6 +1216,14 @@ class ScanForm:
         self._ocr_row.set_active(bool(settings.get("ocr", True)))
         self._pdfa_row.set_active(bool(settings.get("pdfa", True)))
         self._deskew_row.set_active(bool(settings.get("deskew", True)))
+        # Missing, empty and unknown all mean the same thing here: no
+        # usable choice was stored, so the recommended one applies.
+        combo_select(
+            self._deskew_method_row,
+            DESKEW_METHODS,
+            _deskew_method_value(settings.get("deskew_method")),
+        )
+        self._on_deskew_changed()
         self.select_language(str(settings.get("lang", "deu+eng")))
         self._lang_row.set_sensitive(self._ocr_row.get_active())
         self._blank_row.set_active(bool(settings.get("skip_blanks", True)))
@@ -1207,6 +1257,7 @@ class ScanForm:
             "ocr": self._ocr_row.get_active(),
             "pdfa": self._pdfa_row.get_active(),
             "deskew": self._deskew_row.get_active(),
+            "deskew_method": combo_value(self._deskew_method_row, DESKEW_METHODS),
             "lang": self.selected_language(),
             "skip_blanks": self._blank_row.get_active(),
             "scan_loaded_stack": self._stack_row.get_active(),
@@ -1246,6 +1297,9 @@ class ScanForm:
             pdfa=bool(self._pdfa_row.get_active()),
             lang=self.selected_language(),
             deskew=bool(self._deskew_row.get_active()),
+            deskew_method=_deskew_method_value(
+                combo_value(self._deskew_method_row, DESKEW_METHODS)
+            ),
             drop_blanks=bool(self._blank_row.get_active()),
             # The CLI expands the filename placeholders and picks the next
             # free counter value; the GUI only forwards the template.

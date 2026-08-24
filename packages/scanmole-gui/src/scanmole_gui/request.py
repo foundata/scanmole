@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from scanmole.config import AutoSizePreference, SheetFlow
+from scanmole.config import AutoSizePreference, DeskewMethod, SheetFlow
 from scanmole_gui.modes import mode_argv
 
 
@@ -34,6 +34,10 @@ class ScanRequest:
     deskew: bool
     drop_blanks: bool
     output: str
+    deskew_method: DeskewMethod = "auto"
+    """Which mechanism straightens the pages. Carried even while
+    ``deskew`` is off, so the setting survives turning it back on, and
+    not emitted then because the CLI would ignore it anyway."""
     auto_size_preference: AutoSizePreference = "iso"
     """Family that wins ambiguous automatic sizes; irrelevant (and not
     emitted) for a fixed page size."""
@@ -63,6 +67,8 @@ def request_argv(request: ScanRequest, scanmole: str) -> list[str]:
     else:
         argv.append("--no-ocr")
     argv.append("--deskew" if request.deskew else "--no-deskew")
+    if request.deskew:
+        argv += ["--deskew-method", request.deskew_method]
     argv.append("--pdfa" if request.pdfa else "--no-pdfa")
     if not request.drop_blanks:
         argv.append("--keep-blanks")
