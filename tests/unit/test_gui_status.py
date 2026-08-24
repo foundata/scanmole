@@ -43,6 +43,68 @@ def test_log_view_appends_normalized_lines_and_copies() -> None:
     log._on_copy()  # exercises the clipboard path without a paste target
 
 
+def _children(widget: Any) -> list[Any]:
+    out: list[Any] = []
+    child = widget.get_first_child()
+    while child is not None:
+        out.append(child)
+        child = child.get_next_sibling()
+    return out
+
+
+def _label_weight(widget: Any) -> int:
+    """The Pango weight of the first label below ``widget``, 0 if it has none."""
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gtk
+
+    pending = [widget]
+    while pending:
+        current = pending.pop(0)
+        if isinstance(current, Gtk.Label):
+            return int(current.get_pango_context().get_font_description().get_weight())
+        pending.extend(_children(current))
+    return 0
+
+
+def test_log_header_keeps_copy_beside_the_expander_at_its_weight() -> None:
+    _init_adw()
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gdk, Gtk
+
+    from scanmole_gui.app import _APP_CSS
+    from scanmole_gui.status import LogView
+
+    log = LogView()
+    expander, copy_btn = _children(_children(log.widget)[0])
+
+    assert isinstance(expander, Gtk.Expander)
+    # Neither claims the leftover width, so the pair stays together at the
+    # left instead of ending up at opposite edges of the row.
+    assert expander.get_hexpand() is False
+    assert copy_btn.get_hexpand() is False
+
+    display = Gdk.Display.get_default()
+    provider = Gtk.CssProvider()
+    provider.load_from_string(_APP_CSS)
+    Gtk.StyleContext.add_provider_for_display(
+        display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+    )
+    window = Gtk.Window()
+    window.set_child(log.widget)
+    window.realize()
+    try:
+        # The theme makes button labels bold; the app stylesheet takes this
+        # one back to the plain weight the expander next to it renders at.
+        assert _label_weight(copy_btn) == _label_weight(expander) != 0
+    finally:
+        window.destroy()
+        Gtk.StyleContext.remove_provider_for_display(display, provider)
+
+
 def test_result_bar_states_and_actions() -> None:
     _init_adw()
     from scanmole_gui.status import ResultBar

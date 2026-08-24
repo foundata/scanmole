@@ -193,15 +193,17 @@ class LogView:
         """Build the header (expander, copy) and the hidden text pane."""
         self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         log_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self._expander = Gtk.Expander(
-            label=_("Log"), hexpand=True, valign=Gtk.Align.CENTER
-        )
+        self._expander = Gtk.Expander(label=_("Log"), valign=Gtk.Align.CENTER)
         log_header.append(self._expander)
+        # Both name the same pane, so they sit together at the left rather
+        # than at opposite ends of the row. .log-copy takes the button's
+        # bold label down to the weight the expander beside it uses.
         copy_btn = Gtk.Button(valign=Gtk.Align.CENTER)
         copy_btn.set_child(
             Adw.ButtonContent(icon_name="edit-copy-symbolic", label=_("Copy"))
         )
         copy_btn.add_css_class("flat")
+        copy_btn.add_css_class("log-copy")
         copy_btn.connect("clicked", self._on_copy)
         log_header.append(copy_btn)
         self.widget.append(log_header)

@@ -108,13 +108,17 @@ DEFAULT_WINDOW_SIZE = (1015, 800)
 # side they draw the hairline on. The presets get a little air above them
 # on top of that, which both loosens the pair and lets the Scan card meet
 # the other column's height. Its own class, because .joined-above is on
-# the output group's hint row too and padding both would cancel out.
+# the output group's hint row too and padding both would cancel out. The
+# log's Copy button matches the weight of the expander beside it; that
+# rule has to name the label node, because the theme puts the bold there
+# rather than on the button the label would inherit it from.
 _APP_CSS = """
 button.chip { min-height: 24px; padding: 0px 8px; font-size: 0.85em; }
 entry.dpi { min-width: 0px; padding-left: 8px; padding-right: 8px; }
 list.boxed-list > row.joined-above { border-top: none; box-shadow: none; }
 list.boxed-list > row.joined-below { border-bottom: none; box-shadow: none; }
 list.boxed-list > row.presets { padding-top: 6px; }
+button.log-copy label { font-weight: normal; }
 """
 
 
