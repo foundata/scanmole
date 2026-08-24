@@ -198,14 +198,20 @@ def test_scan_to_files_reports_scan_failures(
         )
 
 
-def test_backend_deskew_marks_the_request_as_applied() -> None:
+def test_only_a_chosen_backend_marks_the_request_as_applied() -> None:
+    # The one boolean the pipeline reads. It follows the settled owner,
+    # not the presence of an option: a device that offers a mechanism
+    # nobody selected has not taken the request.
     caps = {
         "source": Capability(kind="enum", choices=["ADF Duplex"]),
         "swdeskew": Capability(kind="bool"),
     }
 
-    _, with_deskew = build_scan_command(
+    _, automatic = build_scan_command(
         _config(deskew=True), "dev", caps, "out/page_%04d.pnm"
+    )
+    _, forced = build_scan_command(
+        _config(deskew=True, deskew_method="scanner"), "dev", caps, "out/page_%04d.pnm"
     )
     _, without = build_scan_command(
         _config(deskew=False), "dev", caps, "out/page_%04d.pnm"
@@ -217,9 +223,58 @@ def test_backend_deskew_marks_the_request_as_applied() -> None:
         "out/page_%04d.pnm",
     )
 
-    assert with_deskew.deskew_applied is True
+    assert automatic.deskew_applied is False  # ScanMole keeps it by default
+    assert forced.deskew_applied is True
     assert without.deskew_applied is False  # the option was set to =no
     assert no_option.deskew_applied is False  # nothing there to take the job
+
+
+@pytest.mark.parametrize(
+    ("method", "requested", "listing"),
+    [
+        pytest.param("scanner", True, {}, id="scanner-without-a-mechanism"),
+        pytest.param(
+            "scanmole",
+            True,
+            {"swdeskew": Capability(kind="bool", settable=False, current="yes")},
+            id="scanmole-against-an-unstoppable-one",
+        ),
+        pytest.param(
+            "auto",
+            False,
+            {"swdeskew": Capability(kind="bool", settable=False, current="yes")},
+            id="no-deskew-against-an-unstoppable-one",
+        ),
+    ],
+)
+def test_an_impossible_deskew_owner_refuses_before_the_feeder_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    requested: bool,
+    listing: dict[str, Capability],
+) -> None:
+    # The refusal is worth nothing after the paper has gone through, so
+    # it has to happen while the stack is still in the tray: scanimage
+    # must never be reached.
+    caps = {"resolution": Capability(kind="enum", choices=["300"]), **listing}
+    monkeypatch.setattr(
+        "scanmole.scanner.probe_capabilities", lambda device, settings=(): caps
+    )
+
+    def never(command: object, on_page: object) -> tuple[int, str]:
+        raise AssertionError("the scan started despite an impossible deskew owner")
+
+    monkeypatch.setattr("scanmole.scanner.run_scanimage", never)
+
+    with pytest.raises(DeviceError):
+        scan_to_files(
+            _config(deskew=requested, deskew_method=method),
+            "test:0",
+            tmp_path,
+            EventWriter(enabled=False),
+            lambda p, o: None,
+        )
 
 
 def test_scan_to_files_warns_exactly_once_per_fallback(

@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import IO
 
 from scanmole.config import ScanConfig
+from scanmole.deskew_policy import plan_deskew
+from scanmole.devices import backend_name
 from scanmole.errors import DeviceError, NoPagesError, ScanMoleError, Terminated
 from scanmole.events import EventWriter
 from scanmole.external import SCAN_TIMEOUT_SECONDS
@@ -305,14 +307,21 @@ def build_scan_command(
 
     if config.despeckle > 0 and writable_capability(caps, "swdespeck") is not None:
         command.append(f"--swdespeck={config.despeckle}")
-    deskew_applied = False
-    if writable_capability(caps, "swdeskew") is not None:
-        command.append(f"--swdeskew={'yes' if config.deskew else 'no'}")
-        deskew_applied = config.deskew
-    if writable_capability(caps, "adf-skew") is not None:
-        # epsonds' hardware skew correction, same contract as --swdeskew.
-        command.append(f"--adf-skew={'yes' if config.deskew else 'no'}")
-        deskew_applied = deskew_applied or config.deskew
+    # Who straightens the page is settled here, from the capabilities
+    # alone, and refuses while the stack is still in the feeder where the
+    # requested owner cannot be established. Every mechanism is always
+    # emitted, including the ones nobody chose, so a device default can
+    # never straighten a page the run already accounted for.
+    deskew = plan_deskew(
+        caps,
+        requested=config.deskew,
+        method=config.deskew_method,
+        backend=backend_name(device),
+    )
+    command += [f"--{name}={value}" for name, value in deskew.options]
+    if deskew.notice is not None and batch_start is None:
+        # Once per run: collect rebuilds this command per segment.
+        LOGGER.warning("%s", deskew.notice)
     if writable_capability(caps, "swcrop") is not None:
         command.append(f"--swcrop={'yes' if config.crop else 'no'}")
 
@@ -351,7 +360,7 @@ def build_scan_command(
         mode=mode,
         resolution=resolution,
         window_mm=(window["-x"], window["-y"]) if len(window) == 2 else None,
-        deskew_applied=deskew_applied,
+        deskew_applied=deskew.applied,
         faint_native=(
             plan.mode.requested == "lineart-auto"
             and plan.mode.support is Support.NATIVE

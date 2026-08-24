@@ -503,6 +503,43 @@ def test_the_backend_keeps_both_later_mechanisms_out(
     assert not any("tesseract" in tools for tools in required)
 
 
+def _host_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every page the host deskew is actually handed."""
+    seen: list[str] = []
+    from scanmole.deskew import deskew_page as real
+
+    def watched(page: Path) -> object:
+        seen.append(page.name)
+        return real(page)
+
+    monkeypatch.setattr("scanmole.pipeline.deskew_page", watched)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("backend_owns", "expected"),
+    [
+        pytest.param(True, 0, id="backend-owns"),
+        pytest.param(False, 1, id="host-owns"),
+    ],
+)
+def test_the_host_runs_exactly_where_the_backend_did_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend_owns: bool,
+    expected: int,
+) -> None:
+    # The whole point of settling ownership before acquisition: a page
+    # the backend straightened must not be rotated again here, whether
+    # the backend took the request because it was told to or because a
+    # read-only option left no choice. Both arrive as the same boolean.
+    seen = _host_calls(monkeypatch)
+
+    _deskew_run(tmp_path, monkeypatch, deskew_applied=backend_owns)
+
+    assert len(seen) == expected
+
+
 def test_the_measurement_tool_is_required_before_any_paper_moves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

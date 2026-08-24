@@ -13,6 +13,18 @@ LineartThreshold = float | Literal["auto"]
 AutoSizePreference = Literal["iso", "north-american"]
 """Paper family that wins content-only near-ties in automatic page sizing."""
 
+DeskewMethod = Literal["auto", "scanmole", "scanner"]
+"""Who straightens a skewed page, when deskew is requested at all.
+
+``auto`` (the default) lets ScanMole choose, which today means its own
+host path on every device that can be told not to deskew, since no
+backend mechanism has passed the qualification gate; the exception is a
+scanner whose deskew is read-only and already on, which owns the request
+because nothing can stop it. ``scanmole`` and ``scanner`` demand one
+owner and refuse the scan rather than silently falling back to the
+other. Orthogonal to the ``deskew`` switch, which decides whether
+anything straightens at all."""
+
 SheetFlow = Literal["single", "stack", "collect"]
 """How many physical sheets one run acquires.
 
@@ -60,6 +72,9 @@ class ScanConfig:
     output: Path
     # Defaulted so the record stays constructible from older call sites.
     lineart_threshold: LineartThreshold = 0.5
+    deskew_method: DeskewMethod = "auto"
+    """Which mechanism owns the deskew request; ignored while ``deskew``
+    is off, but still carried so turning deskew back on keeps the choice."""
     auto_size_preference: AutoSizePreference = "iso"
     """Tie-break family for ambiguous automatic page sizes (never a
     restriction: either family stays selectable by the evidence)."""

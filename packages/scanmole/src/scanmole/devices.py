@@ -14,6 +14,20 @@ LOGGER = logging.getLogger(__name__)
 DEVICE_ENV_VAR = "SCANMOLE_DEVICE"
 
 
+def backend_name(device: str) -> str:
+    """The SANE backend a device identifier names, and nothing else.
+
+    A SANE identifier is ``<backend>:<whatever the backend wants>``, and
+    the tail routinely carries a serial number, a USB path or a hostname
+    (``fujitsu:ScanSnap iX100:1209870``). Only the prefix says which
+    driver will do the work, which is the only part any policy here has
+    a use for, so it is the only part that travels: callers take this
+    and never the identifier, so no serial can reach a decision, a log
+    line or a document by accident.
+    """
+    return device.split(":", 1)[0].strip().lower()
+
+
 class Device(TypedDict):
     """One SANE device as reported by ``scanimage``.
 

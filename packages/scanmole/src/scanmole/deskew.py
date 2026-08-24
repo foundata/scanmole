@@ -1,11 +1,11 @@
 """Host-side raster deskew: measure with Tesseract, rotate with Pillow.
 
-The third owner of the deskew request, and the one that needs nothing of
-the scanner: the backend straightens where it offers the option
-(:mod:`scanmole.scanner` decides that and reports it as
-``EffectiveSettings.deskew_applied``), otherwise this module does it on
-the raw frame, and ocrmypdf's own ``--deskew`` stays the fallback for
-pages this path cannot own. Exactly one of them ever runs, because
+The default owner of the deskew request, and the one that needs nothing
+of the scanner: :mod:`scanmole.deskew_policy` settles ownership from the
+capability listing and reports it as ``EffectiveSettings.deskew_applied``,
+which normally leaves the job here; a backend takes it only when asked
+for explicitly or when its own option cannot be switched off. ocrmypdf's
+``--deskew`` stays the fallback for pages this path cannot own. Exactly one of them ever runs, because
 resampling a page twice costs more than the skew it removes.
 
 Available everywhere is not the same as effective everywhere. A page

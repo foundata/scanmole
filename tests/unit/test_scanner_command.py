@@ -135,8 +135,10 @@ def test_build_scan_command_auto_size_enables_hardware_adf_cropping(
 
     assert "--adf-crp=yes" in auto_command
     assert "--adf-crp=yes" not in fixed_command
+    # Neither size mode changes who deskews: the default method keeps
+    # that with ScanMole, so the backend mechanism is off in both.
     assert "--adf-skew=no" in auto_command
-    assert "--adf-skew=yes" in fixed_command
+    assert "--adf-skew=no" in fixed_command
 
 
 def test_build_scan_command_degraded_flatbed_gets_batch_count(
@@ -376,8 +378,11 @@ def test_writable_geometry_and_controls_are_still_emitted(tmp_path: Path) -> Non
 
     assert "--source" in command and "--mode" in command
     assert "-x" in command and "-y" in command
-    assert "--swdespeck=1" in command and "--swdeskew=yes" in command
-    assert effective.deskew_applied is True
+    assert "--swdespeck=1" in command
+    # Emitted, and off: the default method leaves deskew with ScanMole,
+    # so the mechanism has to be shut rather than left at its default.
+    assert "--swdeskew=no" in command
+    assert effective.deskew_applied is False
 
 
 def test_unknown_source_evidence_never_claims_duplex(tmp_path: Path) -> None:
@@ -743,67 +748,161 @@ def test_a_read_only_mode_still_emits_a_writable_enhancement(
     assert effective.faint_native is True
 
 
-# Which mechanism straightens a page is settled here and travels as one
-# boolean. Downstream code reads EffectiveSettings.deskew_applied and
-# never the option names, so moving the policy later stays a change to
-# negotiation and command construction alone.
+# Which mechanism straightens a page is settled here, and exactly one
+# ever does. Downstream code reads EffectiveSettings.deskew_applied and
+# never the option names, so the policy can move without the pipeline
+# learning a new concept. The states worth distinguishing are: a writable
+# mechanism, a read-only one that proves the device deskews anyway, and a
+# read-only one that proves nothing.
+
+
+def _skew_caps(*lines: str) -> dict[str, Capability]:
+    return parse_capabilities(
+        "    --source ADF Front [ADF Front]\n"
+        "    --mode Lineart [Lineart]\n" + "".join(lines)
+    )
+
+
+_WRITABLE = "    --{name}[=(yes|no)] [no]\n"
+_STUCK_ON = "    --{name}[=(yes|no)] [yes] [read-only]\n"
 
 
 @pytest.mark.parametrize("option", ["swdeskew", "adf-skew"])
-@pytest.mark.parametrize("requested", [True, False])
-def test_a_backend_deskew_option_is_set_and_reported(
-    tmp_path: Path, option: str, requested: bool
+def test_the_default_method_leaves_the_backend_mechanism_off(
+    tmp_path: Path, option: str
 ) -> None:
-    caps = parse_capabilities(
-        "    --source ADF Front [ADF Front]\n"
-        "    --mode Lineart [Lineart]\n"
-        f"    --{option}[=(yes|no)] [no]\n"
-    )
-
+    # Automatic means ScanMole, because no backend mechanism has passed
+    # the qualification gate yet. The option is still emitted: leaving it
+    # at a device default could straighten a page ScanMole is about to
+    # straighten again.
     command, effective = build_scan_command(
-        _config(source="adf", deskew=requested, page_size="a4"),
+        _config(source="adf", deskew=True, page_size="a4"),
         "test:0",
-        caps,
+        _skew_caps(_WRITABLE.format(name=option)),
         str(tmp_path / "page_%04d.pnm"),
     )
 
-    # The option is always emitted, so a device default cannot straighten
-    # a page the run asked to keep.
-    assert f"--{option}={'yes' if requested else 'no'}" in command
-    assert effective.deskew_applied is requested
+    assert f"--{option}=no" in command
+    assert effective.deskew_applied is False
 
 
-@pytest.mark.parametrize("requested", [True, False])
-def test_both_deskew_options_together_report_one_verdict(
-    tmp_path: Path, requested: bool
+@pytest.mark.parametrize("option", ["swdeskew", "adf-skew"])
+def test_forcing_the_scanner_hands_the_mechanism_the_request(
+    tmp_path: Path, option: str
 ) -> None:
-    # A device offering both gets both set; the verdict stays a single
-    # boolean rather than something downstream has to combine.
-    caps = parse_capabilities(
-        "    --source ADF Front [ADF Front]\n"
-        "    --mode Lineart [Lineart]\n"
-        "    --swdeskew[=(yes|no)] [no]\n"
-        "    --adf-skew[=(yes|no)] [no]\n"
-    )
-
     command, effective = build_scan_command(
-        _config(source="adf", deskew=requested, page_size="a4"),
+        _config(source="adf", deskew=True, page_size="a4", deskew_method="scanner"),
         "test:0",
-        caps,
+        _skew_caps(_WRITABLE.format(name=option)),
         str(tmp_path / "page_%04d.pnm"),
     )
 
-    answer = "yes" if requested else "no"
-    assert f"--swdeskew={answer}" in command
-    assert f"--adf-skew={answer}" in command
-    assert effective.deskew_applied is requested
+    assert f"--{option}=yes" in command
+    assert effective.deskew_applied is True
 
 
-def test_a_read_only_deskew_option_leaves_the_request_unclaimed(
+def test_only_one_mechanism_is_ever_enabled(tmp_path: Path) -> None:
+    # Two backend corrections over one page is the same mistake as a
+    # backend and a host correction, and no listing says whether the
+    # second would be a no-op or a second rotation.
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=True, page_size="a4", deskew_method="scanner"),
+        "test:0",
+        _skew_caps(
+            _WRITABLE.format(name="swdeskew"), _WRITABLE.format(name="adf-skew")
+        ),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "--swdeskew=yes" in command
+    assert "--adf-skew=no" in command
+    assert effective.deskew_applied is True
+
+
+@pytest.mark.parametrize("method", ["auto", "scanmole", "scanner"])
+def test_no_deskew_shuts_every_mechanism_whatever_the_method(
+    tmp_path: Path, method: str
+) -> None:
+    # The method says who would own the request, not whether one was
+    # made. Turning deskew off has to reach the device either way.
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=False, page_size="a4", deskew_method=method),
+        "test:0",
+        _skew_caps(
+            _WRITABLE.format(name="swdeskew"), _WRITABLE.format(name="adf-skew")
+        ),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert "--swdeskew=no" in command and "--adf-skew=no" in command
+    assert effective.deskew_applied is False
+
+
+@pytest.mark.parametrize("option", ["swdeskew", "adf-skew"])
+def test_a_device_that_deskews_anyway_keeps_the_request(
+    tmp_path: Path, option: str
+) -> None:
+    # A read-only mechanism reporting yes cannot be turned off, so it
+    # owns the request whether ScanMole likes it or not. What matters is
+    # that the host is then told to keep its hands off.
+    command, effective = build_scan_command(
+        _config(source="adf", deskew=True, page_size="a4"),
+        "test:0",
+        _skew_caps(_STUCK_ON.format(name=option)),
+        str(tmp_path / "page_%04d.pnm"),
+    )
+
+    assert not [argument for argument in command if argument.startswith(f"--{option}")]
+    assert effective.deskew_applied is True
+
+
+@pytest.mark.parametrize("option", ["swdeskew", "adf-skew"])
+def test_forcing_scanmole_refuses_a_device_that_deskews_anyway(
+    tmp_path: Path, option: str
+) -> None:
+    # Exclusive host ownership is impossible here, and the alternative to
+    # refusing is a stack that comes out rotated twice.
+    with pytest.raises(DeviceError, match="twice"):
+        build_scan_command(
+            _config(
+                source="adf", deskew=True, page_size="a4", deskew_method="scanmole"
+            ),
+            "test:0",
+            _skew_caps(_STUCK_ON.format(name=option)),
+            str(tmp_path / "page_%04d.pnm"),
+        )
+
+
+def test_no_deskew_refuses_a_device_that_deskews_anyway(tmp_path: Path) -> None:
+    # Reporting these pages as unmodified would be a lie about paper the
+    # user may no longer have.
+    with pytest.raises(DeviceError, match="--no-deskew cannot be honored"):
+        build_scan_command(
+            _config(source="adf", deskew=False, page_size="a4"),
+            "test:0",
+            _skew_caps(_STUCK_ON.format(name="swdeskew")),
+            str(tmp_path / "page_%04d.pnm"),
+        )
+
+
+def test_forcing_the_scanner_refuses_a_device_without_one(tmp_path: Path) -> None:
+    # Falling back to the host would be the opposite of what was asked
+    # for, and silently so.
+    with pytest.raises(DeviceError, match="no deskew option"):
+        build_scan_command(
+            _config(source="adf", deskew=True, page_size="a4", deskew_method="scanner"),
+            "test:0",
+            _skew_caps(),
+            str(tmp_path / "page_%04d.pnm"),
+        )
+
+
+def test_a_read_only_mechanism_reporting_no_leaves_the_request_unclaimed(
     tmp_path: Path,
 ) -> None:
-    # Listed but not settable is not a mechanism: the backend cannot be
-    # told to straighten, so the verdict must not claim it did.
+    # Read-only and off is the harmless half of unsettable: the backend
+    # will not straighten and cannot be asked to, so the verdict must not
+    # claim it did and the host takes the page as usual.
     caps = parse_capabilities(
         "    --source ADF Front [ADF Front]\n"
         "    --mode Lineart [Lineart]\n"
