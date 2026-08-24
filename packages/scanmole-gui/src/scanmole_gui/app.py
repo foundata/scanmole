@@ -139,7 +139,7 @@ faster because a sheet is imminently expected there.
 # Above the layout breakpoint and tall enough for both columns, so a first
 # start shows every setting instead of hiding some below the fold. A screen
 # too small for it gets a window clamped to the work area by the compositor.
-DEFAULT_WINDOW_SIZE = (1010, 879)
+DEFAULT_WINDOW_SIZE = (1015, 800)
 
 # App-level styling: compact resolution preset chips, a dpi entry sized to
 # its digits, and no separator between the .joined-below/.joined-above row
