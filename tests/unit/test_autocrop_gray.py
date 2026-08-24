@@ -286,14 +286,15 @@ def _crop_width(tmp_path: Path, columns: list[int], *, dpi: int = 300) -> int:
 
 def test_side_walk_skips_a_saturated_strip_over_backing(tmp_path: Path) -> None:
     # The measured iX100 shape: a clipped sensor strip at the frame edge,
-    # then backing, then paper. The strip used to end the walk at once.
+    # then backing, then paper. Without the sustained run the strip ends
+    # the walk at once.
     columns = [_CLIPPED] * 19 + [_BACKING] * 60 + [_PAPER] * 400
     assert _crop_width(tmp_path, columns) == 400
 
 
 def test_side_walk_skips_backing_that_touches_the_cutoff(tmp_path: Path) -> None:
     # The measured receipt shape: noisy backing whose mean reaches the
-    # cutoff on isolated columns, which used to end the walk immediately.
+    # cutoff on isolated columns, which alone would end the walk at once.
     backing = [_BACKING] * 60
     for spike in (5, 23, 44):
         backing[spike] = 179  # a hair above 0.7 * 255

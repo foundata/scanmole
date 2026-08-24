@@ -736,8 +736,8 @@ def _autocrop_lineart(path: Path, buffer: bytes, *, dpi: int) -> bool:
     # The detected bounds are kept to the pixel on every side. Bit-packed
     # rows are repacked rather than sliced from a byte boundary
     # (:func:`~scanmole.pnm.crop_bit_rows`), so a left edge that does not
-    # fall on a byte costs nothing; rounding it inward used to give away
-    # up to seven columns of paper that the detector had just proved was
+    # fall on a byte costs nothing. Rounding it inward instead would give
+    # away up to seven columns of paper the detector had just proved was
     # paper.
     header = b"P4\n%d %d\n" % (
         kept.right - kept.left + 1,

@@ -782,8 +782,8 @@ def test_crop_bit_rows_leaves_an_aligned_crop_byte_identical(x0: int) -> None:
 
 @pytest.mark.parametrize("x0", [1, 5])
 def test_crop_pnm_mirrors_p4_geometry_left_and_right(tmp_path: Path, x0: int) -> None:
-    # The same distance taken off either side gives the same width, which
-    # is the asymmetry this replaced: the left used to round outward.
+    # The same distance taken off either side gives the same width.
+    # Rounding the left outward instead would break that symmetry.
     frame = _p4_frame(64, 8, [(20, 0, 44, 8)])
     left = _write(tmp_path / "left.pbm", frame)
     right = _write(tmp_path / "right.pbm", frame)

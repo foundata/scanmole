@@ -50,9 +50,9 @@ def _plan(
 
 
 def test_nothing_is_qualified_for_automatic_backend_ownership() -> None:
-    # The seam itself. Adding a name here is the whole change needed to
-    # let auto prefer a backend mechanism, so an accidental entry has to
-    # be as visible as a behaviour change.
+    # Adding a name to this set is the whole change needed to let auto
+    # prefer a backend mechanism, so an accidental entry has to be as
+    # visible as a behaviour change.
     assert QUALIFIED_FOR_AUTO == frozenset()
 
 

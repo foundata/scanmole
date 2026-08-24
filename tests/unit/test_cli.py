@@ -360,8 +360,8 @@ def test_main_installs_a_sigterm_handler(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_nonsensical_numeric_arguments_are_rejected_at_parse_time() -> None:
-    # Each of these previously crossed the boundary and crashed later
-    # (ZeroDivisionError at -r 0) or silently changed behavior (a NaN
+    # Each of these would otherwise cross the boundary and crash later
+    # (ZeroDivisionError at -r 0) or silently change behavior (a NaN
     # blank threshold disables blank removal without saying so).
     for argv in (
         ["-r", "0", "out"],
@@ -434,9 +434,9 @@ def _deskew_help() -> str:
 
 def test_the_deskew_help_defers_to_the_method_instead_of_promising_an_owner() -> None:
     # Turning deskew on says nothing about who does it: that is
-    # --deskew-method's answer, and it is no longer "the device wherever
-    # it offers an option". The switch must not promise an owner it does
-    # not choose, or a user reads ownership off the wrong flag.
+    # --deskew-method's answer, not "the device wherever it offers an
+    # option". The switch must not promise an owner it does not choose,
+    # or a user reads ownership off the wrong flag.
     entry = _deskew_help()
 
     assert "--deskew-method" in entry

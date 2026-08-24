@@ -1431,8 +1431,8 @@ def test_native_lineart_is_cropped_before_blank_detection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Without the crop the boundary's own pixels keep a genuinely empty
-    # backside off the blank threshold, exactly as dark backing used to do
-    # on gray frames. The page must be cropped first and then drop.
+    # backside off the blank threshold, exactly as dark backing does on an
+    # uncropped gray frame. The page must be cropped first and then drop.
     _w, _h, printed = _lineart_window_frame()
     _w, _h, empty = _lineart_window_frame(ink=False)
 

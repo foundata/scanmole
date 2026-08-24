@@ -199,7 +199,7 @@ def test_lineart_search_is_physical_across_resolutions(
     kept_width, kept_height = _geometry(page)
     assert kept_height == height  # nothing spans the horizontal axis
     # Exactly the 3 mm, to within the pixel the layout rounds to; byte
-    # alignment used to add up to seven columns on top.
+    # alignment would add up to seven columns on top.
     removed = (width - kept_width) / scale
     assert 3.0 - 1 / scale <= removed <= 3.0 + 1 / scale
 
@@ -374,7 +374,7 @@ def test_lineart_follows_the_best_effort_policy_on_bad_input(
 
 # Boundary coherence. Bands voting separately is not enough evidence: a
 # single interior mark, deeper than the real boundary and unrelated to
-# it, used to decide the crop and take most of the page with it. What
+# it, would decide the crop and take most of the page with it. What
 # follows pins that a crop only ever follows a boundary the bands agree
 # on, and that disconnected content near an edge survives untouched.
 
@@ -432,8 +432,8 @@ def test_lineart_ignores_a_mark_a_hair_off_the_boundary(
     # rule that groups darkness by proximity fuses them. Reaching the
     # mark still means stepping further than the allowance, so it lies
     # on no boundary path and cannot decide where the crop falls. The
-    # four-column case is the measured one: it used to crop at column 32
-    # and delete the mark with 2.7 mm of paper.
+    # four-column case is the measured one: fusing them crops at column
+    # 32 and deletes the mark with 2.7 mm of paper.
     mark = (16 + gap, 0, 22 + gap, 50)
     page = _lineart_page(
         tmp_path, _lineart_frame(200, 300, _black((10, 0, 16, 300), mark))
@@ -703,7 +703,7 @@ def test_lineart_keeps_every_left_edge_offset_exactly(
     tmp_path: Path, left: int
 ) -> None:
     # A boundary ending one column before each of the eight bit offsets.
-    # Rounding the edge up to a byte used to cost the difference, up to
+    # Rounding the edge up to a byte would cost the difference, up to
     # seven columns of paper, or 1.19 mm at this resolution.
     page = _lineart_page(
         tmp_path, _lineart_frame(200, 300, _black((left - 6, 0, left, 300)))

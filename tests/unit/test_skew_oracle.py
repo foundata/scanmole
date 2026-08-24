@@ -326,8 +326,8 @@ def test_the_signed_median_threshold_is_inclusive(
 def test_one_good_frame_cannot_carry_a_group_of_failures(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The false pass this gate was missing: unmeasurable frames used to
-    # leave the denominator, so a single clean result reported 100%.
+    # The false pass this gate closes: if unmeasurable frames left the
+    # denominator, a single clean result would report 100%.
     group = [_measurement(0.01)] + [
         oracle.Measurement(f"m{index}", None, None, 0, (), "unreadable")
         for index in range(99)
