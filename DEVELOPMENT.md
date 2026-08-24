@@ -70,6 +70,7 @@ scanmole/                      # repository root (uv workspace)
 │   │       ├── cli.py         # argparse + main() -> int
 │   │       ├── pipeline.py    # orchestration: scan → blank-drop → PDF → OCR
 │   │       ├── scanner.py     # scanimage acquisition, streaming page delivery
+│   │       ├── scancommand.py # the scanimage command line + EffectiveSettings
 │   │       ├── options.py     # -A capability parsing + source/mode/page-size mapping
 │   │       ├── naming.py      # output filename templates (shared with the GUI preview)
 │   │       ├── devices.py     # device discovery

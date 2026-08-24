@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from support.scanner import (
     _config,
 )
 
+from scanmole import scancommand, scanner
 from scanmole.errors import DeviceError
 from scanmole.negotiation import negotiate, resolve_faint_plan
 from scanmole.options import (
@@ -443,7 +445,7 @@ def test_unknown_source_evidence_bounds_the_batch(
     # that is unverified. One frame per invocation, and say why.
     caps = {"resolution": Capability(kind="range", minimum=50, maximum=600)}
 
-    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+    with caplog.at_level("WARNING", logger="scanmole.scancommand"):
         command, _settings = build_scan_command(
             _config(source="adf-duplex", sheet_flow="stack"),
             "test:0",
@@ -474,7 +476,7 @@ def test_conclusive_source_evidence_keeps_its_batch_behaviour(
     # Nothing changes where the listing settles the question: a proven
     # feeder still drains, a proven flatbed still stops after one frame,
     # and neither is worth warning about.
-    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+    with caplog.at_level("WARNING", logger="scanmole.scancommand"):
         feeder, _f = build_scan_command(
             _config(source="adf-duplex", sheet_flow="stack"),
             "test:0",
@@ -500,7 +502,7 @@ def test_the_unknown_source_warning_is_not_repeated_per_segment(
     # one stays bounded; only the run's first command explains it.
     caps = {"resolution": Capability(kind="range", minimum=50, maximum=600)}
 
-    with caplog.at_level("WARNING", logger="scanmole.scanner"):
+    with caplog.at_level("WARNING", logger="scanmole.scancommand"):
         first, _a = build_scan_command(
             _config(source="adf", sheet_flow="collect"),
             "test:0",
@@ -918,3 +920,33 @@ def test_a_read_only_mechanism_reporting_no_leaves_the_request_unclaimed(
 
     assert not any(argument.startswith("--swdeskew") for argument in command)
     assert effective.deskew_applied is False
+
+
+# ------------------------------------------------------- module boundary
+
+
+def test_the_command_names_stay_reachable_through_the_acquisition_module() -> None:
+    # The pipeline and every test here have always imported these two from
+    # scanmole.scanner. Splitting the builder into its own module is not a
+    # reason for a caller that drives a scan to learn where the command it
+    # drives is assembled.
+    assert scanner.build_scan_command is scancommand.build_scan_command
+    assert scanner.EffectiveSettings is scancommand.EffectiveSettings
+    assert {"EffectiveSettings", "build_scan_command"}.issubset(scanner.__all__)
+
+
+def test_assembling_a_command_needs_nothing_from_acquisition() -> None:
+    # The direction of the split, read off the import graph rather than
+    # the prose: the builder decides from capabilities alone, so it must
+    # not reach back into acquisition (which would be a cycle) and must
+    # not spawn anything. Otherwise the two are separated on paper only.
+    tree = ast.parse(Path(scancommand.__file__).read_text())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    assert "scanmole.scanner" not in imported
+    assert "subprocess" not in imported
