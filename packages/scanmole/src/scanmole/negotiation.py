@@ -1,10 +1,12 @@
 """Capability negotiation: what a device supports, and how well.
 
-One shared support model tells the engine, the CLI and the GUI whether a
-ScanMole setting is natively provided, equivalently emulated in software,
-degraded, impossible, or simply unknown. Pure assessment over capability
-snapshots; probing I/O has a thin helper, everything else takes data in and
-returns a plan with structured notices out.
+Assesses a scan request (source, mode, resolution) against a capability
+snapshot and returns a plan with structured notices. Pure: probing I/O has
+a thin helper, everything else takes data in and returns verdicts out. The
+vocabulary those verdicts are written in lives in
+:mod:`scanmole.assessment`, and the staged ``lineart-auto`` recognition in
+:mod:`scanmole.faint`; both are re-exported here, because this module is
+the negotiation layer's front door for the engine and the frontends alike.
 
 This models ScanMole's workflows (sources, modes, acquisition depth,
 resolution), not arbitrary SANE options, and it is deliberately not a
@@ -17,15 +19,31 @@ usable best-effort, never UNSUPPORTED.
 
 from __future__ import annotations
 
-import enum
 import logging
-import re
 import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
+from scanmole.assessment import (
+    Assessment,
+    Plan,
+    Prober,
+    Settings,
+    Support,
+    as_read_only,
+    as_written,
+    state_choices,
+)
 from scanmole.config import LineartThreshold
 from scanmole.errors import DeviceError
+from scanmole.faint import (
+    NativeEnhancement,
+    advisory_faint_assessment,
+    assess_depth,
+    detect_native_enhancement,
+    resolve_faint_plan,
+    software_faint,
+)
 from scanmole.options import (
     _MODE_FALLBACKS,
     _MODE_PREDICATES,
@@ -37,10 +55,38 @@ from scanmole.options import (
     probe_capabilities,
     readable_capability,
     snap_resolution,
-    writable_capability,
 )
 
 LOGGER = logging.getLogger(__name__)
+
+__all__ = [
+    "ADVISORY_PROBE_TIMEOUT_SECONDS",
+    "Assessment",
+    "ChoiceSupport",
+    "NativeEnhancement",
+    "Plan",
+    "Prober",
+    "Settings",
+    "Support",
+    "advisory_faint_assessment",
+    "assess_depth",
+    "assess_mode",
+    "assess_resolution",
+    "assess_source",
+    "choice_support",
+    "detect_native_enhancement",
+    "log_notices",
+    "negotiate",
+    "probe_snapshot",
+    "require_supported",
+    "resolve_faint_plan",
+]
+"""The negotiation layer's public surface.
+
+Split across three modules for readability, entered through one: callers
+ask this module what a device supports without having to know whether the
+answer came from the shared model, the general assessment or the staged
+faint-originals recognition."""
 
 ADVISORY_PROBE_TIMEOUT_SECONDS = 15.0
 """Timeout for advisory (GUI) capability probes.
@@ -49,81 +95,6 @@ Scan-time negotiation keeps the longer probe timeout and treats failure as
 an error; an advisory probe turns timeout or failure into UNKNOWN instead,
 so a slow or wedged backend cannot freeze a frontend.
 """
-
-
-class Support(enum.Enum):
-    """How well a requested setting is covered by the negotiated plan."""
-
-    NATIVE = "native"
-    """The scanner directly provides the requested semantics."""
-    EMULATED = "emulated"
-    """ScanMole software preserves the requested final semantics."""
-    DEGRADED = "degraded"
-    """Execution is possible but materially changes the request."""
-    UNSUPPORTED = "unsupported"
-    """Authoritative active capabilities prove there is no path."""
-    UNKNOWN = "unknown"
-    """Missing, inactive, failed or unparseable capability evidence."""
-
-
-@dataclass(frozen=True)
-class Assessment:
-    """One negotiated setting.
-
-    Attributes:
-        requested: The ScanMole-level request (``adf-duplex``, ``lineart``,
-            ``300``, ...).
-        support: The support state (see :class:`Support`).
-        reason: A stable, machine-usable reason code.
-        consequence: Human-readable consequence for non-NATIVE outcomes.
-        backend_value: The backend value the command will carry, or ``None``
-            when the option is not passed at all.
-        actual: The backend value the device will really be on, whether or
-            not the command emits it. Equal to ``backend_value`` for a
-            writable option; for a read-only one the command emits nothing
-            yet the device still sits on a known value, and that is this.
-            ``None`` means nothing was established, which is what an
-            UNKNOWN verdict always yields: the request echoed back is not
-            evidence of anything. Only options whose backend value is a
-            distinct string (source and mode) carry one; the resolution's
-            established value is its ``effective``.
-        effective: The ScanMole-level semantics that will actually result.
-    """
-
-    requested: str
-    support: Support
-    reason: str
-    consequence: str = ""
-    backend_value: str | None = None
-    actual: str | None = None
-    effective: str = ""
-
-    @property
-    def conclusive(self) -> bool:
-        """Whether real capability evidence backs this verdict.
-
-        UNKNOWN means the listing proved nothing, so ``effective`` is only
-        the request echoed back. Any decision that must not be taken on an
-        unproven assumption asks this first.
-        """
-        return self.support is not Support.UNKNOWN
-
-
-@dataclass(frozen=True)
-class Plan:
-    """A negotiated acquisition plan for one scan request.
-
-    ``extra_options`` carries additional backend options the plan needs
-    beyond source/mode/depth/resolution (a native faint-text enhancement's
-    ordered settings), explicitly and in emission order; the mode's backend
-    value is never overloaded with such arguments.
-    """
-
-    source: Assessment
-    mode: Assessment
-    depth: Assessment
-    resolution: Assessment
-    extra_options: tuple[tuple[str, str], ...] = ()
 
 
 # Exact-source semantics per request. Stricter than the mapper's fallback
@@ -147,38 +118,6 @@ _SOURCE_CONSEQUENCE = {
 }
 
 
-def _state_choices(capability: Capability | None) -> list[str]:
-    """The values a capability offers, or its current value when read-only.
-
-    A ``[read-only]`` option lists no settable alternatives; what it does
-    report is the value the device is using, and that is the only outcome
-    a scan can have.
-    """
-    if capability is None:
-        return []
-    if capability.settable:
-        return capability.choices
-    current = (capability.current or "").strip()
-    return [current] if current else []
-
-
-def _settable(assessment: Assessment) -> Assessment:
-    """Record an emitted value as the state the scan will run in."""
-    return replace(assessment, actual=assessment.backend_value)
-
-
-def _unsettable(assessment: Assessment) -> Assessment:
-    """Keep an assessment's verdict and state while forbidding emission.
-
-    A read-only option cannot be written, so nothing may be produced for
-    it, but the value the match landed on is the one the device is on. It
-    survives as ``actual`` only where the verdict rests on evidence: an
-    UNKNOWN match would carry the request back rather than a fact.
-    """
-    matched = assessment.backend_value if assessment.conclusive else None
-    return replace(assessment, backend_value=None, actual=matched)
-
-
 def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
     """Negotiate the paper source for a request."""
     if caps is None:
@@ -190,7 +129,7 @@ def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
             effective=want,
         )
     capability = readable_capability(caps, "source")
-    choices = _state_choices(capability)
+    choices = state_choices(capability)
     if capability is None or not choices:
         inactive = caps.get("source") is not None
         return Assessment(
@@ -205,8 +144,8 @@ def assess_source(caps: dict[str, Capability] | None, want: str) -> Assessment:
         # Read-only: the current value is what the device will use, so the
         # ordinary matching runs against it alone and establishes effective
         # behaviour, but nothing may be emitted for it.
-        return _unsettable(_match_source(choices, want))
-    return _settable(_match_source(choices, want))
+        return as_read_only(_match_source(choices, want))
+    return as_written(_match_source(choices, want))
 
 
 def _match_source(choices: list[str], want: str) -> Assessment:
@@ -271,7 +210,7 @@ def assess_mode(
     optimistic :func:`advisory_faint_assessment` (display only).
     """
     if want == "lineart-auto":
-        return _software_faint(caps)
+        return software_faint(caps)
     base = want
     if caps is None:
         return Assessment(
@@ -282,7 +221,7 @@ def assess_mode(
             effective=want,
         )
     capability = readable_capability(caps, "mode")
-    choices = _state_choices(capability)
+    choices = state_choices(capability)
     if capability is None or not choices:
         inactive = caps.get("mode") is not None
         return Assessment(
@@ -296,8 +235,8 @@ def assess_mode(
     if not capability.settable:
         # Read-only: match against the current value alone and keep the
         # verdict, but never emit a value for it.
-        return _unsettable(_match_mode(choices, want, base, lineart_threshold))
-    return _settable(_match_mode(choices, want, base, lineart_threshold))
+        return as_read_only(_match_mode(choices, want, base, lineart_threshold))
+    return as_written(_match_mode(choices, want, base, lineart_threshold))
 
 
 def _match_mode(
@@ -362,389 +301,6 @@ def _match_mode(
         consequence=(
             f"device has no mode matching '{base}'; available: {', '.join(choices)}"
         ),
-    )
-
-
-Settings = tuple[tuple[str, str], ...]
-
-Prober = Callable[[Settings], "dict[str, Capability] | None"]
-"""A capability probe with ordered settings applied; failure returns None."""
-
-_TET_CHOICE = "Text Enhanced Technology"
-
-
-@dataclass(frozen=True)
-class NativeEnhancement:
-    """An evidence-backed native faint-text enhancement path.
-
-    ``settings`` are the ordered backend options that engage the
-    enhancement, beyond selecting the 1-bit mode itself. ``verify_option``,
-    when set, must still be active after a reprobe with the complete
-    ordered settings applied, or the path is rejected.
-    """
-
-    reason: str
-    notice: str
-    settings: Settings
-    verify_option: str | None = None
-
-
-def detect_native_enhancement(
-    caps: dict[str, Capability],
-) -> NativeEnhancement | None:
-    """Recognize a native faint-text enhancement in a 1-bit-mode snapshot.
-
-    Matches the active option topology only, never device identities, and
-    only profiles with fixture-backed evidence:
-
-    - Epson TET: an active ``--halftoning`` whose choices contain exactly
-      ``Text Enhanced Technology`` (background filtering plus dynamic
-      thresholding in the scanner).
-    - Fujitsu SDTC: an active ``--threshold`` range containing 0 (0 selects
-      the automatic DTC circuit) together with an active ``--variance``
-      (the SDTC sensitivity, where 0 is the documented default).
-
-    Deliberately not evidence: generic threshold/brightness/contrast
-    controls, halftone or error-diffusion *mode choices* (Canon
-    ``Halftone``, Brother ``Gray[Error Diffusion]``), ``threshold-curve``
-    style controls, and any inactive option.
-    """
-    halftoning = writable_capability(caps, "halftoning")
-    if halftoning is not None and _TET_CHOICE in halftoning.choices:
-        return NativeEnhancement(
-            reason="native-epson-tet",
-            notice=(
-                "using the scanner's built-in text enhancement "
-                "(Text Enhanced Technology)"
-            ),
-            settings=(("--halftoning", _TET_CHOICE),),
-        )
-    threshold = writable_capability(caps, "threshold")
-    variance = writable_capability(caps, "variance")
-    if (
-        variance is not None
-        and threshold is not None
-        and threshold.kind == "range"
-        and threshold.minimum is not None
-        and threshold.maximum is not None
-        and threshold.minimum <= 0 <= threshold.maximum
-    ):
-        return NativeEnhancement(
-            reason="native-fujitsu-sdtc",
-            notice="using the scanner's built-in text enhancement (SDTC)",
-            settings=(("--threshold", "0"), ("--variance", "0")),
-            verify_option="variance",
-        )
-    return _engaged_enhancement(caps)
-
-
-def _engaged_enhancement(caps: dict[str, Capability]) -> NativeEnhancement | None:
-    """A read-only enhancement whose current values prove it is already on.
-
-    Read-only controls cannot be configured, so the only way one counts is
-    if the device already reports the enhancement engaged. Nothing is
-    emitted for it; the settings tuple stays empty.
-    """
-    halftoning = readable_capability(caps, "halftoning")
-    if (
-        halftoning is not None
-        and not halftoning.settable
-        and (halftoning.current or "").strip() == _TET_CHOICE
-    ):
-        return NativeEnhancement(
-            reason="native-epson-tet",
-            notice=(
-                "the scanner's built-in text enhancement (Text Enhanced "
-                "Technology) is already engaged"
-            ),
-            settings=(),
-        )
-    threshold = readable_capability(caps, "threshold")
-    variance = readable_capability(caps, "variance")
-    if (
-        threshold is not None
-        and variance is not None
-        and not threshold.settable
-        and (threshold.current or "").strip() in ("0", "0.0")
-    ):
-        return NativeEnhancement(
-            reason="native-fujitsu-sdtc",
-            notice="the scanner's built-in text enhancement (SDTC) is already engaged",
-            settings=(),
-        )
-    return None
-
-
-@dataclass(frozen=True)
-class _LineartCandidate:
-    """The device's own 1-bit mode and what it takes to get there.
-
-    ``effective`` is the mode the scan runs in. ``backend_value`` is what
-    the command may emit for it, which is ``None`` when the device already
-    sits in that mode and will not accept a value. ``settings`` are the
-    ordered options the staged probe applies on top of the base settings,
-    and are empty for the same reason.
-    """
-
-    effective: str
-    backend_value: str | None
-    settings: Settings
-
-
-def _native_lineart_candidate(
-    caps: dict[str, Capability] | None,
-) -> _LineartCandidate | None:
-    """The device's own 1-bit mode, the candidate for enhancement.
-
-    A writable ``--mode`` offering a 1-bit choice is set and reprobed. A
-    read-only ``--mode`` whose current value is already a 1-bit mode is
-    just as much a 1-bit scan and just as eligible for a native
-    enhancement; it simply cannot be set, so it contributes nothing to
-    emit and the probe reads the state as it stands.
-    """
-    if caps is None:
-        return None
-    capability = readable_capability(caps, "mode")
-    if capability is None:
-        return None
-    choice = _pick(_state_choices(capability), _MODE_PREDICATES["lineart"])
-    if choice is None:
-        return None
-    if not capability.settable:
-        return _LineartCandidate(choice, None, ())
-    return _LineartCandidate(choice, choice, (("--mode", choice),))
-
-
-def _native_faint_assessment(
-    candidate: _LineartCandidate, enhancement: NativeEnhancement
-) -> Assessment:
-    return Assessment(
-        requested="lineart-auto",
-        support=Support.NATIVE,
-        reason=enhancement.reason,
-        consequence=enhancement.notice,
-        backend_value=candidate.backend_value,
-        actual=candidate.effective,
-        effective="lineart-auto",
-    )
-
-
-def _software_faint(caps: dict[str, Capability] | None) -> Assessment:
-    """The information-preserving software path for ``lineart-auto``.
-
-    Prefers Gray, then Color, both converted by the guarded adaptive
-    threshold. A device that conclusively offers only ordinary 1-bit modes
-    is UNSUPPORTED: an unenhanced 1-bit scan cannot preserve the faint
-    shades the request is about, which is a failure to deliver, not a
-    warnable degradation. A read-only mode is state rather than a choice,
-    so the same rules run against its current value alone and nothing is
-    emitted for it: a device parked in Gray can still serve the request,
-    and one parked in plain 1-bit conclusively cannot. Missing or inactive
-    evidence stays UNKNOWN (best-effort; the pipeline still refuses an
-    unenhanced 1-bit result).
-    """
-    if caps is None:
-        return Assessment(
-            requested="lineart-auto",
-            support=Support.UNKNOWN,
-            reason="probe-failed",
-            consequence="capabilities could not be read; trying as requested",
-            effective="lineart-auto",
-        )
-    capability = readable_capability(caps, "mode")
-    choices = _state_choices(capability)
-    if capability is None or not choices:
-        inactive = caps.get("mode") is not None
-        return Assessment(
-            requested="lineart-auto",
-            support=Support.UNKNOWN,
-            reason="mode-option-inactive" if inactive else "no-mode-option",
-            consequence="the device does not advertise usable modes; "
-            "trying as requested",
-            effective="lineart-auto",
-        )
-    if not capability.settable:
-        return _unsettable(_match_software_faint(choices))
-    return _settable(_match_software_faint(choices))
-
-
-def _match_software_faint(choices: list[str]) -> Assessment:
-    """Match ``lineart-auto`` against the modes a device can deliver."""
-    for fallback, reason in (("gray", "adaptive-gray"), ("color", "adaptive-color")):
-        got = _pick(choices, _MODE_PREDICATES[fallback])
-        if got is not None:
-            return Assessment(
-                requested="lineart-auto",
-                support=Support.EMULATED,
-                reason=reason,
-                consequence=(
-                    f"the device scans '{got}'; ScanMole applies the guarded "
-                    "faint-originals threshold in software"
-                ),
-                backend_value=got,
-                actual=got,
-                effective="lineart-auto",
-            )
-    if _pick(choices, _MODE_PREDICATES["lineart"]) is not None:
-        return Assessment(
-            requested="lineart-auto",
-            support=Support.UNSUPPORTED,
-            reason="no-information-preserving-path",
-            consequence=(
-                "the device offers only plain 1-bit scanning, which cannot "
-                "preserve faint shades; select the ordinary B/W mode "
-                "(a numeric --lineart-threshold) instead"
-            ),
-        )
-    return Assessment(
-        requested="lineart-auto",
-        support=Support.UNSUPPORTED,
-        reason="no-matching-mode",
-        consequence=(
-            f"device has no mode matching 'lineart'; available: {', '.join(choices)}"
-        ),
-    )
-
-
-def advisory_faint_assessment(caps: dict[str, Capability] | None) -> Assessment:
-    """A frontend's optimistic ``lineart-auto`` verdict from one snapshot.
-
-    A native enhancement signature visible in the snapshot makes the choice
-    tentatively NATIVE, pending the scan-time set-and-reprobe confirmation;
-    otherwise the software verdict applies. Display only: command
-    construction never uses this (a tentative claim without the staged
-    settings would emit plain 1-bit lineart, the exact bug the faint mode
-    exists to avoid).
-    """
-    candidate = _native_lineart_candidate(caps)
-    if caps is not None and candidate is not None:
-        enhancement = detect_native_enhancement(caps)
-        if enhancement is not None:
-            return _native_faint_assessment(candidate, enhancement)
-    return _software_faint(caps)
-
-
-def resolve_faint_plan(
-    plan: Plan,
-    caps: dict[str, Capability] | None,
-    prober: Prober,
-    base_settings: Settings = (),
-) -> Plan:
-    """Resolve a ``lineart-auto`` plan through staged set-and-reprobe.
-
-    SANE option activity is state-dependent, so native recognition applies
-    the candidate 1-bit mode on top of ``base_settings`` (normally the
-    negotiated source) and classifies the reprobed snapshot; the Fujitsu
-    SDTC profile additionally requires ``--variance`` to stay active with
-    the complete ordered settings applied. Any failed or rejected probe
-    falls back to the information-preserving software path. ``prober``
-    performs the I/O; classification stays pure over the snapshots.
-    """
-    assessment, extra = _resolve_faint_mode(caps, prober, base_settings)
-    return Plan(
-        source=plan.source,
-        mode=assessment,
-        depth=_assess_depth(assessment, caps),
-        resolution=plan.resolution,
-        extra_options=extra,
-    )
-
-
-def _resolve_faint_mode(
-    caps: dict[str, Capability] | None,
-    prober: Prober,
-    base_settings: Settings,
-) -> tuple[Assessment, Settings]:
-    candidate = _native_lineart_candidate(caps)
-    if candidate is not None:
-        # A read-only candidate contributes no settings, so the reprobe
-        # sees the base state: exactly the snapshot the scan will run in.
-        applied = (*base_settings, *candidate.settings)
-        staged = prober(applied)
-        if staged is not None:
-            enhancement = detect_native_enhancement(staged)
-            if enhancement is not None and _enhancement_verified(
-                enhancement, applied, prober
-            ):
-                return (
-                    _native_faint_assessment(candidate, enhancement),
-                    enhancement.settings,
-                )
-    return _software_faint(caps), ()
-
-
-def _enhancement_verified(
-    enhancement: NativeEnhancement, applied: Settings, prober: Prober
-) -> bool:
-    if enhancement.verify_option is None:
-        return True
-    verified = prober((*applied, *enhancement.settings))
-    return (
-        verified is not None
-        and readable_capability(verified, enhancement.verify_option) is not None
-    )
-
-
-def _eight_bit_choice(caps: dict[str, Capability] | None) -> str | None:
-    """The value engaging an explicit 8-bit depth, if the device has one."""
-    if caps is None:
-        return None
-    capability = writable_capability(caps, "depth")
-    if capability is None:
-        return None
-    if capability.kind == "enum":
-        for choice in capability.choices:
-            found = re.search(r"\d+", choice)
-            if found is not None and int(found.group()) == 8:
-                return "8"
-        return None
-    if (
-        capability.kind == "range"
-        and capability.minimum is not None
-        and capability.maximum is not None
-        and capability.minimum <= 8 <= capability.maximum
-    ):
-        return "8"
-    return None
-
-
-def _assess_depth(
-    mode: Assessment, caps: dict[str, Capability] | None = None
-) -> Assessment:
-    """The internal acquisition depth implied by the negotiated mode.
-
-    The adaptive faint path pins an explicit 8-bit depth where the device
-    exposes an active one: the guarded threshold needs true 8-bit
-    brightness data, so the backend must not fall back to a 1-bit or
-    16-bit delivery. The value is carried as ``backend_value`` and emitted
-    by the scan command.
-    """
-    one_bit_out = mode.effective in ("lineart", "lineart-auto")
-    requested = "1" if mode.requested in ("lineart", "lineart-auto") else "8"
-    if mode.support is Support.UNKNOWN:
-        return Assessment(
-            requested=requested,
-            support=Support.UNKNOWN,
-            reason="follows-mode",
-            effective=requested,
-        )
-    if mode.support is Support.EMULATED:
-        adaptive = mode.reason in ("adaptive-gray", "adaptive-color")
-        return Assessment(
-            requested="1",
-            support=Support.EMULATED,
-            reason="software-1bit",
-            consequence="acquired at 8 bit, reduced to 1 bit in software",
-            backend_value=_eight_bit_choice(caps) if adaptive else None,
-            effective="1",
-        )
-    return Assessment(
-        requested=requested,
-        support=mode.support
-        if mode.support in (Support.NATIVE, Support.UNSUPPORTED)
-        else Support.DEGRADED,
-        reason="follows-mode",
-        effective="1" if one_bit_out else "8",
     )
 
 
@@ -898,7 +454,7 @@ def negotiate(
     return Plan(
         source=assess_source(caps, source),
         mode=mode_assessment,
-        depth=_assess_depth(mode_assessment, caps),
+        depth=assess_depth(mode_assessment, caps),
         resolution=assess_resolution(caps, resolution),
     )
 

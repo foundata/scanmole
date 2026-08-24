@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 import subprocess
 from dataclasses import replace
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from scanmole import assessment, faint, negotiation
 from scanmole.errors import DeviceError
 from scanmole.negotiation import (
     Plan,
@@ -1008,3 +1010,48 @@ def test_the_gui_blocks_faint_on_a_device_fixed_in_plain_1_bit() -> None:
         "    --mode Lineart|Gray [Gray] [read-only]\n    --resolution 300 [300]\n"
     )
     assert choice_support(gray).modes["lineart-auto"] is Support.EMULATED
+
+
+# ------------------------------------------------------- module boundary
+
+
+def test_the_negotiation_surface_survives_the_split() -> None:
+    # Three modules, one front door. The engine and both frontends have
+    # always asked scanmole.negotiation what a device supports, and they
+    # must not have to learn which of the three now answers.
+    assert negotiation.Support is assessment.Support
+    assert negotiation.Assessment is assessment.Assessment
+    assert negotiation.Plan is assessment.Plan
+    assert negotiation.resolve_faint_plan is faint.resolve_faint_plan
+    assert negotiation.advisory_faint_assessment is faint.advisory_faint_assessment
+    assert negotiation.detect_native_enhancement is faint.detect_native_enhancement
+    for name in negotiation.__all__:
+        assert hasattr(negotiation, name), name
+
+
+def test_the_shared_model_stays_below_both_assessors() -> None:
+    # The reason the model is its own module: the general assessment and
+    # the faint recognition both need the vocabulary, and each needs the
+    # other's verdicts. Only a layer underneath both keeps that acyclic,
+    # so the model must import neither of them.
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(Path(assessment.__file__).read_text())):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    assert "scanmole.negotiation" not in imported
+    assert "scanmole.faint" not in imported
+
+
+def test_the_faint_path_reaches_the_model_directly() -> None:
+    # The other half of the same rule: faint recognition takes the model
+    # from where it lives, never back through the facade that imports it.
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(Path(faint.__file__).read_text())):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    assert "scanmole.assessment" in imported
+    assert "scanmole.negotiation" not in imported

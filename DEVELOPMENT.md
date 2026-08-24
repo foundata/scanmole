@@ -72,6 +72,9 @@ scanmole/                      # repository root (uv workspace)
 │   │       ├── scanner.py     # scanimage acquisition, streaming page delivery
 │   │       ├── scancommand.py # the scanimage command line + EffectiveSettings
 │   │       ├── options.py     # -A capability parsing + source/mode/page-size mapping
+│   │       ├── negotiation.py # what a device supports, and how well
+│   │       ├── assessment.py  # the shared support model (Support/Assessment/Plan)
+│   │       ├── faint.py       # lineart-auto: native text enhancement or software
 │   │       ├── naming.py      # output filename templates (shared with the GUI preview)
 │   │       ├── devices.py     # device discovery
 │   │       ├── autocrop.py    # automatic paper-edge detection
