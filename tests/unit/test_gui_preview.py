@@ -314,10 +314,13 @@ def _preview_window(
     without any timing.
     """
     from scanmole_gui.app import MainWindow
+    from scanmole_gui.previewflow import PreviewFlow
 
-    monkeypatch.setattr("scanmole_gui.app.GLib.timeout_add", loop.timeout_add)
-    monkeypatch.setattr("scanmole_gui.app.GLib.source_remove", loop.source_remove)
-    monkeypatch.setattr("scanmole_gui.app.GLib.idle_add", loop.idle_add)
+    monkeypatch.setattr("scanmole_gui.previewflow.GLib.timeout_add", loop.timeout_add)
+    monkeypatch.setattr(
+        "scanmole_gui.previewflow.GLib.source_remove", loop.source_remove
+    )
+    monkeypatch.setattr("scanmole_gui.previewflow.GLib.idle_add", loop.idle_add)
 
     class Monitor:
         def __init__(self, folder: Path) -> None:
@@ -333,34 +336,27 @@ def _preview_window(
 
     monitors: list[Monitor] = []
 
+    def _make_monitor(folder: Path) -> Monitor:
+        monitor = Monitor(folder)
+        monitors.append(monitor)
+        return monitor
+
+    monkeypatch.setattr(
+        PreviewFlow, "_create_directory_monitor", staticmethod(_make_monitor)
+    )
+
     class Window:
-        _request_preview = MainWindow._request_preview
-        _preview_debounce_fired = MainWindow._preview_debounce_fired
-        _start_preview = MainWindow._start_preview
-        _apply_preview = MainWindow._apply_preview
-        _watch_output_folder = MainWindow._watch_output_folder
-        _on_output_folder_changed = MainWindow._on_output_folder_changed
-        _stop_preview_monitor = MainWindow._stop_preview_monitor
-        _suspend_preview = MainWindow._suspend_preview
-        _stop_preview = MainWindow._stop_preview
+        # The window keeps deciding when to ask and what a look is about;
+        # the flow owns everything between the request and the rendered
+        # line. Both halves are the production ones.
+        _preview_alive = MainWindow._preview_alive
+        _preview_inputs = MainWindow._preview_inputs
         _on_visible_changed = MainWindow._on_visible_changed
         _on_active_changed = MainWindow._on_active_changed
-
-        @staticmethod
-        def _create_directory_monitor(folder: Path) -> Monitor:
-            monitor = Monitor(folder)
-            monitors.append(monitor)
-            return monitor
 
         def __init__(self) -> None:
             self._released = False
             self._closing = False
-            self._preview_generation = 0
-            self._preview_busy = False
-            self._preview_again = False
-            self._preview_debounce_id: int | None = None
-            self._preview_monitor: Any = None
-            self._preview_watched: Path | None = None
             self.device: str | None = "test:0"
             self.visible = True
             self.active = True
@@ -380,9 +376,28 @@ def _preview_window(
                     window.rendered.append(text)
 
             self._form = Form()
+            self._preview = PreviewFlow(
+                alive=self._preview_alive,  # type: ignore[misc]
+                inputs=self._preview_inputs,  # type: ignore[misc]
+                render=lambda text: self._form.set_preview(text),
+            )
 
         def _selected_device(self) -> str | None:
             return self.device
+
+        # The lifecycle state the assertions below read. Reaching into the
+        # flow happens here alone, so a rename stays a one-line change.
+        @property
+        def monitor(self) -> Any:
+            return self._preview._monitor
+
+        @property
+        def debounce_id(self) -> int | None:
+            return self._preview._debounce_id
+
+        @property
+        def rerun_pending(self) -> bool:
+            return self._preview._again
 
         def get_visible(self) -> bool:
             return self.visible
@@ -412,7 +427,7 @@ def _preview_window(
 
         return type("Thread", (), {"start": staticmethod(start)})()
 
-    monkeypatch.setattr("scanmole_gui.app.threading.Thread", inline)
+    monkeypatch.setattr("scanmole_gui.previewflow.threading.Thread", inline)
 
     return window
 
@@ -431,7 +446,7 @@ def test_the_preview_reflects_what_is_already_in_the_folder(
     window = _preview_window(tmp_path, monkeypatch, loop)
     (tmp_path / "scan_001.pdf").touch()
 
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
 
     assert window.rendered == ["scan_002.pdf"]
@@ -447,7 +462,7 @@ def test_a_burst_of_events_collapses_into_one_look(
     window = _preview_window(tmp_path, monkeypatch, loop)
 
     for _ in range(5):  # an atomic replace emits several monitor events
-        window._request_preview()
+        window._preview.request()
 
     assert len(loop.timeouts) == 1  # four were cancelled again
     assert len(loop.removed) == 4
@@ -461,12 +476,12 @@ def test_a_monitor_event_advances_the_preview(
 ) -> None:
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop)
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
     assert window.rendered == ["scan_001.pdf"]
 
     (tmp_path / "scan_001.pdf").touch()  # another process took the name
-    monitor = window._preview_monitor
+    monitor = window.monitor
     assert monitor.handler is not None
     monitor.handler(monitor)
     _settle(window, loop)
@@ -486,12 +501,12 @@ def test_a_worker_finishing_after_its_inputs_changed_never_renders(
     other = tmp_path / "other"
     other.mkdir()
 
-    window._request_preview()
+    window._preview.request()
     loop.fire_timeouts()  # A starts and is held before it reports
     assert window.held, "worker A should be in flight"
 
     window._form.folder = staticmethod(lambda: str(other))
-    window._request_preview()  # B is debounced; A is now stale
+    window._preview.request()  # B is debounced; A is now stale
 
     window.release()  # A completes first
     loop.fire_idles()
@@ -511,12 +526,12 @@ def test_changes_during_one_look_collapse_into_a_single_rerun(
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
 
-    window._request_preview()
+    window._preview.request()
     loop.fire_timeouts()  # A is in flight
     for _ in range(3):  # three changes while A works
-        window._request_preview()
+        window._preview.request()
         loop.fire_timeouts()  # each debounce fires into the busy worker
-    assert window._preview_again is True
+    assert window.rerun_pending is True
     assert window.started == 1  # no second worker was ever launched
 
     window.release()  # A completes, stale, and hands over to the rerun
@@ -534,13 +549,13 @@ def test_teardown_invalidates_an_active_worker_without_a_rerun(
 ) -> None:
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
-    window._request_preview()
+    window._preview.request()
     loop.fire_timeouts()
-    window._request_preview()  # a rerun would be pending
+    window._preview.request()  # a rerun would be pending
     loop.fire_timeouts()
-    assert window._preview_again is True
+    assert window.rerun_pending is True
 
-    window._stop_preview()
+    window._preview.stop()
     window.release()
     loop.fire_idles()
 
@@ -554,16 +569,16 @@ def test_hiding_the_window_stops_watching_and_starts_nothing(
 ) -> None:
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
-    window._request_preview()
+    window._preview.request()
     loop.fire_timeouts()  # A is in flight
-    monitor = window._preview_monitor
+    monitor = window.monitor
     assert monitor is not None
 
     window.visible = False
     window._on_visible_changed()
 
     assert monitor.cancelled is True
-    assert window._preview_monitor is None
+    assert window.monitor is None
     assert loop.timeouts == {}  # no worker, no debounce armed
     monitor.handler(monitor)  # a late event from the dropped monitor
     assert loop.timeouts == {}
@@ -579,7 +594,7 @@ def test_hiding_the_window_stops_watching_and_starts_nothing(
     loop.fire_idles()
 
     assert window.rendered == ["scan_001.pdf"]
-    assert window._preview_monitor is not monitor  # a fresh one
+    assert window.monitor is not monitor  # a fresh one
 
 
 @_NEEDS_GI
@@ -588,15 +603,15 @@ def test_focus_alone_neither_refreshes_nor_drops_the_monitor(
 ) -> None:
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop)
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
-    monitor = window._preview_monitor
+    monitor = window.monitor
 
     window.active = False
     window._on_active_changed()
 
     assert loop.timeouts == {}  # losing focus asks for no filesystem work
-    assert window._preview_monitor is monitor  # still the right folder
+    assert window.monitor is monitor  # still the right folder
 
     window.active = True
     window._on_active_changed()
@@ -610,23 +625,23 @@ def test_replacing_the_folder_stops_the_previous_monitor(
 ) -> None:
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop)
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
-    first = window._preview_monitor
+    first = window.monitor
     assert first is not None
 
     other = tmp_path / "other"
     other.mkdir()
     window._form.folder = staticmethod(lambda: str(other))
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
 
     assert first.cancelled is True
-    assert window._preview_monitor is not first
+    assert window.monitor is not first
     # An event from the old monitor is not this folder's news.
     before = list(window.rendered)
-    window._on_output_folder_changed(first)
-    assert window._preview_debounce_id is None
+    window._preview._on_folder_changed(first)
+    assert window.debounce_id is None
     assert window.rendered == before
 
 
@@ -636,22 +651,52 @@ def test_teardown_stops_the_monitor_and_the_pending_debounce(
 ) -> None:
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop)
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
-    monitor = window._preview_monitor
-    window._request_preview()  # a debounce is armed again
-    assert window._preview_debounce_id is not None
+    monitor = window.monitor
+    window._preview.request()  # a debounce is armed again
+    assert window.debounce_id is not None
 
-    window._stop_preview()
+    window._preview.stop()
 
     assert monitor.cancelled is True
-    assert window._preview_monitor is None
-    assert window._preview_debounce_id is None
+    assert window.monitor is None
+    assert window.debounce_id is None
     assert loop.timeouts == {}
     # Anything still in flight is now stale by generation.
     window._released = True
-    window._request_preview()
+    window._preview.request()
     assert loop.timeouts == {}
+
+
+@_NEEDS_GI
+def test_nothing_late_reaches_a_closed_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Close is the ordering the window really uses: it releases first and
+    # tears the flow down after. Everything still in flight at that point
+    # (a worker, the monitor's next event, the pending rerun) has to land
+    # on widgets that may already be gone, so none of it may render or arm
+    # anything.
+    loop = _Loop()
+    window = _preview_window(tmp_path, monkeypatch, loop, hold=True)
+    window._preview.request()
+    loop.fire_timeouts()  # a worker is in flight
+    monitor = window.monitor
+    assert monitor is not None and window.held
+
+    window._released = True  # the close request, in its own order
+    window._preview.stop()
+
+    assert monitor.cancelled is True  # the monitor goes with the window
+    assert window.monitor is None and window.debounce_id is None
+    monitor.handler(monitor)  # a late directory event
+    assert loop.timeouts == {}  # nothing armed for a window that is going
+    window.release()  # the worker reports into the closed window
+    loop.fire_idles()
+
+    assert window.rendered == []
+    assert window.started == 1  # and no rerun was launched behind it
 
 
 @_NEEDS_GI
@@ -663,14 +708,14 @@ def test_an_unavailable_folder_renders_a_state_instead_of_raising(
     missing = tmp_path / "not-there"
     window._form.folder = staticmethod(lambda: str(missing))
 
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
 
     assert window.rendered == ["folder not found"]
     assert not missing.exists()  # previewing never creates the folder
 
     missing.mkdir()  # the user corrects it
-    window._request_preview()
+    window._preview.request()
     _settle(window, loop)
     assert window.rendered[-1] == "scan_001.pdf"
 
@@ -684,13 +729,13 @@ def test_the_preview_arms_no_repeating_timer(
     loop = _Loop()
     window = _preview_window(tmp_path, monkeypatch, loop)
 
-    window._request_preview()
-    token = window._preview_debounce_id
+    window._preview.request()
+    token = window.debounce_id
     assert token is not None
     assert loop.timeouts[token]() is False  # GLib.SOURCE_REMOVE
     loop.fire_idles()
 
-    assert window._preview_debounce_id is None
+    assert window.debounce_id is None
     assert len(window.rendered) == 1
 
 

@@ -101,6 +101,8 @@ scanmole/                      # repository root (uv workspace)
 │           ├── session.py     # session state fold + completion (GTK-free)
 │           ├── runner.py      # scan subprocess supervision (GTK-free)
 │           ├── probing.py     # capability probe flow (GTK-free)
+│           ├── preview.py     # advisory output-name inspection (GTK-free)
+│           ├── previewflow.py # the filename preview's debounce, worker and monitor
 │           ├── discovery.py   # device listing decisions (GTK-free)
 │           ├── settings.py    # gui.json load/store (GTK-free)
 │           ├── desktop.py     # desktop entry + icon install (GTK-free)

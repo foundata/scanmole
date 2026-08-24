@@ -18,7 +18,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -69,11 +68,7 @@ from scanmole_gui.form import (  # noqa: E402
     hardware_button_value,
 )
 from scanmole_gui.i18n import _, ngettext  # noqa: E402  # after gi setup
-from scanmole_gui.preview import (  # noqa: E402
-    PreviewOutcome,
-    preview_outcome,
-    preview_text,
-)
+from scanmole_gui.previewflow import PreviewFlow, PreviewInputs  # noqa: E402
 from scanmole_gui.probing import (  # noqa: E402
     CapabilityFlow,
     CapabilityUpdate,
@@ -131,13 +126,6 @@ Presence changes are rare, so the cadence is slower than the empty-list
 pickup, and an unchanged result is applied quietly: no widget writes,
 no renegotiation, no result-bar repaint.
 """
-
-PREVIEW_DEBOUNCE_MS = 300
-"""How long preview refresh requests coalesce before the folder is read.
-
-Atomic replacements and temporary files make a directory monitor emit
-several events for one logical change, and typing a template emits one
-per keystroke. Both collapse into a single look at the folder."""
 
 SENSOR_POLL_SECONDS = 2.5
 """Pause between completed idle sensor polls.
@@ -314,13 +302,13 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # The filename preview: a debounced, generation-tagged look at the
         # output folder plus the monitor that notices someone else writing
         # into it. Local filesystem work, deliberately separate from the
-        # advisory commands that own scanner access.
-        self._preview_generation = 0
-        self._preview_busy = False
-        self._preview_again = False
-        self._preview_debounce_id: int | None = None
-        self._preview_monitor: Gio.FileMonitor | None = None
-        self._preview_watched: Path | None = None
+        # advisory commands that own scanner access. The window decides
+        # when to ask and what a look is about; the flow owns the rest.
+        self._preview = PreviewFlow(
+            alive=self._preview_alive,
+            inputs=self._preview_inputs,
+            render=lambda text: self._form.set_preview(text),
+        )
         self._selection_block_reason: str | None = None
         self._devices: list[dict[str, str]] = []
         self._run_folder = Path(default_folder())
@@ -455,7 +443,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
             on_hardware_button_selected=self._on_hardware_button_selected,
             on_insert_to_scan=self._on_insert_to_scan_toggled,
             on_open_settings=self._on_settings_action,
-            on_preview_stale=self._request_preview,
+            on_preview_stale=self._preview.request,
             device_for_preview=self._selected_device,
             effective_resolution=self._effective_resolution,
         )
@@ -1010,121 +998,24 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
 
     # ------------------------------------------------- filename preview
 
-    def _request_preview(self) -> None:
-        """Note that the inputs changed and coalesce a burst into one look.
+    def _preview_alive(self) -> bool:
+        """Whether a preview may still be started or rendered."""
+        return not (self._released or self._closing)
 
-        The generation advances here, not when a worker eventually starts:
-        the moment the folder, template or device changes, whatever a
-        running worker is about to report describes something else and
-        must not reach the row. The debounce then collapses the burst, so
-        an atomic replacement or a run of keystrokes costs one look.
-        """
-        if self._released or self._closing:
-            return
-        self._preview_generation += 1
-        # Following the selected folder is part of asking: a monitor only
-        # reports on the directory it was created for.
-        self._watch_output_folder()
-        if self._preview_debounce_id is not None:
-            GLib.source_remove(self._preview_debounce_id)
-        self._preview_debounce_id = GLib.timeout_add(
-            PREVIEW_DEBOUNCE_MS, self._preview_debounce_fired
+    def _preview_inputs(self) -> PreviewInputs:
+        """The form values one look at the output folder is about."""
+        return PreviewInputs(
+            folder=Path(self._form.folder()).expanduser(),
+            template=self._form.preview_template(),
+            device=self._selected_device(),
         )
-
-    def _preview_debounce_fired(self) -> bool:
-        """Start the coalesced look once the burst has settled."""
-        self._preview_debounce_id = None
-        self._start_preview()
-        return bool(GLib.SOURCE_REMOVE)
-
-    def _start_preview(self) -> None:
-        """Look at the output folder off the main thread, once at a time."""
-        if self._released or self._closing:
-            return
-        if self._preview_busy:
-            # One worker at a time: this run's inputs are already the
-            # newest, so a single rerun after the current one suffices
-            # however many changes arrive meanwhile.
-            self._preview_again = True
-            return
-        generation = self._preview_generation
-        template = str(
-            Path(self._form.folder()).expanduser() / self._form.preview_template()
-        )
-        device = self._selected_device()
-        self._preview_busy = True
-
-        def work() -> None:
-            outcome = preview_outcome(template, device)
-            GLib.idle_add(self._apply_preview, generation, outcome)
-
-        threading.Thread(target=work, name="scanmole-preview", daemon=True).start()
-
-    def _apply_preview(self, generation: int, outcome: PreviewOutcome) -> bool:
-        """Render a preview result, unless its inputs have moved on.
-
-        A stale result is dropped but still hands over: the rerun it
-        releases is the one that will read the newest inputs.
-        """
-        self._preview_busy = False
-        fresh = generation == self._preview_generation
-        if fresh and not (self._released or self._closing):
-            self._form.set_preview(preview_text(outcome))
-        if self._preview_again:
-            self._preview_again = False
-            self._start_preview()
-        return bool(GLib.SOURCE_REMOVE)
-
-    def _watch_output_folder(self) -> None:
-        """Monitor the selected folder, replacing any previous monitor."""
-        folder = Path(self._form.folder()).expanduser()
-        if folder == self._preview_watched and self._preview_monitor is not None:
-            return
-        self._stop_preview_monitor()
-        self._preview_watched = folder
-        try:
-            monitor = self._create_directory_monitor(folder)
-        except GLib.Error as exc:
-            # No monitor (an unmonitorable filesystem, a missing folder):
-            # the preview stays on its last advisory result until some
-            # other refresh event arrives. Polling instead would be worse.
-            LOGGER.debug("cannot monitor %s: %s", folder, exc)
-            return
-        monitor.connect("changed", self._on_output_folder_changed)
-        self._preview_monitor = monitor
-
-    @staticmethod
-    def _create_directory_monitor(folder: Path) -> Gio.FileMonitor:
-        """Start watching ``folder``; the one place that touches Gio here.
-
-        Raises:
-            GLib.Error: If the location cannot be monitored.
-        """
-        return Gio.File.new_for_path(str(folder)).monitor_directory(
-            Gio.FileMonitorFlags.WATCH_MOVES, None
-        )
-
-    def _on_output_folder_changed(
-        self, monitor: Gio.FileMonitor, *_args: object
-    ) -> None:
-        """A directory event: refresh unless it came from an old folder."""
-        if monitor is not self._preview_monitor:
-            return  # the previous folder's monitor, still finishing up
-        self._request_preview()
-
-    def _stop_preview_monitor(self) -> None:
-        """Cancel the directory monitor, if one is running."""
-        if self._preview_monitor is not None:
-            self._preview_monitor.cancel()
-            self._preview_monitor = None
-        self._preview_watched = None
 
     def _on_visible_changed(self, *_args: object) -> None:
         """Watch the folder while visible, and only while visible."""
         if self.get_visible():
-            self._request_preview()
+            self._preview.request()
         else:
-            self._suspend_preview()
+            self._preview.suspend()
 
     def _on_active_changed(self, *_args: object) -> None:
         """Refresh when the window regains focus, never when it loses it.
@@ -1134,21 +1025,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         for a visible window would only cost the next refresh.
         """
         if self.is_active():
-            self._request_preview()
-
-    def _suspend_preview(self) -> None:
-        """Stop watching while hidden; a later show starts again."""
-        self._stop_preview_monitor()
-        if self._preview_debounce_id is not None:
-            GLib.source_remove(self._preview_debounce_id)
-            self._preview_debounce_id = None
-        # Anything in flight now describes a window nobody is looking at.
-        self._preview_generation += 1
-        self._preview_again = False
-
-    def _stop_preview(self) -> None:
-        """Teardown: drop the monitor, the debounce and any pending rerun."""
-        self._suspend_preview()
+            self._preview.request()
 
     def _window_suspended(self) -> bool:
         """Whether the window is currently hidden from the user.
@@ -1592,7 +1469,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         self._update_scan_enabled()
         # The run either produced the previewed file or freed nothing;
         # either way the next name is now a different question.
-        self._request_preview()
+        self._preview.request()
         self._append_log(f"[gui] scanmole exited with code {exit_code}")
         # The scan takeover reset the capability flow; renegotiate the
         # selected device's availability now that it is free again.
@@ -1665,7 +1542,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         persisted against the live widgets, and reading the dead window
         here would overwrite that snapshot with zeros and defaults.
         """
-        self._stop_preview()
+        self._preview.stop()
         if not self._released:
             self._persist_ui_state()
         self._released = True
@@ -1737,7 +1614,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # result may touch it while it is closing.
         self._released = True
         self._stop_sensor_polling()
-        self._stop_preview()
+        self._preview.stop()
         self._advisory.cancel_pending(close=True)
         runner = self._runner
         if runner is not None and runner.is_running():

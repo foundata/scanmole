@@ -13,6 +13,21 @@ import pytest
 from scanmole.external import run_command
 from scanmole_gui.advisory import AdvisoryCommands
 
+
+class _PreviewFlowDouble:
+    """Stands in for the preview flow: the window only asks it or stops it."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+        self.stopped = False
+
+    def request(self) -> None:
+        self.requests += 1
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 _NEEDS_GI = pytest.mark.skipif(
     importlib.util.find_spec("gi") is None, reason="needs PyGObject"
 )
@@ -209,17 +224,12 @@ def test_scan_start_cancels_advisory_work_before_the_runner(
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
 
-        def _request_preview(self) -> None:
-            self.previews = getattr(self, "previews", 0) + 1
-
-        def _stop_preview(self) -> None:
-            self.preview_stopped = True
-
         def _stop_sensor_polling(self) -> None:
             order.append("stop-poller")
 
         def __init__(self) -> None:
             self._runner = None
+            self._preview = _PreviewFlowDouble()
             self._advisory = Advisory()
             self._flow = Flow()
             self._searching = True
@@ -316,17 +326,12 @@ def test_no_advisory_child_survives_into_the_runner(
     class Window:
         _on_scan_clicked = MainWindow._on_scan_clicked
 
-        def _request_preview(self) -> None:
-            self.previews = getattr(self, "previews", 0) + 1
-
-        def _stop_preview(self) -> None:
-            self.preview_stopped = True
-
         def _stop_sensor_polling(self) -> None:
             pass
 
         def __init__(self) -> None:
             self._runner = None
+            self._preview = _PreviewFlowDouble()
             self._advisory = supervisor
             self._flow = CapabilityFlow()
             self._searching = False
@@ -414,11 +419,9 @@ def test_scan_exit_starts_a_fresh_negotiation() -> None:
     class Window:
         _on_process_exit = MainWindow._on_process_exit
 
-        def _request_preview(self) -> None:
-            self.previews = getattr(self, "previews", 0) + 1
-
         def __init__(self, runner: object) -> None:
             self._runner = runner
+            self._preview = _PreviewFlowDouble()
             self._form = Form()
             self._session = SessionState(drop_blanks=True)
             self._run_folder = Path("/nonexistent")
@@ -444,11 +447,15 @@ def test_scan_exit_starts_a_fresh_negotiation() -> None:
     window._on_process_exit(runner, 0)  # type: ignore[misc, arg-type]
     assert calls == ["negotiate"]
     assert window._runner is None
+    # The run either produced the previewed name or freed nothing, so the
+    # next free name is a different question either way.
+    assert window._preview.requests == 1
 
     calls.clear()
     stale = Window(object())
     stale._on_process_exit(object(), 0)  # type: ignore[misc, arg-type]
     assert calls == []  # a stale exit changes nothing
+    assert stale._preview.requests == 0  # and asks for no look either
 
 
 @_NEEDS_GI

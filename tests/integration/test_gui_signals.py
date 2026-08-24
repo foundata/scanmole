@@ -17,6 +17,21 @@ from typing import Any
 
 import pytest
 
+
+class _PreviewFlowDouble:
+    """Stands in for the preview flow: the window only asks it or stops it."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+        self.stopped = False
+
+    def request(self) -> None:
+        self.requests += 1
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 pytestmark = pytest.mark.integration
 
 # The gi check matters for the release matrix: its isolated venvs have a
@@ -119,18 +134,13 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
 
         def __init__(self) -> None:
             self.persisted = 0
+            self._preview = _PreviewFlowDouble()
             self._released = False
             self._advisory = AdvisoryCommands()
             self._runner: Runner | None = Runner()
 
         def _persist_ui_state(self) -> None:
             self.persisted += 1
-
-        def _request_preview(self) -> None:
-            self.previews = getattr(self, "previews", 0) + 1
-
-        def _stop_preview(self) -> None:
-            self.preview_stopped = True
 
         def _stop_sensor_polling(self) -> None:
             pass
@@ -139,6 +149,9 @@ def test_shutdown_now_persists_and_stops_the_runner_synchronously() -> None:
     window._shutdown_now()  # type: ignore[misc]
     assert window.persisted == 1
     assert window._runner is not None and window._runner.shutdowns == 1
+    # The preview owns a debounce, a worker and a directory monitor, none
+    # of which may outlive the main loop that would have run them.
+    assert window._preview.stopped is True
 
     idle = Window()
     idle._runner = None
@@ -297,18 +310,13 @@ def test_shutdown_after_a_close_never_persists_again() -> None:
 
         def __init__(self) -> None:
             self.persisted = 0
+            self._preview = _PreviewFlowDouble()
             self._released = True  # the close request already ran
             self._advisory = AdvisoryCommands()
             self._runner: Runner | None = Runner()
 
         def _persist_ui_state(self) -> None:
             self.persisted += 1
-
-        def _request_preview(self) -> None:
-            self.previews = getattr(self, "previews", 0) + 1
-
-        def _stop_preview(self) -> None:
-            self.preview_stopped = True
 
         def _stop_sensor_polling(self) -> None:
             pass
@@ -318,6 +326,7 @@ def test_shutdown_after_a_close_never_persists_again() -> None:
 
     assert window.persisted == 0  # the close-time snapshot stays untouched
     assert window._runner is not None and window._runner.shutdowns == 1
+    assert window._preview.stopped is True  # torn down again, harmlessly
 
 
 @_NEEDS_GI
