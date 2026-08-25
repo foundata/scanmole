@@ -91,6 +91,8 @@ python3 scripts/scanner-evidence/skew_oracle.py \
 
 Capture with the **same physical sheets** throughout, so paper differences cannot masquerade as mechanism differences, and **alternate the run order** between backend-off and backend-on so feeder warm-up and roller wear land on both arms. Each pair is: backend deskew off plus ScanMole's host path, against backend deskew on with the host path out of the way (`--deskew-method scanner`).
 
+**Feed gently for an arm the oracle must grade unmodified** (`off`, or a backend arm without host correction). Its row-based detector has a practical ceiling well below the eleven degrees its own linking bound would allow, and lower still in Gray than in Lineart (see `MAX_TRACK_STEP_MM` in `skew_oracle.py`); past it a frame reports no angle rather than a large one, which wastes the feed. An arm ScanMole has already straightened (`auto`, `scanmole`) has no such limit, since it lands near zero regardless of the feed. **Independent hand-feeds are not a paired comparison**: three feeds each of an off/on pair can land at angles far enough apart that a real but modest correction ratio disappears into feed-to-feed noise, or reverses. Where the correction fraction itself is the question, either use a fixture that reproduces one fixed skew, or capture enough repetitions per arm to average past the variance; a handful of independently hand-fed sheets settles a mechanism that clearly fails (this runbook's own qualification thresholds) but not a modest one.
+
 Minimum matrix, per mechanism:
 
 - P4, Gray and Color at 300 dpi

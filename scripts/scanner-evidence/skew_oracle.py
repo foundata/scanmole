@@ -83,7 +83,15 @@ MAX_TRACK_STEP_MM = 1.5
 
 Bounds the linking, and at the same time bounds the angle this can
 measure at all: 1.5 mm over a slab of about 7.5 mm is roughly eleven
-degrees, far past anything a feeder produces.
+degrees. In practice MIN_SLAB_COVERAGE fails first and well below that,
+because a rule tilted far enough within a slab no longer fills one row
+to the required width. Measured hand-fed on one iX500 session
+(2026-08-25): Gray frames measured cleanly at 0.84 to 0.98 degrees and
+reported no angle at 2.50 degrees and above; Lineart frames reported no
+angle from 3.12 degrees up (not bracketed below that). Gray's
+anti-aliased rules narrow under the coverage threshold sooner than
+Lineart's solid ones. Feed gently for an arm this oracle needs to grade
+unmodified; past its range it reports no angle rather than a wrong one.
 """
 
 RULE_SPACING_MM = 60.0
