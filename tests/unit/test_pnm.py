@@ -516,6 +516,208 @@ def test_coherent_ink_mean_reflects_the_region_only() -> None:
     assert found.mean < 0.2
 
 
+def test_ink_mask_matches_the_written_binarization(tmp_path: Path) -> None:
+    # One conversion, two consumers: the in-memory evidence mask must be
+    # byte-for-byte what binarize_pnm would have written to disk.
+    from scanmole.pnm import pnm_ink_mask
+
+    frame = b"P5\n40 20\n255\n" + bytes(
+        (x * 13 + y * 7) % 256 for y in range(20) for x in range(40)
+    )
+    mask = pnm_ink_mask(frame, 0.5)
+    assert mask is not None
+
+    page = _write(tmp_path / "page.pgm", frame)
+    assert binarize_pnm(page, 0.5) is True
+
+    assert mask == page.read_bytes()
+    assert pnm_ink_mask(mask, 0.5) is None  # already 1-bit: nothing to do
+    assert pnm_ink_mask(b"not a pnm", 0.5) is None
+
+
+def test_evidence_mask_sees_luminance_where_ink_mask_sees_green() -> None:
+    # The two masks answer different questions: software lineart keeps
+    # its green-channel contract, evidence must see chromatic ink. Dark
+    # green is the separating case: bright in green, dark to the eye.
+    from scanmole.pnm import pnm_evidence_mask, pnm_ink_mask
+
+    header = b"P6\n8 1\n255\n"
+    pixels = (
+        bytes((0, 150, 0))  # dark green: evidence ink, invisible to green
+        + bytes((150, 0, 0))  # dark red: ink to both
+        + bytes((0, 0, 150))  # dark blue: ink to both
+        + bytes((255, 255, 0))  # bright yellow: ink to neither
+        + bytes((255, 255, 255)) * 4
+    )
+    frame = header + pixels
+
+    evidence = pnm_evidence_mask(frame, 0.5)
+    ink = pnm_ink_mask(frame, 0.5)
+
+    assert evidence is not None and ink is not None
+    assert evidence.split(b"\n", 2)[2] == bytes([0b11100000])
+    assert ink.split(b"\n", 2)[2] == bytes([0b01100000])  # green-blind
+
+
+def test_evidence_mask_matches_ink_mask_for_gray_and_passes_p4_through(
+    tmp_path: Path,
+) -> None:
+    # P5 evidence is byte for byte the software-lineart conversion, a P4
+    # buffer is already the mask, and unsupported input stays refused
+    # exactly like the ink mask refuses it.
+    from scanmole.pnm import pnm_evidence_mask, pnm_ink_mask
+
+    gray = b"P5\n40 20\n255\n" + bytes(
+        (x * 13 + y * 7) % 256 for y in range(20) for x in range(40)
+    )
+    assert pnm_evidence_mask(gray, 0.5) == pnm_ink_mask(gray, 0.5)
+
+    deep = b"P5\n4 2\n65535\n" + bytes(range(16))
+    assert pnm_evidence_mask(deep, 0.5) == pnm_ink_mask(deep, 0.5)
+
+    p4 = pnm_ink_mask(gray, 0.5)
+    assert p4 is not None
+    assert pnm_evidence_mask(p4, 0.5) is p4  # already binary: unchanged
+
+    assert pnm_evidence_mask(b"not a pnm", 0.5) is None
+    with pytest.raises(ValueError):
+        pnm_evidence_mask(b"P6\n100 100\n255\n\x00\x01", 0.5)
+
+
+def _p6_pixels(samples: list[tuple[int, int, int]], maxval: int) -> bytes:
+    deep = maxval > 255
+    return b"".join(
+        b"".join(v.to_bytes(2, "big") if deep else bytes([v]) for v in rgb)
+        for rgb in samples
+    )
+
+
+_SUPPORTED_P6_MAXVALS = [1, 2, 3, 255, 65535]
+"""What the scanner path can produce: SANE depths are 8 or 16 bits, so
+scanimage writes maxval 255 or 65535; one-byte maxima lose no precision
+either way, and 65535's high-byte boundary lands on the rounded
+threshold midpoint exactly."""
+
+_UNSUPPORTED_P6_MAXVALS = [256, 300, 511, 512, 600, 767, 768, 1023]
+"""Deep maxima no scanner writes: their high bytes cannot recover the
+threshold semantics, so evidence is conservatively refused."""
+
+
+def _boundary_cut(maxval: int) -> int:
+    """The P5-equivalent ink cutoff at threshold 0.5 for this range."""
+    return max(1, round(0.5 * maxval))
+
+
+@pytest.mark.parametrize("maxval", _SUPPORTED_P6_MAXVALS)
+def test_evidence_mask_is_threshold_exact_at_supported_p6_maxvals(
+    maxval: int,
+) -> None:
+    # For every supported range the neutral samples immediately below,
+    # exactly at and immediately above the cutoff must classify exactly
+    # like the equivalent P5 gray would: below is ink, the cutoff itself
+    # and everything brighter is paper, black is ink, white is paper.
+    from scanmole.pnm import pnm_evidence_mask
+
+    cut = _boundary_cut(maxval)
+    samples = [
+        (0, True),  # black
+        (max(0, cut - 1), cut - 1 >= 0 and cut - 1 < cut),  # just below
+        (cut, False),  # exactly at the cutoff
+        (min(maxval, cut + 1), False),  # just above
+        (maxval, False),  # declared-maximum white
+    ]
+    pixels = _p6_pixels([(v, v, v) for v, _ink in samples], maxval)
+    frame = b"P6\n%d 1\n%d\n" % (len(samples), maxval) + pixels
+
+    mask = pnm_evidence_mask(frame, 0.5)
+
+    assert mask is not None
+    bits = mask.split(b"\n", 2)[2][0]
+    for index, (value, ink) in enumerate(samples):
+        got = bool(bits & (0x80 >> index))
+        assert got is ink, f"maxval {maxval}, sample {value}"
+
+
+@pytest.mark.parametrize("maxval", _UNSUPPORTED_P6_MAXVALS)
+def test_unsupported_deep_p6_maxvals_yield_no_evidence(maxval: int) -> None:
+    # The high byte cannot recover these thresholds: at maxval 256 a
+    # neutral 200 (0.78, paper) would read as false ink, and at 600 a
+    # neutral 256 (0.43, ink) as false paper. No scanner writes such
+    # frames, so evidence is refused outright rather than guessed at;
+    # the callers then leave their primary verdicts standing.
+    from scanmole.pnm import pnm_evidence_mask
+
+    probes = [0, 200, min(maxval, 256), maxval]
+    pixels = _p6_pixels([(v, v, v) for v in probes], maxval)
+    frame = b"P6\n%d 1\n%d\n" % (len(probes), maxval) + pixels
+
+    assert pnm_evidence_mask(frame, 0.5) is None
+
+
+@pytest.mark.parametrize("scale", [1, 257])
+def test_chromatic_evidence_around_the_luminance_boundary(scale: int) -> None:
+    # Red, green and blue mixes just below the luminance cutoff are ink,
+    # just-above mixes are paper, at 8 bit and scaled to 16 bit alike.
+    from scanmole.pnm import pnm_evidence_mask
+
+    maxval = 255 * scale
+    samples = [
+        ((100, 140, 100), True),  # (r + 2g + b) / 4 = 120: ink
+        ((170, 90, 140), True),  # 122: ink
+        ((60, 150, 90), True),  # 112: ink, the green-heavy case
+        ((160, 140, 120), False),  # 140: paper
+        ((255, 140, 255), False),  # 197: paper
+    ]
+    pixels = _p6_pixels(
+        [(r * scale, g * scale, b * scale) for (r, g, b), _ink in samples], maxval
+    )
+    frame = b"P6\n%d 1\n%d\n" % (len(samples), maxval) + pixels
+
+    mask = pnm_evidence_mask(frame, 0.5)
+
+    assert mask is not None
+    bits = mask.split(b"\n", 2)[2][0]
+    for index, (rgb, ink) in enumerate(samples):
+        got = bool(bits & (0x80 >> index))
+        assert got is ink, f"scale {scale}, sample {rgb}"
+
+
+@pytest.mark.parametrize("maxval", [1, 255, 65535])
+def test_evidence_mask_pads_odd_p6_widths_at_any_depth(maxval: int) -> None:
+    from scanmole.pnm import pnm_evidence_mask
+
+    black, white = (0, 0, 0), (maxval, maxval, maxval)
+    samples = [black if i % 2 == 0 else white for i in range(11)]
+    frame = b"P6\n11 2\n%d\n" % maxval + _p6_pixels(samples * 2, maxval)
+
+    mask = pnm_evidence_mask(frame, 0.5)
+
+    assert mask is not None
+    raster = mask.split(b"\n", 2)[2]
+    assert raster == bytes([0b10101010, 0b10100000]) * 2  # pad bits stay white
+
+
+def test_coherent_regions_report_each_region_alone() -> None:
+    # Two distant marks: the union box dilutes to near-white while each
+    # region's own mean stays dense, which is exactly why rescue evidence
+    # reads regions rather than the union.
+    from scanmole.pnm import coherent_regions
+
+    marks = [(100, 100, 200, 160), (800, 1300, 900, 1360)]
+    frame = _p4_frame(1000, 1400, marks)
+
+    regions = coherent_regions(frame, 300)
+    union = coherent_ink(frame, 300)
+
+    assert len(regions) == 2
+    assert union is not None and union.mean > 0.9  # diluted over the span
+    assert all(region.mean < 0.2 for region in regions)  # each is dense
+    boxes = sorted(region.box for region in regions)
+    assert boxes[0][0] <= 100 and boxes[1][2] >= 900
+    assert coherent_regions(_p4_frame(1000, 1400), 300) == []
+    assert coherent_regions(b"P5\n4 4\n255\n" + bytes(16), 300) == []
+
+
 def test_crop_pnm_honors_an_unaligned_p4_box_on_every_side(tmp_path: Path) -> None:
     page = _write(tmp_path / "page.pbm", _p4_frame(400, 600, [(64, 100, 320, 500)]))
 

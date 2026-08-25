@@ -19,7 +19,7 @@ from collections import Counter
 from pathlib import Path
 
 from scanmole.autocrop import autocrop_image
-from scanmole.blankpage import adaptive_outcome, blank_verdict
+from scanmole.blankpage import adaptive_outcome, blank_verdict, sparse_rescue
 from scanmole.config import ScanConfig
 from scanmole.deskew import ANGLE_TOOL, Deskewed, deskew_page
 from scanmole.deskew import TIMEOUT_SECONDS as DESKEW_TIMEOUT_SECONDS
@@ -534,6 +534,16 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             if gray_snapshot is not None and dpi_now is not None:
                 keep, blank, mean = adaptive_outcome(
                     page, gray_snapshot, (keep, blank), mean, measured, config, dpi_now
+                )
+            # The last chance of every other dropped page: sparse but
+            # genuine content dilutes over a whole page (and further over
+            # a correctly sized larger one), so a page the mean threshold
+            # drops gets one guarded look for localized coherent print.
+            # --from-images input keeps its verdict untouched, like every
+            # other stage of that user-curated path.
+            if not keep and not from_images:
+                keep, blank, mean = sparse_rescue(
+                    page, (keep, blank), mean, config, dpi_now or config.resolution
                 )
             report_page(page, total, config, events, mean, keep, blank)
             if blank:

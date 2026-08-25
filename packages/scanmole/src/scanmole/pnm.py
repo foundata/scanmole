@@ -218,9 +218,31 @@ def binarize_pnm(path: Path, threshold: float) -> bool:
     Raises:
         ValueError: If the file starts as a PNM but is malformed or truncated.
     """
-    buffer = path.read_bytes()
-    if len(buffer) < 8 or buffer[:1] != b"P" or buffer[1:2] not in (b"5", b"6"):
+    mask = pnm_ink_mask(path.read_bytes(), threshold)
+    if mask is None:
         return False
+    replace_file(path, mask)
+    return True
+
+
+def pnm_ink_mask(buffer: bytes, threshold: float) -> bytes | None:
+    """The 1-bit ``P4`` ink mask of a raw gray or color PNM buffer.
+
+    The exact conversion :func:`binarize_pnm` writes to disk, shared so
+    blank-rescue evidence can inspect a page in memory without touching
+    the raster on disk. A pixel darker than ``threshold`` (a fraction of
+    full brightness) becomes black; ``P6`` reduces through its green
+    channel, 16-bit samples use their high byte.
+
+    Returns:
+        The complete ``P4`` file image as bytes, or ``None`` when the
+        buffer is not a raw ``P5``/``P6`` image.
+
+    Raises:
+        ValueError: If the buffer starts as a PNM but is malformed.
+    """
+    if len(buffer) < 8 or buffer[:1] != b"P" or buffer[1:2] not in (b"5", b"6"):
+        return None
     kind = buffer[1:2]
     tokens, offset = read_header(buffer, 3)
     try:
@@ -244,24 +266,118 @@ def binarize_pnm(path: Path, threshold: float) -> bool:
         raster = raster[1::3]  # green channel
 
     cut = min(maxval, max(1, round(threshold * maxval)))
+    return b"P4\n%d %d\n" % (width, height) + _pack_ink_bits(raster, width, height, cut)
+
+
+def _pack_ink_bits(raster: bytes, width: int, height: int, cut: int) -> bytes:
+    """Pack "darker than cut" gray samples into ``P4`` raster bytes.
+
+    At C speed: byte i of every 8-byte group contributes bit 7-i of one
+    output byte. Each translate maps "darker than cut" to that bit's
+    weight; the big-integer additions cannot carry because the weights
+    are disjoint. Rows are padded with white so the padding bits stay
+    zero.
+    """
     row_out = (width + 7) // 8
     pad = row_out * 8 - width
-    if pad:  # pad rows with white so the padding bits stay zero
+    if pad:
         raster = b"".join(
             raster[y * width : (y + 1) * width] + b"\xff" * pad for y in range(height)
         )
-
-    # Pack at C speed: byte i of every 8-byte group contributes bit 7-i of one
-    # output byte. Each translate maps "darker than cut" to that bit's weight;
-    # the big-integer additions cannot carry because the weights are disjoint.
     packed = 0
     for bit in range(8):
         table = bytes(128 >> bit if value < cut else 0 for value in range(256))
         packed += int.from_bytes(raster[bit::8].translate(table), "big")
-    data = packed.to_bytes(row_out * height, "big")
+    return packed.to_bytes(row_out * height, "big")
 
-    replace_file(path, b"P4\n%d %d\n" % (width, height) + data)
-    return True
+
+def pnm_evidence_mask(buffer: bytes, threshold: float) -> bytes | None:
+    """The 1-bit ``P4`` evidence mask of a raw PNM buffer, in memory.
+
+    The measurement the guarded image-quality checks share (the sparse
+    blank rescue, deskew content safety). Unlike :func:`pnm_ink_mask`,
+    which keeps the software-lineart contract of reducing color through
+    its green channel, evidence must see chromatic ink: dark green is
+    bright in the green channel and would be invisible. ``P6`` therefore
+    reduces through the documented integer luminance approximation
+    ``(r + 2g + b) / 4`` (green weighted double for the eye's
+    sensitivity; each channel truncated first so every big-integer lane
+    stays below a byte and the addition cannot carry). One-byte channels
+    (maxval 1 through 255) are normalized to the 0..255 scale before
+    weighting, with no precision discarded; deep samples are supported
+    at maxval 65535 alone, through their high bytes, whose cut boundary
+    coincides with the rounded threshold midpoint. Intermediate deep
+    maxima, which no scanner writes, yield no evidence at all rather
+    than a guess from lossy high bytes. ``P5`` keeps its
+    gray samples and packs exactly like :func:`pnm_ink_mask`; a ``P4``
+    buffer is already the mask and comes back as it is; 16-bit samples
+    use their high bytes in memory only. Nothing here ever touches the
+    raster on disk.
+
+    Returns:
+        The complete ``P4`` file image as bytes (the input itself for
+        ``P4``), or ``None`` when the buffer is not a raw PNM at all or
+        is a deep ``P6`` outside the supported maxima.
+
+    Raises:
+        ValueError: If the buffer starts as a ``P5``/``P6`` but is
+            malformed.
+    """
+    if len(buffer) >= 8 and buffer[:2] == b"P4":
+        return buffer
+    if len(buffer) < 8 or buffer[:1] != b"P" or buffer[1:2] not in (b"5", b"6"):
+        return None
+    kind = buffer[1:2]
+    tokens, offset = read_header(buffer, 3)
+    try:
+        width, height, maxval = int(tokens[0]), int(tokens[1]), int(tokens[2])
+    except ValueError as exc:
+        raise ValueError("bad PNM header") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError("bad PNM dimensions")
+    if not 0 < maxval < 65536:
+        raise ValueError("bad PNM maxval")
+
+    channels = 3 if kind == b"6" else 1
+    deep = maxval > 255
+    if channels == 3 and deep and maxval != 65535:
+        # No scanner writes these: SANE depths are 8 or 16 bits, so
+        # scanimage produces maxval 255 or 65535. An intermediate deep
+        # range cannot be judged from its high bytes (at maxval 256 a
+        # 0.78-bright sample would read as ink, at 600 a 0.43-dark one
+        # as paper), so evidence is refused rather than guessed at and
+        # the callers leave their primary verdicts standing.
+        return None
+    row_bytes = width * channels * (2 if deep else 1)
+    if len(buffer) - offset < row_bytes * height:
+        raise ValueError("truncated PNM raster")
+    raster = buffer[offset : offset + row_bytes * height]
+    if deep:  # 16-bit big-endian: the high bytes carry the significant part
+        raster, maxval = raster[0::2], maxval >> 8
+    if channels == 3:
+        if maxval != 255:
+            # One-byte samples range over the declared maxval, tiny
+            # ranges included, with no precision discarded: normalize
+            # each channel to the 0..255 scale first, or the per-channel
+            # truncation below would collapse a low-range sample to zero
+            # before the channels combine.
+            scale = bytes(min(255, round(value * 255 / maxval)) for value in range(256))
+            raster = raster.translate(scale)
+            maxval = 255
+        quarter = bytes(value >> 2 for value in range(256))
+        half = bytes(value >> 1 for value in range(256))
+        luma = (
+            int.from_bytes(raster[0::3].translate(quarter), "big")
+            + int.from_bytes(raster[1::3].translate(half), "big")
+            + int.from_bytes(raster[2::3].translate(quarter), "big")
+        )
+        raster = luma.to_bytes(width * height, "big")
+        # White reduces to 253, not 255: the truncated quarters lose two
+        # counts, so the cutoff scales against the reachable maximum.
+        maxval = (maxval >> 2) + (maxval >> 1) + (maxval >> 2)
+
+    cut = min(maxval, max(1, round(threshold * maxval)))
+    return b"P4\n%d %d\n" % (width, height) + _pack_ink_bits(raster, width, height, cut)
 
 
 def binarize_image(path: Path, threshold: float) -> bool:
@@ -716,31 +832,19 @@ class CoherentInk:
     mean: float
 
 
-def coherent_ink(buffer: bytes, dpi: int) -> CoherentInk | None:
-    """Find locally coherent text-like ink in a 1-bit ``P4`` frame.
+def _coherent_tile_analysis(
+    buffer: bytes, dpi: int
+) -> tuple[int, int, int, list[bytes], list[tuple[int, int, int, int]]] | None:
+    """The shared tile analysis behind the coherence measurements.
 
-    The projection-based content box is no evidence of real content on its
-    own: distributed bimodal noise (1% pepper over a page) satisfies every
-    row and column profile. Blank rescue therefore needs local coherence.
-    The frame is classified in coarse DPI-aware tiles (one raster byte = 8
-    px wide, about one millimetre tall); a tile counts as inked at
-    :data:`_TILE_INK_FRACTION` coverage, adjacent inked tiles form regions
-    (4-connected, on tiles rather than pixels, so an A4/300 dpi pass stays
-    within a few milliseconds), and a region counts as coherent at about
-    2 x 1.2 mm and four tiles minimum. That accepts text lines and page
-    numbers while rejecting uniform blanks, scattered or unimodal noise
-    (far below the tile density cut) and thin edge or roller streaks
-    (dense in at most one tile column or row, so their regions stay
-    degenerate).
-
-    Returns:
-        The union box of the accepted regions with the brightness mean
-        inside it, or ``None`` when the buffer is not 1-bit ``P4`` or
-        holds no coherent region.
+    Returns ``(width, height, tile_h, grid, accepted)`` with the accepted
+    coherent regions in inclusive tile coordinates ``(c0, r0, c1, r1)``,
+    or ``None`` when the buffer is not 1-bit ``P4`` or holds none.
 
     Raises:
         ValueError: If the buffer starts as a ``P4`` but is malformed.
     """
+
     if len(buffer) < 8 or buffer[:2] != b"P4":
         return None
     tokens, offset = read_header(buffer, 2)
@@ -821,11 +925,18 @@ def coherent_ink(buffer: bytes, dpi: int) -> CoherentInk | None:
             accepted.append((c0, r0, c1, r1))
     if not accepted:
         return None
+    return width, height, tile_h, grid, accepted
 
-    tc0 = min(region[0] for region in accepted)
-    tr0 = min(region[1] for region in accepted)
-    tc1 = max(region[2] for region in accepted)
-    tr1 = max(region[3] for region in accepted)
+
+def _region_evidence(
+    width: int,
+    height: int,
+    tile_h: int,
+    grid: list[bytes],
+    region: tuple[int, int, int, int],
+) -> CoherentInk:
+    """One tile region's pixel box and brightness mean."""
+    tc0, tr0, tc1, tr1 = region
     box = (
         tc0 * 8,
         tr0 * tile_h,
@@ -836,6 +947,68 @@ def coherent_ink(buffer: bytes, dpi: int) -> CoherentInk | None:
     area = (box[2] - box[0]) * (box[3] - box[1])
     mean = min(1.0, max(0.0, 1.0 - box_ink / area))
     return CoherentInk(box=box, mean=mean)
+
+
+def coherent_ink(buffer: bytes, dpi: int) -> CoherentInk | None:
+    """Find locally coherent text-like ink in a 1-bit ``P4`` frame.
+
+    The projection-based content box is no evidence of real content on its
+    own: distributed bimodal noise (1% pepper over a page) satisfies every
+    row and column profile. Blank rescue therefore needs local coherence.
+    The frame is classified in coarse DPI-aware tiles (one raster byte = 8
+    px wide, about one millimetre tall); a tile counts as inked at
+    :data:`_TILE_INK_FRACTION` coverage, adjacent inked tiles form regions
+    (4-connected, on tiles rather than pixels, so an A4/300 dpi pass stays
+    within a few milliseconds), and a region counts as coherent at about
+    2 x 1.2 mm and four tiles minimum. That accepts text lines and page
+    numbers while rejecting uniform blanks, scattered or unimodal noise
+    (far below the tile density cut) and thin edge or roller streaks
+    (dense in at most one tile column or row, so their regions stay
+    degenerate).
+
+    Returns:
+        The union box of the accepted regions with the brightness mean
+        inside it, or ``None`` when the buffer is not 1-bit ``P4`` or
+        holds no coherent region.
+
+    Raises:
+        ValueError: If the buffer starts as a ``P4`` but is malformed.
+    """
+    analysis = _coherent_tile_analysis(buffer, dpi)
+    if analysis is None:
+        return None
+    width, height, tile_h, grid, accepted = analysis
+    union = (
+        min(region[0] for region in accepted),
+        min(region[1] for region in accepted),
+        max(region[2] for region in accepted),
+        max(region[3] for region in accepted),
+    )
+    return _region_evidence(width, height, tile_h, grid, union)
+
+
+def coherent_regions(buffer: bytes, dpi: int) -> list[CoherentInk]:
+    """Every locally coherent text-like region of a 1-bit ``P4`` frame.
+
+    The same acceptance rules as :func:`coherent_ink`, reported per
+    region instead of as one union: rescue evidence needs the individual
+    boxes, because a union spanning distant artifacts dilutes the mean
+    of the one region that is genuine content.
+
+    Returns:
+        The accepted regions, empty when there are none or the buffer is
+        not 1-bit ``P4``.
+
+    Raises:
+        ValueError: If the buffer starts as a ``P4`` but is malformed.
+    """
+    analysis = _coherent_tile_analysis(buffer, dpi)
+    if analysis is None:
+        return []
+    width, height, tile_h, grid, accepted = analysis
+    return [
+        _region_evidence(width, height, tile_h, grid, region) for region in accepted
+    ]
 
 
 def crop_pnm(path: Path, box: tuple[int, int, int, int]) -> bool:

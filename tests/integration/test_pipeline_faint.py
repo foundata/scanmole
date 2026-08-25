@@ -682,14 +682,15 @@ def test_a_read_only_gray_device_produces_adaptive_1_bit_pages(
 # ------------------------------------------------------- module boundary
 
 
-def test_the_blank_rule_and_its_one_override_live_together() -> None:
-    # The rescue exists to overturn a blank verdict, so both rules share a
-    # module: splitting them would let the threshold drift between the
-    # classification and the rescue that has to clear it.
+def test_the_blank_rule_and_its_overrides_live_together() -> None:
+    # The rescues exist to overturn a blank verdict, so all three rules
+    # share a module: splitting them would let the threshold drift between
+    # the classification and the rescues that have to clear it.
     from scanmole import blankpage, pipeline
 
     assert callable(blankpage.blank_verdict)
     assert callable(blankpage.adaptive_outcome)
+    assert callable(blankpage.sparse_rescue)
 
     source = Path(pipeline.__file__ or "")
     borrowed: set[str] = set()
@@ -697,7 +698,7 @@ def test_the_blank_rule_and_its_one_override_live_together() -> None:
         if isinstance(node, ast.ImportFrom) and node.module == "scanmole.blankpage":
             borrowed.update(alias.name for alias in node.names)
 
-    assert borrowed == {"adaptive_outcome", "blank_verdict"}
+    assert borrowed == {"adaptive_outcome", "blank_verdict", "sparse_rescue"}
 
 
 def test_deciding_a_page_needs_nothing_from_the_pipeline() -> None:

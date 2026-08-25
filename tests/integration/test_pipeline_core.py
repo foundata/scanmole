@@ -213,6 +213,130 @@ def test_blank_threshold_zero_disables_blank_detection(tmp_path: Path) -> None:
     assert blank is False
 
 
+def _sparse_frame(
+    width: int,
+    height: int,
+    *,
+    words: bool = True,
+    shadow_rows: int = 0,
+    bar_px: int = 0,
+    pepper_step: int = 0,
+) -> bytes:
+    """A white P5 frame with optional sparse content and scanner artifacts.
+
+    ``words`` draws one short printed line (dash-shaped words with gaps).
+    The artifacts mimic a full-width trailing-edge shadow band, a vertical
+    scanner boundary bar and scattered sensor pepper, all calibrated dark
+    enough for the ink mask yet subtle enough that the whole-page mean
+    stays above the default blank threshold, exactly like the hardware
+    artifacts on an otherwise blank page.
+    """
+    raster = bytearray(b"\xff" * (width * height))
+    if words:
+        # Stroke-like words, not solid bars: real print keeps most of its
+        # line box white, and the rescue's solidity floor relies on that.
+        for x in range(width // 6, width // 2, 120):
+            for band in range(height // 3, height // 3 + 40, 8):
+                for row in range(band, band + 2):
+                    start = row * width + x
+                    raster[start : start + 72] = b"\x28" * 72
+    for row in range(height - shadow_rows, height):
+        raster[row * width : (row + 1) * width] = b"\x64" * width
+    if bar_px:
+        for row in range(height):
+            start = row * width
+            raster[start : start + bar_px] = b"\x64" * bar_px
+    if pepper_step:
+        for index in range(0, width * height, pepper_step):
+            raster[(index * 31) % (width * height)] = 100
+    return b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+
+
+def _sparse_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frame: bytes
+) -> tuple[int, list[dict[str, object]], bytes | None]:
+    """One fixed-size gray-mode run over ``frame``; returns exit, events, raster."""
+    from support.pipeline import _gray_scan_pages
+
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _gray_scan_pages([frame]))
+    rasters: list[bytes] = []
+
+    def capture_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
+        rasters.extend(page.read_bytes() for page in pages)
+        output.write_bytes(b"%PDF-fake")
+
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", capture_pdf)
+    stream = io.StringIO()
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"), mode="gray"
+    )
+    try:
+        code = run_pipeline(config, EventWriter(enabled=True, stream=stream))
+    except NoPagesError:
+        code = -1
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    return code, events, rasters[0] if rasters else None
+
+
+def test_a_sparse_printed_line_survives_the_blank_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The P1 case: one genuine printed line diluted over a full page reads
+    # above the default threshold and used to be dropped. The rescue must
+    # keep it, report it nonblank with the evidence mean that explains
+    # why, leave the raster byte-identical and change no event keys.
+    frame = _sparse_frame(2480, 3508)
+
+    code, events, raster = _sparse_run(tmp_path, monkeypatch, frame)
+
+    assert code == 0  # the page survived; the run produced a PDF
+    page_events = [event for event in events if event["event"] == "page"]
+    assert len(page_events) == 1
+    assert page_events[0]["blank"] is False
+    mean = page_events[0]["mean"]
+    assert isinstance(mean, float) and mean <= 0.995  # the evidence mean
+    assert raster == frame  # the raster itself is untouched
+    assert [event["event"] for event in events] == [
+        "start",
+        "page",
+        "scan_done",
+        "done",
+    ]
+    assert set(page_events[0]) == {"event", "n", "file", "blank", "mean"}
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [
+        {"shadow_rows": 24},
+        {"bar_px": 20},
+        {"shadow_rows": 10, "bar_px": 8, "pepper_step": 1200},
+        {"pepper_step": 600},
+        {},
+    ],
+)
+def test_scanner_artifacts_alone_never_rescue_a_blank_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifacts: dict[str, bool]
+) -> None:
+    # Trailing-edge shadows, boundary bars and binarized noise are not
+    # content: a page carrying only those stays blank and dropped.
+    frame = _sparse_frame(2480, 3508, words=False, **artifacts)
+    from scanmole.pnm import pnm_mean  # the fixture must stay primary-blank
+
+    probe = tmp_path / "probe.pgm"
+    probe.write_bytes(frame)
+    probe_mean = pnm_mean(probe)
+    assert probe_mean is not None and probe_mean > 0.995
+
+    code, events, _raster = _sparse_run(tmp_path, monkeypatch, frame)
+
+    assert code == -1  # every page blank: the ordinary no-pages outcome
+    page_events = [event for event in events if event["event"] == "page"]
+    assert page_events and page_events[0]["blank"] is True
+
+
 def test_keep_images_batches_never_collide(tmp_path: Path) -> None:
     # Reusing one archive directory (also concurrently, mkdir is atomic)
     # must isolate batches even when outputs in different directories share
