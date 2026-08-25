@@ -153,10 +153,26 @@ def copy_kept_images(kept: list[KeptPage], destination: Path, stem: str) -> None
     alone cannot guarantee that, because equally named outputs in different
     directories share a stem.
 
+    An empty batch reserves nothing: an all-blank run must not leave an
+    empty archive directory behind. A batch whose copy fails is removed
+    again best-effort, because the authoritative originals survive in
+    the preserved work directory under the recovery contract and a
+    half-copied archive would only masquerade as a complete one; a
+    cleanup failure is logged and never replaces the copy failure the
+    caller needs to hear about.
+
     Raises:
-        ProcessingError: If no batch directory could be reserved.
+        ProcessingError: If the destination cannot be created, no batch
+            directory could be reserved, or a page copy failed.
     """
-    destination.mkdir(parents=True, exist_ok=True)
+    if not kept:
+        return
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ProcessingError(
+            f"cannot create the archive directory {destination}: {exc}"
+        ) from exc
     batch_dir: Path | None = None
     for attempt in range(1, 1000):
         candidate = destination / (stem if attempt == 1 else f"{stem}_{attempt}")
@@ -172,9 +188,20 @@ def copy_kept_images(kept: list[KeptPage], destination: Path, stem: str) -> None
         break
     if batch_dir is None:  # pragma: no cover -- needs 999 same-named batches
         raise ProcessingError(f"cannot reserve an archive directory in {destination}")
-    for number, page in kept:
-        suffix = page.suffix or ".img"
-        shutil.copy2(page, batch_dir / f"page_{number:04d}{suffix}")
+    try:
+        for number, page in kept:
+            suffix = page.suffix or ".img"
+            shutil.copy2(page, batch_dir / f"page_{number:04d}{suffix}")
+    except OSError as exc:
+        try:
+            shutil.rmtree(batch_dir)
+        except OSError:
+            LOGGER.debug(
+                "could not remove the partial archive %s", batch_dir, exc_info=True
+            )
+        raise ProcessingError(
+            f"cannot copy the kept pages into {batch_dir}: {exc}"
+        ) from exc
     LOGGER.info("Kept page images copied to %s", batch_dir)
 
 

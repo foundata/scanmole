@@ -25,6 +25,7 @@ from support.pipeline import (
 from scanmole.config import ScanConfig
 from scanmole.errors import (
     NoPagesError,
+    ProcessingError,
 )
 from scanmole.events import EventWriter
 from scanmole.options import Capability
@@ -227,6 +228,172 @@ def test_keep_images_batches_never_collide(tmp_path: Path) -> None:
 
     assert (archive / "scan" / "page_0001.pnm").is_file()
     assert (archive / "scan_2" / "page_0001.pnm").is_file()
+
+
+def test_keep_images_translates_a_blocked_destination(tmp_path: Path) -> None:
+    # The archive root was replaced by a file: the OSError must come
+    # back as the actionable processing failure, not a bare traceback.
+    from scanmole.pipeline import copy_kept_images
+
+    page = _gray_page(tmp_path / "a.pnm")
+    blocked = tmp_path / "archive"
+    blocked.write_text("a file where the folder should be")
+
+    with pytest.raises(ProcessingError) as info:
+        copy_kept_images([(1, page)], blocked, "scan")
+
+    assert isinstance(info.value.__cause__, OSError)
+    assert page.is_file()  # the original page is untouched
+
+
+def test_keep_images_translates_an_uncreatable_destination(tmp_path: Path) -> None:
+    # The destination vanished after validation and its place is now
+    # blocked, so the parent chain cannot be created at all.
+    from scanmole.pipeline import copy_kept_images
+
+    page = _gray_page(tmp_path / "a.pnm")
+    blocker = tmp_path / "gone"
+    blocker.write_text("a file where the parent should be")
+
+    with pytest.raises(ProcessingError) as info:
+        copy_kept_images([(1, page)], blocker / "archive", "scan")
+
+    assert isinstance(info.value.__cause__, OSError)
+
+
+def test_keep_images_translates_a_readonly_destination(tmp_path: Path) -> None:
+    import os
+
+    if os.geteuid() == 0:  # pragma: no cover -- root ignores mode bits
+        pytest.skip("permission failures cannot be provoked as root")
+    from scanmole.pipeline import copy_kept_images
+
+    page = _gray_page(tmp_path / "a.pnm")
+    parent = tmp_path / "ro"
+    parent.mkdir()
+    parent.chmod(0o500)
+    try:
+        with pytest.raises(ProcessingError) as info:
+            copy_kept_images([(1, page)], parent / "archive", "scan")
+    finally:
+        parent.chmod(0o700)
+
+    assert isinstance(info.value.__cause__, PermissionError)
+
+
+@pytest.mark.parametrize("failing_call", [1, 2])
+def test_keep_images_translates_a_failing_copy_and_removes_the_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_call: int
+) -> None:
+    # A copy failing on the first or a later page (here: disk full)
+    # translates with its cause, and the partial batch directory is
+    # removed again: the authoritative originals survive in the
+    # preserved work directory, so a half-copied archive would only
+    # masquerade as a complete one.
+    import shutil
+
+    from scanmole.pipeline import copy_kept_images
+
+    pages = [(1, _gray_page(tmp_path / "a.pnm")), (2, _gray_page(tmp_path / "b.pnm"))]
+    archive = tmp_path / "archive"
+    calls = {"count": 0}
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src: Path, dst: Path) -> object:
+        calls["count"] += 1
+        if calls["count"] == failing_call:
+            raise OSError(28, "No space left on device", str(dst))
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr("scanmole.pipeline.shutil.copy2", failing_copy2)
+
+    with pytest.raises(ProcessingError, match="No space left") as info:
+        copy_kept_images(pages, archive, "scan")
+
+    assert isinstance(info.value.__cause__, OSError)
+    assert not (archive / "scan").exists()  # no half-copied batch remains
+    assert all(page.is_file() for _n, page in pages)  # originals untouched
+
+
+def test_a_cleanup_failure_never_replaces_the_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Removing the partial archive is best-effort: when even that fails,
+    # the caller still hears about the copy failure, which names what
+    # actually went wrong.
+    from scanmole.pipeline import copy_kept_images
+
+    page = _gray_page(tmp_path / "a.pnm")
+    archive = tmp_path / "archive"
+    copy_error = OSError(28, "No space left on device")
+
+    def failing_copy2(src: object, dst: object, **kwargs: object) -> object:
+        raise copy_error
+
+    def failing_rmtree(path: object, **kwargs: object) -> None:
+        raise OSError(16, "Device or resource busy", str(path))
+
+    monkeypatch.setattr("scanmole.pipeline.shutil.copy2", failing_copy2)
+    monkeypatch.setattr("scanmole.pipeline.shutil.rmtree", failing_rmtree)
+
+    with pytest.raises(ProcessingError, match="No space left") as info:
+        copy_kept_images([(1, page)], archive, "scan")
+
+    assert info.value.__cause__ is copy_error
+
+
+def test_an_all_blank_run_reserves_no_archive_directory(tmp_path: Path) -> None:
+    # Nothing was kept, so there is nothing to archive: neither the
+    # destination nor an empty batch directory may appear before the
+    # all-blank run fails.
+    from scanmole.pipeline import copy_kept_images
+
+    archive = tmp_path / "archive"
+    copy_kept_images([], archive, "scan")
+    assert not archive.exists()
+
+    white = _white_page(tmp_path / "white.pgm")
+    config = dataclasses.replace(
+        _config((white,), tmp_path / "out.pdf"), keep_images=archive
+    )
+    with pytest.raises(NoPagesError):
+        run_pipeline(config, EventWriter(enabled=False))
+    assert not archive.exists()
+
+
+@_NEEDS_IMG2PDF
+def test_a_keep_images_failure_reaches_the_json_stream_as_code_five(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # What a frontend reads: the terminal error event classifies the
+    # archive failure as a processing failure (exit 5), the events
+    # before it are the ordinary ones, and the source images survive.
+    from scanmole.cli import main
+
+    page = _gray_page(tmp_path / "in.pnm")
+    blocked = tmp_path / "archive"
+    blocked.write_text("a file where the folder should be")
+
+    code = main(
+        [
+            "--json",
+            "--no-ocr",
+            "--from-images",
+            str(page),
+            "--keep-images",
+            str(blocked),
+            "-o",
+            str(tmp_path / "out.pdf"),
+        ]
+    )
+
+    events = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    kinds = [event["event"] for event in events]
+    assert code == 5
+    assert events[-1]["event"] == "error" and events[-1]["code"] == 5
+    assert "page" in kinds and "scan_done" in kinds  # prior events unchanged
+    assert "done" not in kinds
+    assert page.is_file()  # the source image is preserved
 
 
 def _no_skew(monkeypatch: pytest.MonkeyPatch, stderr: str = "") -> None:
