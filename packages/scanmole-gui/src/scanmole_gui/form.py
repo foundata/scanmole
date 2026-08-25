@@ -800,7 +800,6 @@ class ScanForm:
         self.processing_group = Adw.PreferencesGroup(title=_("Processing"))
         self._blank_row = Adw.SwitchRow(
             title=_("Skip blank pages"),
-            subtitle=_("Removes pages detected as empty"),
             active=True,
         )
         self.processing_group.add(self._blank_row)

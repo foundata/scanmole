@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: scanmole\n"
 "Report-Msgid-Bugs-To: office@foundata.com\n"
-"POT-Creation-Date: 2026-08-25 04:59+0200\n"
+"POT-Creation-Date: 2026-08-25 14:19+0200\n"
 "PO-Revision-Date: 2026-07-26 06:15+0200\n"
 "Last-Translator: foundata <office@foundata.com>\n"
 "Language-Team: German\n"
@@ -16,33 +16,33 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: src/scanmole_gui/app.py:314 src/scanmole_gui/dialogs.py:52
+#: src/scanmole_gui/app.py:310 src/scanmole_gui/dialogs.py:52
 #: src/scanmole_gui/form.py:545
 msgid "Settings"
 msgstr "Einstellungen"
 
-#: src/scanmole_gui/app.py:315 src/scanmole_gui/dialogs.py:177
+#: src/scanmole_gui/app.py:311 src/scanmole_gui/dialogs.py:177
 msgid "About ScanMole"
 msgstr "Über ScanMole"
 
-#: src/scanmole_gui/app.py:319
+#: src/scanmole_gui/app.py:315
 msgid "Main menu"
 msgstr "Hauptmenü"
 
-#: src/scanmole_gui/app.py:385
+#: src/scanmole_gui/app.py:381
 #, python-format
 msgid "ScanMole (GUI) %(version)s by <a href=\"%(url)s\">foundata</a>"
 msgstr "ScanMole (GUI) %(version)s von <a href=\"%(url)s\">foundata</a>"
 
-#: src/scanmole_gui/app.py:391 src/scanmole_gui/dialogs.py:200
+#: src/scanmole_gui/app.py:386 src/scanmole_gui/dialogs.py:200
 msgid "Easy-to-use document scanner"
 msgstr "Benutzerfreundlicher Dokumenten-Scanner"
 
-#: src/scanmole_gui/app.py:573 src/scanmole_gui/form.py:339
+#: src/scanmole_gui/app.py:567 src/scanmole_gui/form.py:339
 msgid "Searching for scanners…"
 msgstr "Suche nach Scannern…"
 
-#: src/scanmole_gui/app.py:581
+#: src/scanmole_gui/app.py:575
 #, python-format
 msgid ""
 "Incompatible scanmole CLI: found version %(found)s, but this GUI needs "
@@ -51,75 +51,75 @@ msgstr ""
 "Inkompatibles scanmole-CLI: Version %(found)s gefunden, aber diese "
 "Oberfläche benötigt %(needed)s."
 
-#: src/scanmole_gui/app.py:584 src/scanmole_gui/dialogs.py:213
+#: src/scanmole_gui/app.py:578 src/scanmole_gui/dialogs.py:213
 msgid "unknown"
 msgstr "unbekannt"
 
-#: src/scanmole_gui/app.py:588
+#: src/scanmole_gui/app.py:582
 #, python-format
 msgid "Device search failed (exit %(code)d)."
 msgstr "Gerätesuche fehlgeschlagen (Exit-Code %(code)d)."
 
-#: src/scanmole_gui/app.py:592
+#: src/scanmole_gui/app.py:586
 msgid "scanmole CLI not found — install it or add it to PATH."
 msgstr ""
 "scanmole wurde nicht gefunden – bitte installieren oder zu PATH hinzufügen."
 
-#: src/scanmole_gui/app.py:594
+#: src/scanmole_gui/app.py:588
 msgid "Device search timed out."
 msgstr "Zeitüberschreitung bei der Gerätesuche."
 
-#: src/scanmole_gui/app.py:596
+#: src/scanmole_gui/app.py:590
 #, python-format
 msgid "Device search failed: %(error)s"
 msgstr "Gerätesuche fehlgeschlagen: %(error)s"
 
-#: src/scanmole_gui/app.py:599
+#: src/scanmole_gui/app.py:593
 msgid "Device search failed unexpectedly."
 msgstr "Gerätesuche unerwartet fehlgeschlagen."
 
-#: src/scanmole_gui/app.py:617
+#: src/scanmole_gui/app.py:611
 msgid "Incompatible scanmole CLI"
 msgstr "Inkompatibles scanmole-CLI"
 
-#: src/scanmole_gui/app.py:620
+#: src/scanmole_gui/app.py:614
 msgid "Unknown device"
 msgstr "Unbekanntes Gerät"
 
-#: src/scanmole_gui/app.py:634
+#: src/scanmole_gui/app.py:628
 #, python-format
 msgid "Found %d scanner."
 msgid_plural "Found %d scanners."
 msgstr[0] "%d Scanner gefunden."
 msgstr[1] "%d Scanner gefunden."
 
-#: src/scanmole_gui/app.py:643
+#: src/scanmole_gui/app.py:637
 msgid "Scanner disappeared — in standby or disconnected?"
 msgstr "Scanner verschwunden – im Standby oder getrennt?"
 
-#: src/scanmole_gui/app.py:645
+#: src/scanmole_gui/app.py:639
 msgid "No scanners found — connect one and press Refresh."
 msgstr "Keine Scanner gefunden – bitte anschließen und erneut suchen."
 
-#: src/scanmole_gui/app.py:648
+#: src/scanmole_gui/app.py:642
 msgid "No scanners found."
 msgstr "Keine Scanner gefunden."
 
-#: src/scanmole_gui/app.py:709
+#: src/scanmole_gui/app.py:703
 #, python-format
 msgid "Not available on this scanner: %s"
 msgstr "Auf diesem Scanner nicht verfügbar: %s"
 
-#: src/scanmole_gui/app.py:833
+#: src/scanmole_gui/app.py:852
 #, python-format
 msgid "Selected option not available: %s"
 msgstr "Gewählte Option nicht verfügbar: %s"
 
-#: src/scanmole_gui/app.py:930
+#: src/scanmole_gui/app.py:949
 msgid "Reset Settings?"
 msgstr "Einstellungen zurücksetzen?"
 
-#: src/scanmole_gui/app.py:932
+#: src/scanmole_gui/app.py:951
 msgid ""
 "All GUI options return to their defaults. Scanned files and folders on disk "
 "are not touched."
@@ -127,71 +127,71 @@ msgstr ""
 "Alle GUI-Optionen werden auf ihre Standardwerte zurückgesetzt. Gescannte "
 "Dateien und Ordner auf der Festplatte bleiben unberührt."
 
-#: src/scanmole_gui/app.py:936 src/scanmole_gui/dialogs.py:296
+#: src/scanmole_gui/app.py:955 src/scanmole_gui/dialogs.py:296
 #: src/scanmole_gui/form.py:400
 msgid "Cancel"
 msgstr "Abbrechen"
 
-#: src/scanmole_gui/app.py:937
+#: src/scanmole_gui/app.py:956
 msgid "Reset"
 msgstr "Zurücksetzen"
 
-#: src/scanmole_gui/app.py:970
+#: src/scanmole_gui/app.py:989
 msgid "Settings reset to defaults."
 msgstr "Einstellungen auf Standardwerte zurückgesetzt."
 
-#: src/scanmole_gui/app.py:978
+#: src/scanmole_gui/app.py:997
 #, python-format
 msgid "Settings reset here, but %s could not be rewritten."
 msgstr ""
 "Einstellungen hier zurückgesetzt, aber %s konnte nicht neu geschrieben "
 "werden."
 
-#: src/scanmole_gui/app.py:1006 src/scanmole_gui/app.py:1056
+#: src/scanmole_gui/app.py:1025 src/scanmole_gui/app.py:1075
 msgid "Cannot Create Output Folder"
 msgstr "Ausgabeordner kann nicht erstellt werden"
 
-#: src/scanmole_gui/app.py:1059
+#: src/scanmole_gui/app.py:1078
 msgid "Could Not Start scanmole"
 msgstr "scanmole konnte nicht gestartet werden"
 
-#: src/scanmole_gui/app.py:1060
+#: src/scanmole_gui/app.py:1079
 msgid "Install the scanmole CLI somewhere in PATH."
 msgstr "Das scanmole-Kommandozeilenprogramm in PATH installieren."
 
-#: src/scanmole_gui/app.py:1073
+#: src/scanmole_gui/app.py:1092
 msgid "Starting scanmole…"
 msgstr "scanmole wird gestartet…"
 
-#: src/scanmole_gui/app.py:1132
+#: src/scanmole_gui/app.py:1151
 msgid "Finishing…"
 msgstr "Wird abgeschlossen…"
 
-#: src/scanmole_gui/app.py:1162
+#: src/scanmole_gui/app.py:1181
 msgid "Scan cancelled."
 msgstr "Scan abgebrochen."
 
-#: src/scanmole_gui/app.py:1177
+#: src/scanmole_gui/app.py:1196
 msgid "Finished."
 msgstr "Fertig."
 
-#: src/scanmole_gui/app.py:1192
+#: src/scanmole_gui/app.py:1211
 msgid "Cancelling…"
 msgstr "Wird abgebrochen…"
 
-#: src/scanmole_gui/app.py:1257
+#: src/scanmole_gui/app.py:1276
 msgid "Keep Scanning"
 msgstr "Weiter scannen"
 
-#: src/scanmole_gui/app.py:1258
+#: src/scanmole_gui/app.py:1277
 msgid "Close Anyway"
 msgstr "Trotzdem schließen"
 
-#: src/scanmole_gui/app.py:1329
+#: src/scanmole_gui/app.py:1348
 msgid "OK"
 msgstr "OK"
 
-#: src/scanmole_gui/app.py:1334
+#: src/scanmole_gui/app.py:1353
 msgid "Choose Output Folder"
 msgstr "Ausgabeordner wählen"
 
@@ -650,34 +650,30 @@ msgstr ""
 msgid "Skip blank pages"
 msgstr "Leere Seiten überspringen"
 
-#: src/scanmole_gui/form.py:803
-msgid "Removes pages detected as empty"
-msgstr "Als leer erkannte Seiten entfernen"
-
-#: src/scanmole_gui/form.py:808
+#: src/scanmole_gui/form.py:807
 msgid "OCR (Optical Character Recognition)"
 msgstr "OCR (optische Zeichenerkennung)"
 
-#: src/scanmole_gui/form.py:809
+#: src/scanmole_gui/form.py:808
 msgid "Make the PDF text-searchable"
 msgstr "Durchsuchbare PDF erzeugen"
 
-#: src/scanmole_gui/form.py:830
+#: src/scanmole_gui/form.py:829
 msgid "OCR Language"
 msgstr "OCR-Sprache"
 
-#: src/scanmole_gui/form.py:962
+#: src/scanmole_gui/form.py:961
 msgid "Add more…"
 msgstr "Weitere hinzufügen…"
 
-#: src/scanmole_gui/form.py:1117
+#: src/scanmole_gui/form.py:1116
 #, python-format
 msgid ""
 "%(dpi)d dpi · scans at %(effective)d dpi · approx. %(size).1f MB per page"
 msgstr ""
 "%(dpi)d dpi · scannt mit %(effective)d dpi · ca. %(size).1f MB pro Seite"
 
-#: src/scanmole_gui/form.py:1129
+#: src/scanmole_gui/form.py:1128
 #, python-format
 msgid "%(dpi)d dpi · approx. %(size).1f MB per page"
 msgstr "%(dpi)d dpi · ca. %(size).1f MB pro Seite"
