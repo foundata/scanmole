@@ -15,7 +15,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gtk  # noqa: E402  # after require_version
+from gi.repository import Adw, GLib, Gtk  # noqa: E402  # after require_version
 
 from scanmole_gui import __version__  # noqa: E402
 from scanmole_gui.i18n import _  # noqa: E402  # after gi setup
@@ -160,6 +160,13 @@ def _link_text(url: str) -> str:
     return url.removeprefix("https://").removeprefix("http://").rstrip("/")
 
 
+def _markup_link(url: str, text: str) -> str:
+    """A label-markup hyperlink, with both halves escaped."""
+    return (
+        f'<a href="{GLib.markup_escape_text(url)}">{GLib.markup_escape_text(text)}</a>'
+    )
+
+
 def build_about_dialog(
     *, cli_version: str | None, logo_file: Path, project_url: str, funding_url: str
 ) -> Adw.Dialog:
@@ -223,29 +230,29 @@ def build_about_dialog(
     description.add_css_class("dim-label")
     content.append(description)
 
-    # One block rather than four separately spaced rows: they are the same
-    # kind of pointer and read as a list. The glyphs are text, since the
-    # icon theme carries no name for a code or a bug symbol and neither is
-    # worth shipping an SVG for.
+    # A two-column listing like the versions above, except that the values
+    # start their own left-aligned column: four labels of four different
+    # widths would otherwise begin each link somewhere else. They are label
+    # markup rather than link buttons so that column starts at the text
+    # instead of inside a button's padding.
     source_url = f"{project_url}#source"
     issues_url = f"{project_url}#issues"
-    links = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-    for lead, url, text in (
-        (_("Website:"), project_url, _link_text(project_url)),
-        ("</> " + _("Source Code:"), source_url, _link_text(source_url)),
-        (_("Report Issues:"), issues_url, _link_text(issues_url)),
+    links = Gtk.Grid(column_spacing=12, row_spacing=6)
+    for row, (lead, value) in enumerate(
         (
-            _("Funding: Like this project?") + " ♥",
-            funding_url,
-            _("Buy us a coffee"),
-        ),
+            (_("Website:"), _markup_link(project_url, _link_text(project_url))),
+            (_("Source Code:"), _markup_link(source_url, _link_text(source_url))),
+            (_("Report Issues:"), _markup_link(issues_url, _link_text(issues_url))),
+            (
+                _("Funding:"),
+                GLib.markup_escape_text(_("Like this project?"))
+                + " ♥ "
+                + _markup_link(funding_url, _("Buy us a coffee")),
+            ),
+        )
     ):
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        row.append(Gtk.Label(label=lead, valign=Gtk.Align.CENTER))
-        link = Gtk.LinkButton.new_with_label(url, text)
-        link.set_halign(Gtk.Align.START)
-        row.append(link)
-        links.append(row)
+        links.attach(Gtk.Label(label=lead, xalign=0.0), 0, row, 1, 1)
+        links.attach(Gtk.Label(label=value, use_markup=True, xalign=0.0), 1, row, 1, 1)
     content.append(links)
 
     toolbar.set_content(content)

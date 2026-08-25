@@ -160,34 +160,52 @@ def test_about_dialog_links_to_the_project_and_its_funding() -> None:
         funding_url="https://coffee.test/scanmole/",
     )
 
-    buttons: list[Any] = []
+    grids: list[Any] = []
 
     def walk(widget: Any) -> None:
-        if isinstance(widget, Gtk.LinkButton):
-            buttons.append(widget)
+        if isinstance(widget, Gtk.Grid):
+            grids.append(widget)
         child = widget.get_first_child()
         while child is not None:
             walk(child)
             child = child.get_next_sibling()
 
     walk(dialog.get_child())
+    assert len(grids) == 1
+    links = grids[0]
 
     # Source and issues are anchors on the project page, so moving the
-    # project only ever means changing the one URL it is built from.
-    assert [button.get_uri() for button in buttons] == [
-        "https://example.test/scanmole/",
-        "https://example.test/scanmole/#source",
-        "https://example.test/scanmole/#issues",
-        "https://coffee.test/scanmole/",
-    ]
-    # The scheme is noise a reader does not need; funding names the offer
+    # project only ever means changing the one URL it is built from. The
+    # scheme is noise a reader does not need; funding names the offer
     # instead of the host, which says nothing about what the link does.
-    assert [button.get_label() for button in buttons] == [
-        "example.test/scanmole",
-        "example.test/scanmole/#source",
-        "example.test/scanmole/#issues",
-        "Buy us a coffee",
+    assert [
+        (links.get_child_at(0, row).get_text(), links.get_child_at(1, row).get_label())
+        for row in range(4)
+    ] == [
+        (
+            "Website:",
+            '<a href="https://example.test/scanmole/">example.test/scanmole</a>',
+        ),
+        (
+            "Source Code:",
+            '<a href="https://example.test/scanmole/#source">'
+            "example.test/scanmole/#source</a>",
+        ),
+        (
+            "Report Issues:",
+            '<a href="https://example.test/scanmole/#issues">'
+            "example.test/scanmole/#issues</a>",
+        ),
+        (
+            "Funding:",
+            "Like this project? ♥ "
+            '<a href="https://coffee.test/scanmole/">Buy us a coffee</a>',
+        ),
     ]
+    # The grid is what aligns them: every value starts one column in, at
+    # the same place, however wide the label beside it happens to be.
+    assert links.get_child_at(1, 4) is None  # no fifth row went unchecked
+    assert all(links.get_child_at(1, row).get_xalign() == 0.0 for row in range(4))
 
 
 def test_more_languages_dialog_uses_the_entered_code() -> None:
