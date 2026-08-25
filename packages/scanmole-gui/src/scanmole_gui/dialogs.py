@@ -205,7 +205,7 @@ def build_about_dialog(
 
     facts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     for key, value in (
-        ("scanmole CLI", cli_version or _("unknown")),
+        ("scanmole (CLI)", cli_version or _("unknown")),
         ("scanmole-gui", __version__),
         (_("License"), "GPL-3.0-or-later"),
     ):
@@ -220,9 +220,11 @@ def build_about_dialog(
 
     description = Gtk.Label(
         label=_(
-            "ScanMole scans documents through SANE, detects blank pages, "
-            "assembles PDFs, and optionally makes them text-searchable "
-            "with OCR."
+            "ScanMole is a document scanner for Linux with a powerful "
+            "automation-grade CLI and an optional easy-to-use GUI. It "
+            "creates searchable PDFs with low storage requirements, "
+            "automatically detects blank pages, crops documents "
+            "appropriately, and straightens skewed pages."
         ),
         xalign=0.0,
         wrap=True,
