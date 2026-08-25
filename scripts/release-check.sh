@@ -168,10 +168,12 @@ ensure_pythons() {
 # via pyproject.
 run_static_checks() {
   log "Static checks (format, lint, type check)"
-  uv run ruff format --check packages tests scripts/scanner-evidence
-  uv run ruff check packages tests scripts/scanner-evidence
+  uv run ruff format --check packages tests scripts/scanner-evidence \
+    scripts/release_tree_state.py
+  uv run ruff check packages tests scripts/scanner-evidence \
+    scripts/release_tree_state.py
   uv run mypy packages/scanmole/src packages/scanmole-gui/src tests \
-    scripts/scanner-evidence
+    scripts/scanner-evidence scripts/release_tree_state.py
   uv run python scripts/scanner-evidence/print_pack.py --check
 }
 
@@ -349,27 +351,23 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, "scripts")
+from release_tree_state import classify_tree_state
+
 errors: list[str] = []
 
 # The working tree may differ from the tagged HEAD in exactly the three
-# prepared README files; anything else would ship untested content.
-allowed = {
-    "README.md",
-    "packages/scanmole/README.md",
-    "packages/scanmole-gui/README.md",
-}
+# prepared README files, and only by modification; a build backend's own
+# file-inclusion globs (license-files, package data, ...) can match an
+# untracked path anywhere, so every untracked path is refused regardless
+# of location -- see scripts/release_tree_state.py for the exact rules.
 status = subprocess.run(
-    ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
+    ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    capture_output=True,
+    text=True,
+    check=True,
 ).stdout
-for line in status.splitlines():
-    code, path = line[:2], line[3:]
-    if code.strip() == "M" and path in allowed:
-        continue
-    if code == "??":
-        if "/src/" in path and path.startswith("packages/"):
-            errors.append(f"untracked file would enter the artifacts: {path}")
-        continue
-    errors.append(f"tree differs from HEAD beyond the prepared READMEs: {line}")
+errors.extend(classify_tree_state(status))
 
 # One version everywhere: both sources, the tag on HEAD, every artifact's
 # file name and metadata.
