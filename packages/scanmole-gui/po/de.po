@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: scanmole\n"
 "Report-Msgid-Bugs-To: office@foundata.com\n"
-"POT-Creation-Date: 2026-08-25 04:37+0200\n"
+"POT-Creation-Date: 2026-08-25 04:59+0200\n"
 "PO-Revision-Date: 2026-07-26 06:15+0200\n"
 "Last-Translator: foundata <office@foundata.com>\n"
 "Language-Team: German\n"
@@ -31,12 +31,12 @@ msgstr "Hauptmenü"
 
 #: src/scanmole_gui/app.py:385
 #, python-format
-msgid "ScanMole %(version)s by <a href=\"%(url)s\">foundata</a>"
-msgstr "ScanMole %(version)s von <a href=\"%(url)s\">foundata</a>"
+msgid "ScanMole (GUI) %(version)s by <a href=\"%(url)s\">foundata</a>"
+msgstr "ScanMole (GUI) %(version)s von <a href=\"%(url)s\">foundata</a>"
 
 #: src/scanmole_gui/app.py:391 src/scanmole_gui/dialogs.py:200
-msgid "Easy-to-use document scanner for Linux"
-msgstr "Benutzerfreundlicher Dokumenten-Scanner für Linux"
+msgid "Easy-to-use document scanner"
+msgstr "Benutzerfreundlicher Dokumenten-Scanner"
 
 #: src/scanmole_gui/app.py:573 src/scanmole_gui/form.py:339
 msgid "Searching for scanners…"
@@ -51,7 +51,7 @@ msgstr ""
 "Inkompatibles scanmole-CLI: Version %(found)s gefunden, aber diese "
 "Oberfläche benötigt %(needed)s."
 
-#: src/scanmole_gui/app.py:584 src/scanmole_gui/dialogs.py:208
+#: src/scanmole_gui/app.py:584 src/scanmole_gui/dialogs.py:213
 msgid "unknown"
 msgstr "unbekannt"
 
@@ -127,7 +127,7 @@ msgstr ""
 "Alle GUI-Optionen werden auf ihre Standardwerte zurückgesetzt. Gescannte "
 "Dateien und Ordner auf der Festplatte bleiben unberührt."
 
-#: src/scanmole_gui/app.py:936 src/scanmole_gui/dialogs.py:290
+#: src/scanmole_gui/app.py:936 src/scanmole_gui/dialogs.py:296
 #: src/scanmole_gui/form.py:400
 msgid "Cancel"
 msgstr "Abbrechen"
@@ -283,11 +283,11 @@ msgstr "Änderungen anwenden, die einen Neustart erfordern"
 msgid "Restart"
 msgstr "Neustart erforderlich"
 
-#: src/scanmole_gui/dialogs.py:210
-msgid "License"
-msgstr "Lizenz"
+#: src/scanmole_gui/dialogs.py:216
+msgid "License:"
+msgstr "Lizenz:"
 
-#: src/scanmole_gui/dialogs.py:223
+#: src/scanmole_gui/dialogs.py:229
 msgid ""
 "ScanMole is a document scanner for Linux with a powerful automation-grade "
 "CLI and an optional easy-to-use GUI. It creates searchable PDFs with low "
@@ -300,35 +300,35 @@ msgstr ""
 "Speicherplatzbedarf, erkennt leere Seiten automatisch, schneidet die "
 "Dokumente passend zu und richtet schiefe Seiten gerade aus."
 
-#: src/scanmole_gui/dialogs.py:245
+#: src/scanmole_gui/dialogs.py:251
 msgid "Website:"
 msgstr "Website:"
 
-#: src/scanmole_gui/dialogs.py:246
+#: src/scanmole_gui/dialogs.py:252
 msgid "Source Code:"
 msgstr "Quellcode:"
 
-#: src/scanmole_gui/dialogs.py:247
+#: src/scanmole_gui/dialogs.py:253
 msgid "Report Issues:"
 msgstr "Fehler melden:"
 
-#: src/scanmole_gui/dialogs.py:249
+#: src/scanmole_gui/dialogs.py:255
 msgid "Funding:"
 msgstr "Unterstützung:"
 
-#: src/scanmole_gui/dialogs.py:250
+#: src/scanmole_gui/dialogs.py:256
 msgid "Like this project?"
 msgstr "Gefällt dieses Projekt?"
 
-#: src/scanmole_gui/dialogs.py:252
+#: src/scanmole_gui/dialogs.py:258
 msgid "Buy us a coffee"
 msgstr "Kaffee spendieren"
 
-#: src/scanmole_gui/dialogs.py:270
+#: src/scanmole_gui/dialogs.py:276
 msgid "More OCR Languages"
 msgstr "Weitere OCR-Sprachen"
 
-#: src/scanmole_gui/dialogs.py:272
+#: src/scanmole_gui/dialogs.py:278
 msgid ""
 "OCR languages are Tesseract language packs, installed and removed with the "
 "distribution's package manager. The codes are three-letter ISO 639-2/T codes "
@@ -352,7 +352,7 @@ msgstr ""
 "Installierte Sprachen hier nutzen: Codes unten eingeben, mehrere mit + "
 "kombinieren."
 
-#: src/scanmole_gui/dialogs.py:291
+#: src/scanmole_gui/dialogs.py:297
 msgid "Use language"
 msgstr "Sprache verwenden"
 
