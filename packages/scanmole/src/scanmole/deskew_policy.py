@@ -54,6 +54,12 @@ is data and not a branch. The pair is the identity that matters: a
 mechanism is qualified by the driver that implements it together with
 the option that drives it, so measuring ``fujitsu``'s ``swdeskew`` says
 nothing about an option of the same name in another backend.
+
+``("fujitsu", "swdeskew")`` was measured on a real ScanSnap iX500
+(2026-08-25, see ARCHITECTURE.md's deskew evidence): at a consistent
+~3.7 degree hand-fed skew it removed about 15% of the rotation and left
+a residual roughly sixteen times the gate's 0.20 degree cap. It does
+correct something, just not enough, and stays out of this set.
 """
 
 _TRUE = frozenset({"yes", "true", "on", "1"})
