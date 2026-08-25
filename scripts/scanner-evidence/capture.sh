@@ -3,6 +3,9 @@
 # Raw scanner evidence capture for the ScanMole evidence kit.
 #
 # Bash required for: arrays (exact argv forwarding of backend options).
+# Also relies on GNU behavior (realpath -m, find -print0, sort -z,
+# date -Iseconds) and on printf %q; this tool only ever runs on a Linux
+# host driving SANE, so none of that is a portability regression.
 #
 # Captures raw PNM frames straight from scanimage, with no ScanMole
 # processing, into a run directory under an external evidence root that
@@ -17,7 +20,26 @@
 #     --run RUN_ID --source SOURCE --mode MODE --resolution DPI \
 #     --paper TEXT --orientation TEXT [-- SCANIMAGE_ARG...]
 
+# Consistent environment for predictable tool and shell behavior. A
+# fixed locale also keeps scanimage's recorded diagnostics comparable
+# between runs and hosts.
+export PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin}"
+if command -v locale >/dev/null 2>&1; then
+  for locale_candidate in 'C.UTF-8' 'C.utf8' 'en_US.UTF-8' 'UTF-8' 'C'; do
+    if LC_ALL="${locale_candidate}" locale charmap >/dev/null 2>&1; then
+      export LC_ALL="${locale_candidate}"
+      break
+    fi
+  done
+else
+  export LC_ALL='C'
+fi
+readonly LC_ALL
+unset locale_candidate
 set -u
+# Kept against the style guide's default: this is a Bash-only tool that
+# will never run under dash, and a silently swallowed pipeline failure
+# in an evidence capture is worse than the lost portability.
 set -o pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,18 +91,21 @@ check_forwarded() {
         err "forwarded '${argument}' would override the owned PNM format"
         exit 2
         ;;
-      -b | -b* | --batch | --batch=* | --batch-start | --batch-start=* \
-        | --batch-count | --batch-count=* | --batch-increment \
-        | --batch-increment=* | --batch-double | --batch-print \
-        | -o | -o* | --output-file | --output-file=*)
+      -b | -b* | --batch | --batch=* | --batch-start | --batch-start=* | \
+        --batch-count | --batch-count=* | --batch-increment | \
+        --batch-increment=* | --batch-double | --batch-print | \
+        -o | -o* | --output-file | --output-file=*)
         err "forwarded '${argument}' would override the owned batch output"
         exit 2
         ;;
-      -A | --all-options | -L | --list-devices | -h | --help | -V | --version \
-        | -n | --dont-scan | -T | --test | -f | --formatted-device-list \
-        | --batch-prompt | --batch-prompt=*)
+      -A | --all-options | -L | --list-devices | -h | --help | -V | --version | \
+        -n | --dont-scan | -T | --test | -f | --formatted-device-list | \
+        --batch-prompt | --batch-prompt=*)
         err "forwarded '${argument}' would change the operation; this tool only scans"
         exit 2
+        ;;
+      *)
+        # Anything else is backend-specific and forwarded on purpose.
         ;;
     esac
   done
@@ -89,13 +114,16 @@ check_forwarded() {
 ###
 # Reject control characters in a line-oriented metadata value.
 # Arguments:
-#   $1 - The option name (for the error message).
-#   $2 - The value.
+#   ${1} - The option name (for the error message).
+#   ${2} - The value.
 check_scalar() {
-  case "$2" in
+  case "${2}" in
     *$'\n'* | *$'\r'* | *$'\t'*)
-      err "option $1 must not contain newline, carriage-return or tab characters"
+      err "option ${1} must not contain newline, carriage-return or tab characters"
       exit 2
+      ;;
+    *)
+      # Any other value is a single line and therefore recordable.
       ;;
   esac
 }
@@ -107,15 +135,15 @@ check_scalar() {
 # into a repository. A hostile concurrent symlink swap between this
 # check and the mkdir is outside this local tool's threat model.
 # Arguments:
-#   $1 - The already canonicalized absolute path.
-#   $2 - A short description for the error message.
+#   ${1} - The already canonicalized absolute path.
+#   ${2} - A short description for the error message.
 refuse_worktree_path() {
-  local probe="$1"
+  local probe="${1}"
   while [ ! -d "${probe}" ] && [ "${probe}" != '/' ]; do
     probe="$(dirname -- "${probe}")"
   done
   if git -C "${probe}" rev-parse --show-toplevel >/dev/null 2>&1; then
-    err "$2 resolves into a Git worktree ($1);" \
+    err "${2} resolves into a Git worktree (${1});" \
       'raw evidence must stay outside Git permanently'
     exit 2
   fi
@@ -127,11 +155,11 @@ refuse_worktree_path() {
 # nearest existing ancestor decides, so a symlink or fresh subdirectory
 # cannot smuggle raw evidence into a repository.
 # Arguments:
-#   $1 - The requested output root.
+#   ${1} - The requested output root.
 # Outputs:
 #   The resolved absolute path on STDOUT.
 resolve_output_root() {
-  local requested="$1" resolved
+  local requested="${1}" resolved
   resolved="$(realpath -m -- "${requested}")" || exit 2
   refuse_worktree_path "${resolved}" "output root '${requested}'"
   printf '%s\n' "${resolved}"
@@ -143,9 +171,9 @@ resolve_output_root() {
 # Globals:
 #   metadata_file, run_dir
 # Arguments:
-#   $1 - The status text to record.
+#   ${1} - The status text to record.
 finalize_status() {
-  local status_text="$1"
+  local status_text="${1}"
   if [ -n "${metadata_file:-}" ] && [ -f "${metadata_file}" ] \
     && grep -q '^status: RUNNING$' "${metadata_file}"; then
     sed -i "s/^status: RUNNING$/status: ${status_text}/" "${metadata_file}"
@@ -161,13 +189,16 @@ finalize_status() {
 #   declared geometry are valid and merely reported), 1 otherwise.
 inventory_pages() {
   local pages=() inventory_exit=0
+  # shellcheck disable=SC2312 # a process substitution cannot report the
+  # status of find or sort; both read a directory this script just created,
+  # and an empty result is handled by the guard below.
   while IFS= read -r -d '' page; do
     pages+=("${page}")
   done < <(find "${run_dir}" -maxdepth 1 -name 'page_*.pnm' -print0 | sort -z)
   if [ "${#pages[@]}" -gt 0 ]; then
     python3 "${SELF_DIR}/pnm_inventory.py" "${pages[@]}" \
-      > "${run_dir}/inventory.tsv" \
-      2>> "${run_dir}/inventory-errors.txt" || inventory_exit=1
+      >"${run_dir}/inventory.tsv" \
+      2>>"${run_dir}/inventory-errors.txt" || inventory_exit=1
   fi
   return "${inventory_exit}"
 }
@@ -182,27 +213,38 @@ main() {
   local forwarded=()
 
   while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --output-root | --device-label | --device | --run | --source | --mode \
-        | --resolution | --paper | --orientation)
+    case "${1}" in
+      --output-root | --device-label | --device | --run | --source | --mode | \
+        --resolution | --paper | --orientation)
         if [ "$#" -lt 2 ]; then
-          err "option $1 requires a value"
+          err "option ${1} requires a value"
           exit 2
         fi
         ;;
-      --) shift; forwarded=("$@"); break ;;
-      *) err "unknown option '$1'"; usage ;;
+      --)
+        shift
+        forwarded=("$@")
+        break
+        ;;
+      *)
+        err "unknown option '${1}'"
+        usage
+        ;;
     esac
-    case "$1" in
-      --output-root) output_root="$2" ;;
-      --device-label) device_label="$2" ;;
-      --device) device="$2" ;;
-      --run) run_id="$2" ;;
-      --source) source_name="$2" ;;
-      --mode) mode="$2" ;;
-      --resolution) resolution="$2" ;;
-      --paper) paper="$2" ;;
-      --orientation) orientation="$2" ;;
+    case "${1}" in
+      --output-root) output_root="${2}" ;;
+      --device-label) device_label="${2}" ;;
+      --device) device="${2}" ;;
+      --run) run_id="${2}" ;;
+      --source) source_name="${2}" ;;
+      --mode) mode="${2}" ;;
+      --resolution) resolution="${2}" ;;
+      --paper) paper="${2}" ;;
+      --orientation) orientation="${2}" ;;
+      *)
+        err "internal error: option '${1}' is accepted but not stored"
+        exit 1
+        ;;
     esac
     shift 2
   done
@@ -262,6 +304,8 @@ main() {
   # Metadata before acquisition, so even an aborted run is documented.
   # This file stays outside Git permanently: the raw device identifier
   # and external paths in it must never reach repository fixtures.
+  local started_at
+  started_at="$(date -Iseconds)"
   metadata_file="${run_dir}/metadata.txt"
   {
     printf 'device_label: %s\n' "${device_label}"
@@ -274,10 +318,12 @@ main() {
     printf 'command:'
     printf ' %q' "${command[@]}"
     printf '\n'
+    # shellcheck disable=SC2312 # stderr is folded in on purpose: if the
+    # version query fails, its complaint is what belongs in the record.
     printf 'scanimage: %s\n' "$(scanimage --version 2>&1 | head -n 1)"
-    printf 'started: %s\n' "$(date -Iseconds)"
+    printf 'started: %s\n' "${started_at}"
     printf 'status: RUNNING\n'
-  } > "${metadata_file}"
+  } >"${metadata_file}"
 
   # An interrupt records the truth, inventories the completed pages and
   # then re-raises the signal so the original exit status is preserved.
@@ -286,8 +332,8 @@ main() {
 
   local scan_exit=0
   "${command[@]}" \
-    > "${run_dir}/scanimage-stdout.txt" \
-    2> "${run_dir}/scanimage-stderr.txt" || scan_exit="$?"
+    >"${run_dir}/scanimage-stdout.txt" \
+    2>"${run_dir}/scanimage-stderr.txt" || scan_exit="$?"
   trap - INT TERM
 
   local frames
