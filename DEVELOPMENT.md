@@ -163,8 +163,10 @@ Commit messages follow the foundata guideline (`guidelines/git-commits.md`): `<s
 | `gui` | the GTK frontend |
 | `i18n` | translations and gettext machinery |
 | `build`, `dependencies` | packaging, lockfile |
-| `docs`, `tests` | documentation set, test suite |
+| `tests` | test suite |
 | `licensing`, `release`, `repo`/`repository` | licensing files, release preparation, repository-wide concerns |
+
+`docs` is not a scope: the foundata guideline lists it among the Conventional Commits types a scope must not be written as. A commit that only changes documentation still uses the scope of the subsystem it documents (`gui: record the device lifecycle boundary`), or a cross-cutting scope such as `repository` when the documentation is not about one subsystem.
 
 
 ## Testing<a id="testing"></a>
