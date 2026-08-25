@@ -59,13 +59,13 @@ It consists of two components, shipped as two Python packages, so servers and sc
 
 Main features:
 
+- **Automation-grade CLI** with defined exit codes, filename templates and a versioned JSON event protocol.
+- **Easy-to-use GTK4/libadwaita GUI** on top of the same engine.
 - **Scan a stack of paper into one searchable PDF with a single command:** duplex batch, blank backsides dropped, OCR text layer, archival PDF/A output by default.
-- **Automatic page size detection crops every page to the detected paper edges**, falling back to conservative framing around the printed content where a device hides the paper boundary, so receipts come out receipt-sized and mixed stacks need no set-up. When content fits A4 and US Letter alike, `--auto-size-preference iso|north-american` decides the ambiguity (ISO by default).
-- **Small files by default:** 1-bit black-and-white at 300 dpi lands at roughly 100 KB per A4 text page, and ocrmypdf shrinks that further where `jbig2enc` is installed.
-- **Skewed pages are straightened by ScanMole itself**, so deskew does not depend on the driver offering it: the angle is measured and the raster rotated before the PDF is built. `--deskew-method scanner` hands the job to the device instead where you trust its own correction, and `scanmole` insists on ScanMole's. Exactly one of them ever runs. A page that cannot be measured, or cannot be rotated safely, is left as scanned rather than guessed at.
+- **Automatic page size detection crops every page to the detected paper edges**, falling back to conservative framing around the printed content where a device hides the paper boundary, so receipts come out receipt-sized and mixed stacks need no set-up.
+- **Small files by default:** 1-bit black-and-white at 300 dpi lands at roughly 100 KB per A4 text page or less.
+- **Skewed pages are straightened by ScanMole itself**, so deskew does not depend on the driver offering it: the angle is measured and the raster rotated before the PDF is built. `--deskew-method scanner` hands the job to the device instead where you trust its own correction if needed.
 - **Works with anything [SANE](https://en.wikipedia.org/wiki/Scanner_Access_Now_Easy)** can drive, including driverless eSCL devices via `sane-airscan`. Device capabilities are probed and mapped instead of hardcoded, and devices without a native 1-bit mode get software binarization automatically.
-- **Automation-grade CLI** with defined exit codes, filename templates and a versioned JSON event protocol; interrupted batches can be rebuilt from the preserved page images without rescanning the paper.
-- **Easy-to-use GTK4/libadwaita GUI** on top of the same engine, with a live filename preview and translations (German included).
 
 
 ## Demo<a id="demo"></a>
