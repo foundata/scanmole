@@ -197,22 +197,28 @@ def build_about_dialog(
     name = Gtk.Label(label="ScanMole", xalign=0.0)
     name.add_css_class("title-4")
     id_labels.append(name)
-    tagline = Gtk.Label(label=_("Easy-to-use document scanner for Linux"), xalign=0.0)
+    tagline = Gtk.Label(label=_("Easy-to-use document scanner"), xalign=0.0)
     tagline.add_css_class("dim-label")
     id_labels.append(tagline)
     identity.append(id_labels)
     content.append(identity)
 
+    # The values are markup so the licence can name its own terms page.
+    # The two version strings are escaped rather than trusted: one of them
+    # is whatever the installed CLI printed for --version.
     facts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     for key, value in (
-        ("scanmole (CLI)", cli_version or _("unknown")),
-        ("scanmole-gui (GUI)", __version__),
-        (_("License"), "GPL-3.0-or-later"),
+        (
+            "scanmole (CLI) version:",
+            GLib.markup_escape_text(cli_version or _("unknown")),
+        ),
+        ("scanmole-gui (GUI) version:", GLib.markup_escape_text(__version__)),
+        (_("License:"), _markup_link(f"{project_url}#licensing", "GPL-3.0-or-later")),
     ):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         key_label = Gtk.Label(label=key, xalign=0.0, hexpand=True)
         row.append(key_label)
-        value_label = Gtk.Label(label=value, xalign=1.0)
+        value_label = Gtk.Label(label=value, use_markup=True, xalign=1.0)
         value_label.add_css_class("monospace")
         row.append(value_label)
         facts.append(row)

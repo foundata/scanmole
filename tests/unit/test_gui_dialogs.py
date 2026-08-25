@@ -144,6 +144,72 @@ def test_about_dialog_reports_versions() -> None:
     assert dialog.get_title() == "About ScanMole"
 
 
+def _labelled_rows(root: Any) -> list[tuple[str, str]]:
+    """Every two-label row below ``root`` whose first label reads as a key."""
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gtk
+
+    children: list[Any] = []
+    child = root.get_first_child()
+    while child is not None:
+        children.append(child)
+        child = child.get_next_sibling()
+
+    rows: list[tuple[str, str]] = []
+    if (
+        len(children) == 2
+        and all(isinstance(item, Gtk.Label) for item in children)
+        and children[0].get_text().endswith(":")
+    ):
+        rows.append((children[0].get_text(), children[1].get_label()))
+    for item in children:
+        rows.extend(_labelled_rows(item))
+    return rows
+
+
+def test_about_dialog_names_each_version_row_and_links_the_licence() -> None:
+    _init_adw()
+    from scanmole_gui import __version__
+    from scanmole_gui.dialogs import build_about_dialog
+
+    dialog = build_about_dialog(
+        cli_version="9.9.9",
+        logo_file=Path("/nonexistent.svg"),
+        project_url="https://example.test/scanmole/",
+        funding_url="https://coffee.test/",
+    )
+
+    # The licence names its own terms page, on the same project URL the
+    # link block below it is built from.
+    assert _labelled_rows(dialog.get_child()) == [
+        ("scanmole (CLI) version:", "9.9.9"),
+        ("scanmole-gui (GUI) version:", __version__),
+        (
+            "License:",
+            '<a href="https://example.test/scanmole/#licensing">GPL-3.0-or-later</a>',
+        ),
+    ]
+
+
+def test_about_dialog_escapes_the_version_the_cli_reported() -> None:
+    # The row is markup so the licence can carry a link; the CLI version is
+    # whatever the installed engine printed, so it must not be read as one.
+    _init_adw()
+    from scanmole_gui.dialogs import build_about_dialog
+
+    dialog = build_about_dialog(
+        cli_version="1.0 <b>&</b>",
+        logo_file=Path("/nonexistent.svg"),
+        project_url="https://example.test/scanmole/",
+        funding_url="https://coffee.test/",
+    )
+
+    rows = dict(_labelled_rows(dialog.get_child()))
+    assert rows["scanmole (CLI) version:"] == "1.0 &lt;b&gt;&amp;&lt;/b&gt;"
+
+
 def test_about_dialog_links_to_the_project_and_its_funding() -> None:
     _init_adw()
     import gi

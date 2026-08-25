@@ -378,14 +378,12 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         )
         credit_title = Gtk.Label(xalign=0.0)
         credit_title.set_markup(
-            _('ScanMole %(version)s by <a href="%(url)s">foundata</a>')
+            _('ScanMole (GUI) %(version)s by <a href="%(url)s">foundata</a>')
             % {"version": __version__, "url": PROJECT_URL}
         )
         credit_title.add_css_class("heading")
         credit_labels.append(credit_title)
-        credit_tagline = Gtk.Label(
-            label=_("Easy-to-use document scanner for Linux"), xalign=0.0
-        )
+        credit_tagline = Gtk.Label(label=_("Easy-to-use document scanner"), xalign=0.0)
         credit_tagline.add_css_class("dim-label")
         credit_labels.append(credit_tagline)
         credit.append(credit_labels)
