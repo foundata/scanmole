@@ -33,6 +33,7 @@ This file provides information for maintainers and contributors to ScanMole. Wha
 - **[uv](https://docs.astral.sh/uv/)** for the virtualenv, dependency groups and entry points.
 - **External runtime tools** from distribution packages. Fedora: `sudo dnf install sane-backends sane-airscan img2pdf ocrmypdf tesseract tesseract-langpack-deu tesseract-osd python3-gobject gtk4 libadwaita`. Debian 13+ / Ubuntu 24.04+: `sudo apt install sane-utils sane-airscan img2pdf ocrmypdf tesseract-ocr tesseract-ocr-deu tesseract-ocr-osd python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`.
 - **gettext** tools (`msgfmt`, `msgmerge`, `xgettext`) for [translation work](#translations) only.
+- **[shfmt](https://github.com/mvdan/sh)** and **[shellcheck](https://www.shellcheck.net/)** for the shell scripts. Fedora: `sudo dnf install shfmt ShellCheck`. Debian 13+ / Ubuntu 24.04+: `sudo apt install shfmt shellcheck`. The [release gate](#releases) runs both and fails without them.
 
 
 ## Getting started<a id="getting-started"></a>
@@ -148,6 +149,8 @@ uv run mypy packages/scanmole/src packages/scanmole-gui/src tests scripts/scanne
 ```
 
 Always run all three before committing. The rule sets live in `pyproject.toml`.
+
+Shell scripts follow [`guidelines/shell-scripting-style-guide.md`](https://github.com/foundata/guidelines) and are checked with the tools and option sets it prescribes. `scripts/release-check.sh` runs them over every shipped script, so the quickest way to check a change is to run that step; `checkbashisms` is not part of the gate and is worth running by hand on the POSIX scripts.
 
 
 ### Commit messages and scopes<a id="commit-scopes"></a>
@@ -282,7 +285,7 @@ Both packages always release together, with the same version and one `vX.Y.Z` ta
    ```sh
    scripts/release-check.sh
    ```
-   This runs formatting, linting, the strict type check and the test suite on every supported Python version, then builds both packages' wheels and source distributions, installs the wheels into a clean throwaway environment per version and smoke-tests the installed artifacts (import, `scanmole --version`/`--help`, and the `scanmole-gui` launcher's defined no-GTK behavior). Integration tests need `img2pdf` and the SANE `test` backend to actually run instead of skipping (see [Testing](#testing)); use a machine that has both. Also run the [smoke checklist](#smoke-checklist) on at least one fleet device.
+   This runs formatting, linting, the strict type check, the shell-script checks (`shfmt` and `shellcheck` over every shipped script, plus a per-dialect parse) and the test suite on every supported Python version, then builds both packages' wheels and source distributions, installs the wheels into a clean throwaway environment per version and smoke-tests the installed artifacts (import, `scanmole --version`/`--help`, and the `scanmole-gui` launcher's defined no-GTK behavior). Integration tests need `img2pdf` and the SANE `test` backend to actually run instead of skipping (see [Testing](#testing)); use a machine that has both. Also run the [smoke checklist](#smoke-checklist) on at least one fleet device.
 2. Determine the next version number. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 3. Update several files to match the new release version:
    - [`CHANGELOG.md`](./CHANGELOG.md): insert a section for the new release with the date (Keep a Changelog format).
