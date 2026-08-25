@@ -300,7 +300,7 @@ def _recovery_command(
     )
 
 
-def _straighten(page: Path) -> Deskewed:
+def _straighten(page: Path, dpi: int) -> Deskewed:
     """Deskew one acquired page, translating a broken attempt.
 
     The deskew module reports outcomes and lets failures out as what
@@ -320,7 +320,7 @@ def _straighten(page: Path) -> Deskewed:
             per-page log lines already do.
     """
     try:
-        return deskew_page(page).outcome
+        return deskew_page(page, dpi).outcome
     except subprocess.TimeoutExpired as exc:
         raise ProcessingError(
             f"measuring the skew of {page.name} timed out after "
@@ -443,10 +443,14 @@ def run_pipeline(config: ScanConfig, events: EventWriter) -> int:
             # A fixed page size skips both crops and keeps its configured
             # canvas, but the page is still straightened.
             if host_deskew and not from_images:
-                outcome = _straighten(page)
+                outcome = _straighten(page, dpi_now or config.resolution)
                 if outcome is Deskewed.UNSUPPORTED:
                     host_declined += 1
                 else:
+                    # DECLINED counts as handled: the host measured the
+                    # page and finally decided to keep its skew rather
+                    # than push content off the canvas, so ocrmypdf must
+                    # not repeat the same unsafe turn on the whole batch.
                     host_handled += 1
                 if outcome is Deskewed.ROTATED and auto_page_size:
                     # Zero trim and no feeder band: the paper edges were

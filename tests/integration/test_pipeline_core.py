@@ -794,14 +794,271 @@ def test_the_backend_keeps_both_later_mechanisms_out(
     assert not any("tesseract" in tools for tools in required)
 
 
+def _cornered_page(
+    width: int, height: int, backing_rows: int
+) -> tuple[bytes, tuple[int, int, int, int]]:
+    """A white paper frame over dark backing with corner-hugging content.
+
+    The target in the paper's top-left corner plus a centre block force
+    the safety plan into a nonzero translation at two degrees: the
+    content fits the canvas but its rotated corner would leave it.
+    """
+    raster = bytearray(b"\xff" * (width * height))
+    target = (0, 0, 24, 24)
+    for y in range(target[1], target[3]):
+        raster[y * width + target[0] : y * width + target[2]] = b"\x00" * (
+            target[2] - target[0]
+        )
+    for y in range(height // 2, height // 2 + 30):
+        raster[y * width + width // 3 : y * width + width // 3 + 240] = b"\x20" * 240
+    for y in range(height - backing_rows, height):
+        raster[y * width : (y + 1) * width] = b"\x28" * width
+    return b"P5\n%d %d\n255\n" % (width, height) + bytes(raster), target
+
+
+def _find_target(
+    raster: bytes, width: int, height: int, area: int, expected: tuple[float, float]
+) -> bool:
+    """Exact survival: mass and centroid at the mapped position.
+
+    The window is barely larger than the target and the centroid must
+    sit within a small resampling tolerance of the expected coordinate,
+    which already includes the translation the production code applied.
+    """
+    half = 16  # 12 px target half-side plus tolerance
+    x0, x1 = max(0, int(expected[0]) - half), min(width, int(expected[0]) + half + 1)
+    y0, y1 = max(0, int(expected[1]) - half), min(height, int(expected[1]) + half + 1)
+    dark = [
+        (x, y)
+        for y in range(y0, y1)
+        for x in range(x0, x1)
+        if raster[y * width + x] < 128
+    ]
+    if len(dark) < area * 0.85:
+        return False
+    centroid = (
+        sum(x for x, _y in dark) / len(dark),
+        sum(y for _x, y in dark) / len(dark),
+    )
+    return abs(centroid[0] - expected[0]) <= 3 and abs(centroid[1] - expected[1]) <= 3
+
+
+def test_a_translated_turn_survives_automatic_sizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The whole production path around a shifted rotation: the first crop
+    # takes the backing, the measured turn needs a translation to keep
+    # the corner target aboard, the second crop runs, and the final page
+    # keeps its paper geometry with the target at its transformed place,
+    # no darker border, no blank flip and the ordinary event stream.
+    import math as math_module
+
+    from support.pipeline import _gray_scan_pages
+
+    width, paper_h, backing = 874, 1240, 60
+    frame, target = _cornered_page(width, paper_h + backing, backing)
+    settings = EffectiveSettings(
+        source="ADF", mode="Gray", resolution=150, window_mm=(148.0, 220.0)
+    )
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr(
+        "scanmole.pipeline.scan_to_files",
+        _gray_scan_pages([frame], settings=settings),
+    )
+    monkeypatch.setattr(
+        "scanmole.deskew.run_command",
+        lambda command, **_kw: subprocess.CompletedProcess(
+            command, 0, "", f"Deskew angle: {math_module.radians(2.0)}\n"
+        ),
+    )
+    rasters: list[bytes] = []
+
+    def capture_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
+        rasters.extend(page.read_bytes() for page in pages)
+        output.write_bytes(b"%PDF-fake")
+
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", capture_pdf)
+    # The stage order is part of the contract: first crop, the measured
+    # turn, then the second crop with zero trim and no feeder band. The
+    # synthetic paper is clean, so only the call order can prove the
+    # second crop ran; its pixel effect is pinned on the real corpora.
+    stages: list[tuple[str, object]] = []
+    from scanmole.autocrop import autocrop_image as real_autocrop
+    from scanmole.deskew import deskew_page as real_deskew
+
+    def watched_crop(page: Path, trim: int, band: int | None, dpi: int) -> object:
+        stages.append(("crop", (trim, band)))
+        return real_autocrop(page, trim, band, dpi=dpi)
+
+    def watched_deskew(page: Path, dpi: int = 300) -> object:
+        stages.append(("deskew", None))
+        return real_deskew(page, dpi)
+
+    monkeypatch.setattr("scanmole.pipeline.autocrop_image", watched_crop)
+    monkeypatch.setattr("scanmole.pipeline.deskew_page", watched_deskew)
+    import scanmole.deskew as deskew_module
+
+    shifts: list[tuple[int, int]] = []
+    real_rotate = deskew_module._rotate
+
+    def spied_rotate(
+        page: Path, raster: object, degrees: float, shift: tuple[int, int]
+    ) -> bool:
+        shifts.append(shift)
+        return real_rotate(page, raster, degrees, shift)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("scanmole.deskew._rotate", spied_rotate)
+    stream = io.StringIO()
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"),
+        mode="gray",
+        page_size="auto",
+        deskew=True,
+    )
+
+    with caplog.at_level("INFO"):
+        code = run_pipeline(config, EventWriter(enabled=True, stream=stream))
+
+    assert code == 0
+    assert any("shifted by" in record.message for record in caplog.records)
+    assert [stage for stage, _args in stages] == ["crop", "deskew", "crop"]
+    from scanmole.pipeline import _FEEDER_BAND_MM
+
+    feeder_band = max(1, round(_FEEDER_BAND_MM * 150 / 25.4))
+    assert stages[0][1] == (2, feeder_band)  # trim and band at 150 dpi
+    assert stages[2][1] == (0, None)  # the second crop: zero trim, no band
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert [event["event"] for event in events] == [
+        "start",
+        "page",
+        "scan_done",
+        "done",
+    ]
+    page_event = next(event for event in events if event["event"] == "page")
+    assert set(page_event) == {"event", "n", "file", "blank", "mean"}
+    assert page_event["blank"] is False  # no blank flip
+    (final,) = rasters
+    tokens = final.split(b"\n", 3)
+    final_w, final_h = (int(v) for v in tokens[1].split())
+    # The backing is gone; the one detected (bottom) edge carries the
+    # established 2 px edge trim at 150 dpi, the undetected sides none.
+    assert (final_w, final_h) == (width, paper_h - 2)
+    raster = tokens[3]
+    # No darker border: every outer band stays bright after crop two.
+    bands = [
+        raster[: 2 * final_w],
+        raster[-2 * final_w :],
+        b"".join(raster[y * final_w : y * final_w + 2] for y in range(final_h)),
+        b"".join(
+            raster[y * final_w + final_w - 2 : (y + 1) * final_w]
+            for y in range(final_h)
+        ),
+    ]
+    for band in bands:
+        assert sum(band) / len(band) / 255 > 0.9
+    # The target sits exactly where the rotation plus the recorded
+    # nonzero translation put it, on the canvas the turn ran on.
+    assert shifts and shifts[-1] != (0, 0)
+    shift = shifts[-1]
+    theta = math_module.radians(2.0)
+    cx, cy = final_w / 2, final_h / 2
+    centre = ((target[0] + target[2]) / 2, (target[1] + target[3]) / 2)
+    dx, dy = centre[0] - cx, centre[1] - cy
+    expected = (
+        cx + dx * math_module.cos(theta) + dy * math_module.sin(theta) + shift[0],
+        cy - dx * math_module.sin(theta) + dy * math_module.cos(theta) + shift[1],
+    )
+    area = (target[2] - target[0]) * (target[3] - target[1])
+    assert _find_target(raster, final_w, final_h, area, expected)
+
+
+def test_a_translated_turn_keeps_a_fixed_canvas_exactly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Fixed page sizes skip both crops: the shifted rotation must keep
+    # the configured canvas dimensions to the pixel.
+    import math as math_module
+
+    from support.pipeline import _gray_scan_pages
+
+    width, height = 874, 1240
+    frame, _target = _cornered_page(width, height, 0)
+    monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
+    monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
+    monkeypatch.setattr("scanmole.pipeline.scan_to_files", _gray_scan_pages([frame]))
+    monkeypatch.setattr(
+        "scanmole.deskew.run_command",
+        lambda command, **_kw: subprocess.CompletedProcess(
+            command, 0, "", f"Deskew angle: {math_module.radians(2.0)}\n"
+        ),
+    )
+    rasters: list[bytes] = []
+
+    def capture_pdf(pages: list[Path], output: Path, dpi: int | None) -> None:
+        rasters.extend(page.read_bytes() for page in pages)
+        output.write_bytes(b"%PDF-fake")
+
+    monkeypatch.setattr("scanmole.pipeline.build_pdf", capture_pdf)
+    config = dataclasses.replace(
+        _config(images=None, output=tmp_path / "out.pdf"), mode="gray", deskew=True
+    )
+
+    with caplog.at_level("INFO"):
+        code = run_pipeline(config, EventWriter(enabled=False))
+
+    assert code == 0
+    assert any("shifted by" in record.message for record in caplog.records)
+    (final,) = rasters
+    tokens = final.split(b"\n", 3)
+    assert tuple(int(v) for v in tokens[1].split()) == (width, height)
+
+
+def test_an_unsafe_turn_declines_without_a_false_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Content in all four corners cannot survive the measured turn inside
+    # a fixed canvas: the page keeps its skew byte for byte, the log says
+    # so instead of claiming a deskew, the page event still appears, and
+    # ocrmypdf is not handed the same unsafe rotation.
+    import math as math_module
+
+    width, height = 874, 1240
+    raster = bytearray(b"\xff" * (width * height))
+    corners = [(0, 0), (width - 20, 0), (0, height - 20), (width - 20, height - 20)]
+    for cx, cy in corners:
+        for y in range(cy, cy + 20):
+            raster[y * width + cx : y * width + cx + 20] = b"\x00" * 20
+    for y in range(600, 630):
+        raster[y * width + 290 : y * width + 530] = b"\x20" * 240
+    frame = b"P5\n%d %d\n255\n" % (width, height) + bytes(raster)
+    angle = f"Deskew angle: {math_module.radians(2.0)}\n"
+
+    with caplog.at_level("INFO"):
+        calls, _required, kept = _deskew_run(
+            tmp_path, monkeypatch, deskew_applied=False, page=frame, stderr=angle
+        )
+
+    assert calls == [False]  # ocrmypdf must not repeat the unsafe turn
+    assert kept.read_bytes() == frame  # the page kept its skew, untouched
+    assert any("keeping it as scanned" in record.message for record in caplog.records)
+    assert not any("deskewed by" in record.message for record in caplog.records)
+
+
 def _host_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record every page the host deskew is actually handed."""
     seen: list[str] = []
     from scanmole.deskew import deskew_page as real
 
-    def watched(page: Path) -> object:
+    def watched(page: Path, dpi: int = 300) -> object:
         seen.append(page.name)
-        return real(page)
+        return real(page, dpi)
 
     monkeypatch.setattr("scanmole.pipeline.deskew_page", watched)
     return seen

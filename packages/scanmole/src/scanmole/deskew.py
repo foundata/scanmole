@@ -21,10 +21,13 @@ analysis, which is the same evidence ocrmypdf uses and needs no new
 tool. Pillow does the rotation, because doing it well means resampling
 and the standard library has no image support at all.
 
-Two outcomes carry the whole contract. ``STRAIGHT`` means the page was
+Three outcomes carry the whole contract. ``STRAIGHT`` means the page was
 measured and needs nothing, valid no-evidence results included: it is
-final, and nobody downstream should rotate it again. ``UNSUPPORTED``
-means this path cannot own the page at all, so the request falls through
+final, and nobody downstream should rotate it again. ``DECLINED`` means
+the page was measured but turning it inside its own canvas would push
+meaningful content off the page; it keeps its skew, finally, and nobody
+downstream may attempt the same unsafe turn. ``UNSUPPORTED`` means this
+path cannot own the page at all, so the request falls through
 to whatever comes next. Failures are neither: a timeout, an interrupt or
 any write problem propagates as what it is, because the pipeline, not
 this module, knows what a run owes the paper. It translates a broken
@@ -44,7 +47,7 @@ from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
 from scanmole.external import run_command
-from scanmole.pnm import read_header, replace_file
+from scanmole.pnm import coherent_regions, pnm_evidence_mask, read_header, replace_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -108,12 +111,33 @@ _FILL: dict[bytes, float | tuple[float, ...]] = {
 }
 """White in each accepted mode, for the corner the rotation exposes."""
 
+_MEANINGFUL_MAX_SPAN = 0.9
+"""A coherent region spanning at least this fraction of a frame axis,
+while hugging a frame edge, is a scanner artifact rather than content.
+Boundary bars run the full height and trailing-edge shadows the full
+width of the frame; no printed content does."""
+
+_MEANINGFUL_MAX_ASPECT = 12.0
+"""An edge-hugging region longer than this many times its own thickness
+is an artifact hairline. Interior rules and underlines are exempt on
+purpose: a line three millimetres inside the paper is decoration worth
+protecting, one on the frame boundary is the scanner's."""
+
+_EDGE_MARGIN_MM = 1.5
+"""How close to the frame border a region must reach before the span
+and aspect artifact rules apply to it at all."""
+
+_SAFETY_MARGIN_PX = 2
+"""Resampling reads neighbours, so content must keep this distance from
+the canvas boundary after the turn to survive it whole."""
+
 
 class Deskewed(Enum):
     """What happened to one page."""
 
     ROTATED = "rotated"
     STRAIGHT = "straight"
+    DECLINED = "declined"
     UNSUPPORTED = "unsupported"
 
 
@@ -214,7 +238,112 @@ def page_angle(path: Path) -> float | None:
     return None
 
 
-def _rotate(path: Path, raster: _Raster, degrees: float) -> bool:
+def _meaningful_box(
+    buffer: bytes, raster: _Raster, dpi: int
+) -> tuple[int, int, int, int] | None:
+    """The union box of the frame's meaningful content, or ``None``.
+
+    Meaningful is what the turn must not lose: every locally coherent
+    ink region except the scanner's own edge artifacts. A region that
+    reaches the frame border and either spans an axis (a boundary bar,
+    a trailing-edge shadow) or is a hairline is the scanner's, however
+    dark; a corner mark, an inset rule and every interior region are
+    content. ``None`` means no coherent evidence at all: nothing is
+    established that a turn could lose, so nothing constrains it.
+    """
+    try:
+        mask = pnm_evidence_mask(buffer, 0.5)
+        if mask is None:  # pragma: no cover -- _inspect admits P4/P5/P6 only
+            return None
+        regions = coherent_regions(mask, dpi)
+    except ValueError:  # pragma: no cover -- _inspect already parsed it
+        return None
+    edge_px = max(1, round(_EDGE_MARGIN_MM * dpi / 25.4))
+    meaningful: list[tuple[int, int, int, int]] = []
+    for region in regions:
+        x0, y0, x1, y1 = region.box
+        touches = (
+            x0 <= edge_px
+            or y0 <= edge_px
+            or x1 >= raster.width - edge_px
+            or y1 >= raster.height - edge_px
+        )
+        if touches:
+            width, height = x1 - x0, y1 - y0
+            spans = (
+                width >= raster.width * _MEANINGFUL_MAX_SPAN
+                or height >= raster.height * _MEANINGFUL_MAX_SPAN
+            )
+            hairline = max(width, height) > min(width, height) * _MEANINGFUL_MAX_ASPECT
+            if spans or hairline:
+                continue
+        meaningful.append(region.box)
+    if not meaningful:
+        return None
+    return (
+        min(box[0] for box in meaningful),
+        min(box[1] for box in meaningful),
+        max(box[2] for box in meaningful),
+        max(box[3] for box in meaningful),
+    )
+
+
+def _turn_plan(
+    box: tuple[int, int, int, int], raster: _Raster, degrees: float
+) -> tuple[int, int] | None:
+    """How to keep ``box`` on the canvas through the turn, if possible.
+
+    Pillow rotates counterclockwise around the canvas centre; a source
+    point lands at ``c + R(p - c)``. Returns the post-rotation shift
+    that keeps every corner of ``box`` inside the canvas: ``(0, 0)``
+    when the plain turn is already safe (that path stays byte for byte
+    the one it always was), a small translation when the turned box
+    fits the canvas but sticks out on one side, and ``None`` when it
+    cannot fit without scaling, which is never an option.
+    """
+    theta = math.radians(degrees)
+    cos, sin = math.cos(theta), math.sin(theta)
+    cx, cy = raster.width / 2, raster.height / 2
+    corners = (
+        (box[0], box[1]),
+        (box[2] - 1, box[1]),
+        (box[0], box[3] - 1),
+        (box[2] - 1, box[3] - 1),
+    )
+    xs = []
+    ys = []
+    for x, y in corners:
+        dx, dy = x - cx, y - cy
+        xs.append(cx + dx * cos + dy * sin)
+        ys.append(cy - dx * sin + dy * cos)
+    margin = _SAFETY_MARGIN_PX
+    low_x, high_x = margin, raster.width - 1 - margin
+    low_y, high_y = margin, raster.height - 1 - margin
+    if (
+        min(xs) >= low_x
+        and max(xs) <= high_x
+        and min(ys) >= low_y
+        and max(ys) <= high_y
+    ):
+        return (0, 0)
+    if max(xs) - min(xs) > high_x - low_x or max(ys) - min(ys) > high_y - low_y:
+        return None
+    shift_x = 0
+    if min(xs) < low_x:
+        shift_x = math.ceil(low_x - min(xs))
+    elif max(xs) > high_x:
+        shift_x = -math.ceil(max(xs) - high_x)
+    shift_y = 0
+    if min(ys) < low_y:
+        shift_y = math.ceil(low_y - min(ys))
+    elif max(ys) > high_y:
+        shift_y = -math.ceil(max(ys) - high_y)
+    return (shift_x, shift_y)
+
+
+def _rotate(
+    path: Path, raster: _Raster, degrees: float, shift: tuple[int, int]
+) -> bool:
     """Rotate a supported PNM in place; ``False`` means it was refused.
 
     Raises:
@@ -234,9 +363,18 @@ def _rotate(path: Path, raster: _Raster, degrees: float) -> bool:
                     image.size,
                 )
                 return False
-            turned = image.rotate(
-                degrees, resample=resample, fillcolor=_FILL[raster.kind]
-            )
+            if shift == (0, 0):
+                # The safe path is the one it always was, byte for byte.
+                turned = image.rotate(
+                    degrees, resample=resample, fillcolor=_FILL[raster.kind]
+                )
+            else:
+                turned = image.rotate(
+                    degrees,
+                    resample=resample,
+                    fillcolor=_FILL[raster.kind],
+                    translate=shift,
+                )
     except Image.DecompressionBombError:  # pragma: no cover -- MAX_PIXELS is lower
         LOGGER.warning("%s: too large to rotate safely; keeping it", path.name)
         return False
@@ -252,18 +390,25 @@ def _rotate(path: Path, raster: _Raster, degrees: float) -> bool:
     return True
 
 
-def deskew_page(path: Path) -> DeskewResult:
-    """Straighten one acquired page in place.
+def deskew_page(path: Path, dpi: int = 300) -> DeskewResult:
+    """Straighten one acquired page without losing its detected content.
 
-    Measures the skew, rotates the raster inside its own canvas with a
-    white fill, and replaces the file atomically. The dimensions do not
-    change, so everything downstream still sees the frame it expected.
+    Measures the skew, checks which meaningful pixels the turn would
+    push off the canvas, and rotates the raster inside its own canvas
+    with a white fill, shifted just enough to keep every meaningful
+    region aboard where the plain turn would clip one. The dimensions
+    never change and the page is never scaled; a turn that cannot keep
+    the content whole is declined and the page keeps its skew. ``dpi``
+    scales the content-evidence tiles; the caller's best knowledge is
+    enough, and 300 is the assumption where there is none.
 
     Returns:
         ``ROTATED`` with the applied angle; ``STRAIGHT`` when the page
         was measured and needs nothing, a valid no-evidence result
-        included; ``UNSUPPORTED`` when this path cannot own the page, so
-        the caller's own fallback still holds the request.
+        included; ``DECLINED`` when only an unsafe turn could straighten
+        it, so it stays as scanned and final; ``UNSUPPORTED`` when this
+        path cannot own the page, so the caller's own fallback still
+        holds the request.
 
     Raises:
         OSError: If the page cannot be read, staged or replaced.
@@ -271,13 +416,37 @@ def deskew_page(path: Path) -> DeskewResult:
             out. Both leave the acquired raster untouched and reach the
             pipeline, which preserves the pages it already has.
     """
-    raster = _inspect(path.read_bytes())
+    buffer = path.read_bytes()
+    raster = _inspect(buffer)
     if raster is None:
         return DeskewResult(Deskewed.UNSUPPORTED)
     degrees = page_angle(path)
     if degrees is None or abs(degrees) < MIN_ANGLE_DEGREES:
         return DeskewResult(Deskewed.STRAIGHT)
-    if not _rotate(path, raster, degrees):
+    shift = (0, 0)
+    box = _meaningful_box(buffer, raster, dpi)
+    if box is not None:
+        plan = _turn_plan(box, raster, degrees)
+        if plan is None:
+            LOGGER.warning(
+                "%s: straightening by %.2f degrees would push content off "
+                "the page; keeping it as scanned",
+                path.name,
+                degrees,
+            )
+            return DeskewResult(Deskewed.DECLINED, degrees)
+        shift = plan
+    if not _rotate(path, raster, degrees, shift):
         return DeskewResult(Deskewed.UNSUPPORTED)
-    LOGGER.info("%s: deskewed by %.2f degrees", path.name, degrees)
+    if shift == (0, 0):
+        LOGGER.info("%s: deskewed by %.2f degrees", path.name, degrees)
+    else:
+        LOGGER.info(
+            "%s: deskewed by %.2f degrees, shifted by (%d, %d) px to keep "
+            "the content aboard",
+            path.name,
+            degrees,
+            shift[0],
+            shift[1],
+        )
     return DeskewResult(Deskewed.ROTATED, degrees)
