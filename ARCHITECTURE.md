@@ -227,7 +227,7 @@ Evolution rules (versioned API):
 | `1` | Unexpected internal error. |
 | `2` | Usage or input error: bad arguments, invalid page size, conflicting options. No PDF was produced. |
 | `3` | Acquisition failure: `scanimage` failed, no usable device, device vanished mid-batch, or a device probe timed out. |
-| `4` | Missing external tool: scanimage, img2pdf, ocrmypdf or (for `--deskew` on a device without its own) tesseract is not installed. The deskew owner is settled during negotiation, so a run that needs tesseract refuses before any paper moves. |
+| `4` | Missing external tool: scanimage, img2pdf, ocrmypdf or tesseract is not installed. `--deskew` needs tesseract whenever ScanMole straightens the pages itself, which is the default on every device, including one whose driver offers a deskew option (see [deskew ownership](#pipeline-deskew)); only a run the scanner's own mechanism owns goes without it. The owner is settled during negotiation, so a run that needs tesseract refuses before any paper moves. |
 | `5` | Processing failure after successful acquisition: img2pdf or ocrmypdf failed, or [host deskew](#pipeline-deskew) could not measure or straighten a page. Scanned pages are preserved in the work directory (path in the error message) so the batch is not lost. |
 | `6` | Nothing to scan: feeder empty, or every page was blank. Not a malfunction; no PDF was produced. |
 | `130` | Interrupted (SIGINT). |

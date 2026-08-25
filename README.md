@@ -215,7 +215,7 @@ Multi-sheet documents on single-sheet scanners: turn on "Combine scans" above th
 | `1` | Unexpected internal error. |
 | `2` | Usage or input error: bad arguments, invalid page size, conflicting options. No PDF was produced. |
 | `3` | Acquisition failure: `scanimage` failed, no usable device, device vanished mid-batch, or a device probe timed out. |
-| `4` | Missing external tool: scanimage, img2pdf, ocrmypdf or (for `--deskew` on a device without its own) tesseract is not installed. |
+| `4` | Missing external tool: scanimage, img2pdf, ocrmypdf or tesseract is not installed. `--deskew` needs tesseract whenever ScanMole straightens the pages itself, which is the default on every device, including one whose driver offers a deskew option; only a run the scanner's own mechanism owns (`--deskew-method scanner`, or a correction that cannot be switched off) goes without it. |
 | `5` | Processing failure after successful acquisition: img2pdf or ocrmypdf failed, or a page could not be measured or straightened. Scanned pages are preserved in the work directory (path in the error message), so the batch can be rebuilt with `--from-images` instead of rescanning the paper. |
 | `6` | Nothing to scan: feeder empty, or every page was blank. Not a malfunction; no PDF was produced. |
 | `130` | Interrupted (SIGINT). |
