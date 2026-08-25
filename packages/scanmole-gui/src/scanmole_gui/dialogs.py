@@ -206,7 +206,7 @@ def build_about_dialog(
     facts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     for key, value in (
         ("scanmole (CLI)", cli_version or _("unknown")),
-        ("scanmole-gui", __version__),
+        ("scanmole-gui (GUI)", __version__),
         (_("License"), "GPL-3.0-or-later"),
     ):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
