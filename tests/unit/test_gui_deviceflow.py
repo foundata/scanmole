@@ -470,6 +470,101 @@ def test_a_stale_search_result_changes_nothing(
 
 
 @_NEEDS_GI
+def test_a_completed_search_records_the_version_the_engine_announced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The About dialog reads this. "unknown" there means no search has
+    # ever completed, not that the engine declined to say.
+    from scanmole_gui import __version__
+
+    harness = _Harness(monkeypatch)
+    harness.flow.start()
+    assert harness.flow.cli_version is None  # nothing asked yet
+    harness.run_search(monkeypatch, devices=[_ENTRY])
+
+    assert harness.flow.cli_version == __version__
+
+
+@_NEEDS_GI
+def test_the_engine_version_lands_before_the_device_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Which engine is installed does not depend on any scanner, and
+    # "scanimage -L" can take the full listing timeout on a network
+    # backend. The About dialog must not have to wait for that.
+    harness = _Harness(monkeypatch)
+    harness.flow.start()
+
+    listing_ran = []
+
+    def slow_listing(argv: list[str], **_kw: object) -> _Result:
+        if "--version" in argv:
+            return _Result(stdout="scanmole 9.9.9\n")
+        listing_ran.append(argv)
+        return _Result(stdout=_listing_stdout([_ENTRY]))
+
+    monkeypatch.setattr(harness.module, "run_command", slow_listing)
+    target, args = harness.advisory.spawned.pop()
+    target(*args)
+
+    # The worker has returned but nothing has been applied yet; the
+    # version idle is queued ahead of the listing idle.
+    assert listing_ran  # the slow call did happen, after the probe
+    version_idle, _rest = harness.glib.idles[0]
+    assert version_idle == harness.flow._adopt_cli_version
+    version_idle(*harness.glib.idles[0][1])
+    assert harness.flow.cli_version == "9.9.9"
+    assert harness.listings == []  # and still no listing was applied
+
+
+@_NEEDS_GI
+def test_a_superseded_search_publishes_no_engine_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The early publish follows the same ownership rule as the listing:
+    # a search cancelled underneath contributes nothing.
+    harness = _Harness(monkeypatch)
+    harness.flow.start()
+    target, args = harness.advisory.spawned.pop()
+    harness.advisory.generation += 1  # a takeover happened in between
+
+    def answers(argv: list[str], **_kw: object) -> _Result:
+        if "--version" in argv:
+            return _Result(stdout="scanmole 9.9.9\n")
+        return _Result(stdout=_listing_stdout([_ENTRY]))
+
+    monkeypatch.setattr(harness.module, "run_command", answers)
+    target(*args)
+    harness.glib.drain_idles()
+
+    assert harness.flow.cli_version is None
+
+
+@_NEEDS_GI
+def test_the_version_probe_answers_a_listing_that_carries_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An engine predating the hello handshake is refused for driving, but
+    # it did answer --version, and naming it is the whole point of the
+    # About row: an operator has to see which engine is installed.
+    harness = _Harness(monkeypatch)
+    harness.flow.start()
+
+    def no_hello(argv: list[str], **_kw: object) -> _Result:
+        if "--version" in argv:
+            return _Result(stdout="scanmole 0.9.0\n")
+        return _Result(stdout=json.dumps({"event": "devices", "devices": []}) + "\n")
+
+    monkeypatch.setattr(harness.module, "run_command", no_hello)
+    target, args = harness.advisory.spawned.pop()
+    target(*args)
+    harness.glib.drain_idles()
+
+    assert harness.flow.cli_blocked is True
+    assert harness.flow.cli_version == "0.9.0"
+
+
+@_NEEDS_GI
 def test_the_discovery_worker_mutates_no_controller_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

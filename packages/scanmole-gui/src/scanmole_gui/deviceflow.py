@@ -439,6 +439,13 @@ class DeviceFlow:
         held = self._gate.acquire("discovery")
         if cli_version is None:
             cli_version = self._probe_cli_version(adopt)
+            if cli_version is not None:
+                # Published on its own rather than with the listing below:
+                # which engine is installed is a fact about the
+                # installation, and asking a device for it can take the
+                # full listing timeout on a network backend. The About
+                # dialog would name no engine for all of that time.
+                GLib.idle_add(self._adopt_cli_version, cli_version, generation, token)
         devices: list[dict[str, str]] = []
         cli_blocked: bool | None = None
         needed: str | None = None
@@ -496,6 +503,20 @@ class DeviceFlow:
                 token,
                 quiet,
             )
+
+    def _adopt_cli_version(self, version: str, generation: int, token: int) -> None:
+        """Record the probed engine version, unless cancelled or superseded.
+
+        The same ownership rule the listing follows: a search invalidated
+        underneath contributes nothing, however far it had got.
+        """
+        if (
+            self._stopped
+            or generation != self._advisory.generation
+            or token != self._search_token
+        ):
+            return
+        self._cli_version = version
 
     def _probe_cli_version(
         self, adopt: Callable[[subprocess.Popen[bytes]], None]
