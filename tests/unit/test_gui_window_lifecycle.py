@@ -286,6 +286,50 @@ def test_a_confirmed_discard_closes_and_echoes_the_log_to_stderr(
 
 
 @_NEEDS_GI
+def test_every_reset_restores_the_window_size_not_only_the_first() -> None:
+    # GTK resizes a mapped window only when the default-size property
+    # actually changes, and that property does not follow a resize the
+    # user performed themselves. So after one reset it already holds the
+    # default, and re-setting the same value queues nothing: the window
+    # would keep whatever size it was dragged to for the rest of the
+    # session. The stub below models exactly those two GTK rules.
+    from scanmole_gui.app import DEFAULT_WINDOW_SIZE, MainWindow
+
+    class Window:
+        _restore_default_geometry = MainWindow._restore_default_geometry
+
+        def __init__(self) -> None:
+            self.default: tuple[int, int] = (1200, 900)
+            self.size: tuple[int, int] = (1200, 900)
+
+        def set_default_size(self, width: int, height: int) -> None:
+            if (width, height) == self.default:
+                return  # no property change, so GTK queues no resize
+            self.default = (width, height)
+            if width > 0 and height > 0:
+                self.size = (width, height)
+
+        def drag(self, width: int, height: int) -> None:
+            """A user resize: the surface moves, the property does not."""
+            self.size = (width, height)
+
+    window: Any = Window()
+
+    window.drag(1400, 1000)
+    window._restore_default_geometry()
+    assert window.size == DEFAULT_WINDOW_SIZE  # the reset that always worked
+
+    window.drag(1400, 1000)
+    window._restore_default_geometry()
+    assert window.size == DEFAULT_WINDOW_SIZE  # and every one after it
+
+    # Idempotent with no drag in between: still the default, never the
+    # natural size the property is cleared to on the way there.
+    window._restore_default_geometry()
+    assert window.size == DEFAULT_WINDOW_SIZE
+
+
+@_NEEDS_GI
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_a_restart_reaches_the_application_only_through_a_real_close() -> None:

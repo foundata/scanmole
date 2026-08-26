@@ -960,6 +960,21 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         dialog.connect("response", self._on_reset_response)
         dialog.present(self)
 
+    def _restore_default_geometry(self) -> None:
+        """Resize the window back to the first-start geometry.
+
+        ``set_default_size`` only resizes a mapped window when the value
+        it is given actually differs from the property, and the property
+        does not track a resize the user performed themselves: dragging
+        the window leaves it at whatever the last call set. So the first
+        reset of a session works (the property still holds the restored
+        size) and every later one silently does nothing, however far the
+        window was dragged in between. Clearing the property first makes
+        the second call a change again, so the restore is unconditional.
+        """
+        self.set_default_size(-1, -1)
+        self.set_default_size(*DEFAULT_WINDOW_SIZE)
+
     def _on_reset_response(self, _dialog: object, response: str) -> None:
         """Apply the settings reset when confirmed."""
         if response != "reset":
@@ -980,7 +995,7 @@ class MainWindow(Adw.ApplicationWindow):  # type: ignore[misc]
         # would never reach the window.
         if self.is_maximized():
             self.unmaximize()
-        self.set_default_size(*DEFAULT_WINDOW_SIZE)
+        self._restore_default_geometry()
         # The open settings dialog still shows the pre-reset selections;
         # close it, the next open rebuilds from the defaults.
         if self._settings_dialog is not None:

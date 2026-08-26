@@ -447,6 +447,7 @@ def test_settings_reset_renegotiates_the_connected_device(
 
     class Window:
         _on_reset_response = MainWindow._on_reset_response
+        _restore_default_geometry = MainWindow._restore_default_geometry
 
         def __init__(self) -> None:
             self._settings: dict[str, object] = {"source": "adf-duplex"}
