@@ -24,8 +24,6 @@ If the device does not even appear in `scanimage -L`, or you are unsure which pa
 2. The output of `scanimage -L`.
 3. The full option listing of every device: `scanimage -d '<device>' -A`. A captured listing becomes a test fixture in `tests/fixtures/scanimage-A/`, so the fix stays regression-tested without your hardware. Review it for serial numbers, hostnames and IP addresses before attaching; maintainers sanitize again before anything is committed.
 
-Contributors with hardware access who want to go further can capture a full raw evidence corpus with the [scanner evidence kit](scripts/scanner-evidence/README.md); its runbook covers the printable test sheets, comparable run names and the privacy rules (raw frames never enter the repository).
-
 The following snippet collects all of it into one attachable file, looping over every device `scanimage -L` finds; simply attach the resulting `scanmole-report.txt`:
 
 ```sh
@@ -42,7 +40,35 @@ The following snippet collects all of it into one attachable file, looping over 
 
 The report might contain webcam information (as SANE might support them) but we are able to sort this out, so no need to clean up.
 
-For page size, crop, 1-bit or blank-detection problems, real scan data matters. Capture one uncropped full-window frame of a representative sheet without personal data (e.g. a printed [lorem-ipsum](https://en.wikipedia.org/wiki/Lorem_ipsum) page; a blank sheet is also valuable, because backing and padding behavior is exactly what we need to see). The snippet compresses the frames right away; attach the resulting `frame_*.pnm.gz` files:
+#### Raw scan data<a id="issues-scan-data"></a>
+
+For page size, crop, 1-bit or blank-detection problems, real scan data matters: those decisions are made from the pixels a backend delivers, and no option listing shows what went wrong. Capture one uncropped full-window frame of a sheet that carries no personal data.
+
+The best sheets come from this repository's own test pack, [`scripts/scanner-evidence/print-pack.ps`](scripts/scanner-evidence/print-pack.ps). It prints the same for everyone, so your frames are directly comparable with the reference captures the maintainers already hold, and it contains only original neutral filler, no dates and no third-party text. If you have the time and paper, print the whole pack as described in [the evidence kit's README](scripts/scanner-evidence/README.md); it covers dense and sparse text, footers, edge targets and blank backs.
+
+For a single-sheet report, page 13 is enough. That is the dense S1 sheet, printed one-sided so that its factory-blank back is itself evidence for blank detection and backing behavior. Print at 100% scale, never fit-to-page:
+
+```sh
+lp -d <printer> -P 13 -o media=A4 -o print-scaling=none -o sides=one-sided \
+   scripts/scanner-evidence/print-pack.ps
+```
+
+Any printed [lorem-ipsum](https://en.wikipedia.org/wiki/Lorem_ipsum) page does the job too. Add a sheet taken straight from a clean paper pack in that case, because backing and padding behavior is exactly what we need to see.
+
+**With a checkout of this repository**, prefer the [scanner evidence kit](scripts/scanner-evidence/README.md), which is the same tooling the maintainers use. It records the exact command and device settings beside the frames, verifies that every delivered frame parses, and refuses to write anywhere inside a Git worktree, so raw evidence cannot end up in a commit by accident:
+
+```sh
+scripts/scanner-evidence/capture.sh \
+  --output-root ~/scanmole-evidence --device-label my-scanner \
+  --device '<device>' --run 01-report --source 'ADF Duplex' \
+  --mode Gray --resolution 300 \
+  --paper 'print-pack S1, single sheet' --orientation 'normal' \
+  -- -x 999 -y 999
+```
+
+Attach the resulting run directory's `inventory.tsv` and the compressed frames. `metadata.txt` is useful too, but it deliberately records the raw device identifier, the exact command and local paths, so review it for serials, hostnames and directory names first, exactly as for the `-A` listing above. The kit's README covers the printable test sheets, comparable run names and the per-backend geometry notes (the `fujitsu` backend, for example, needs `--page-width`/`--page-height` before `-x`/`-y` to reach its real maximum) when you want a full corpus rather than a single report.
+
+**Without a checkout**, plain `scanimage` is enough. The snippet compresses the frames right away; attach the resulting `frame_*.pnm.gz` files:
 
 ```sh
 # The oversized geometry is intentional, the device clamps it to its maximum.

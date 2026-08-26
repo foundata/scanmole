@@ -2,6 +2,8 @@
 
 **Easy, scriptable document scanning for Linux: ADF duplex batches in, searchable (OCRed) PDFs out.**
 
+The focus is everyday office and archival paperwork such as letters, invoices, contracts, receipts and records, not photo or image scanning: the defaults trade color fidelity for small, legible, searchable documents that keep well in an archive.
+
 It consists of two components, shipped as two Python packages, so servers and scripts can install the CLI alone while desktops get the whole experience:
 
 1. **`scanmole`**: CLI scanning engine.
@@ -33,6 +35,7 @@ It consists of two components, shipped as two Python packages, so servers and sc
 - [Installation](#installation)
   - [Debian/Ubuntu](#installation-debian)
   - [Fedora](#installation-fedora)
+  - [Updating](#installation-update)
 - [Usage](#usage)
   - [Command Line Interface (CLI)](#usage-cli)
   - [The GUI](#usage-gui)
@@ -160,6 +163,23 @@ sudo make install
 Device-specific packages, network configuration and the list of verified units are collected under [Devices](#devices).
 
 
+### Updating<a id="installation-update"></a>
+
+Both packages always release together and carry the same version, and a newer GUI refuses an older engine, so updating the frontend pulls the matching CLI with it. Use whichever tool did the install:
+
+```sh
+source ~/.venvs/scanmole/bin/activate    # desktop (CLI + GUI), uv
+uv pip install --upgrade scanmole-gui
+
+uv tool upgrade scanmole                 # CLI only, uv
+
+pipx upgrade scanmole-gui                # desktop, pipx
+pip install --upgrade scanmole           # CLI only, pip
+```
+
+The external tools come from the distribution and update with it; only a self-built `jbig2enc` needs the [rebuild shown above](#installation-fedora). To check what is actually running, use `scanmole --version`, or open "About ScanMole" from the GUI's main menu, which names the engine and the frontend separately.
+
+
 ## Usage<a id="usage"></a>
 
 ### Command Line Interface (CLI)<a id="usage-cli"></a>
@@ -278,11 +298,11 @@ The following devices are regularly used with ScanMole and were verified with re
 
 | Device | Connection | SANE backend | Notes | Known limitations |
 |---|---|---|---|---|
-| Brother ADS-4550W | USB (via ipp-usb) and network | `airscan` (eSCL, driverless) | Duplex ADF. Offers only Color/Gray, so 1-bit output comes from ScanMole's software conversion. | None known. |
+| Brother ADS-4550W | USB (via ipp-usb) and network | `airscan` (eSCL, driverless) | Duplex ADF. Offers only Color/Gray, so 1-bit output comes from ScanMole's software conversion, and it exposes no deskew option, so ScanMole always straightens pages itself. | None known. |
 | Canon CanoScan LiDE 220 | USB | `genesys` | Flatbed. Feeder requests degrade to a single flatbed scan; 1-bit output comes from ScanMole's software conversion. | None known. |
 | Epson DS-730N | Network | `epsonds` (see [Epson](#devices-epson)) | Duplex ADF, native 1-bit. | Ignores its hardware auto-crop command over the network; ScanMole's `auto` page size compensates by sizing each page from its content. |
-| ScanSnap iX100 | USB | `fujitsu` | Portable single-side sheet feeder, native 1-bit. | In its native 1-bit mode (the default black and white output) the scanner thresholds before ScanMole sees the frame, so automatic page size reads the paper boundary from the ink it left rather than from brightness; an A4 feed comes out about 209 x 295 mm instead of the full 219 mm scan width. Hardware length detection shortens the page as before. |
-| ScanSnap iX500 | USB | `fujitsu` | Duplex ADF, native 1-bit, hardware paper-edge detection. | None known. |
+| ScanSnap iX100 | USB | `fujitsu` | Portable single-side sheet feeder, native 1-bit. A duplex request degrades to the front side with a warning. | Its native 1-bit output leaves no brightness to walk, so automatic page size follows the ink instead and the [edge-crop caveats](#faq-edge-crop) then apply to all four edges rather than only the sides. An A4 feed comes out about 209 x 295 mm, correctly cropped from the 219 mm scan window. |
+| ScanSnap iX500 | USB | `fujitsu` | Duplex ADF, native 1-bit, hardware paper-edge detection. | Native 1-bit puts automatic page size on the same ink path as the iX100, with the same [edge-crop caveats](#faq-edge-crop). Its own `--swdeskew` was measured removing only about 15% of a hand-fed skew, so it stays unqualified and ScanMole straightens pages itself; `--deskew-method scanner` is not recommended here. |
 
 Every listed device has its captured capability listing pinned in the test suite (`tests/fixtures/scanimage-A/`), so its option mapping stays regression-tested without the hardware. If your device works too (or does not), [reporting it](#faq-scanner-quirks) helps this list grow.
 
