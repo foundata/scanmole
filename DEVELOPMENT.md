@@ -258,7 +258,8 @@ German avoids direct address: no "Sie" and no "du". Use the impersonal infinitiv
 ### Before making changes<a id="before-making-changes"></a>
 
 1. Make sure the test suite passes on a clean checkout.
-2. For anything touching CLI options, events or exit codes: read [the contract](ARCHITECTURE.md#contract) first; those changes are breaking by definition.
+2. Before changing CLI options, JSON events or exit codes, read [the contract](ARCHITECTURE.md#contract). Additive options, event types and event fields may ship in a minor or patch release under the evolution rules. Renaming, removing or retyping them, or changing the documented exit-code set, meanings or selection rules, is breaking and requires a major release. Correcting an implementation to the already documented contract is a bug fix, not a contract change.
+
 
 
 ### Making changes<a id="making-changes"></a>
