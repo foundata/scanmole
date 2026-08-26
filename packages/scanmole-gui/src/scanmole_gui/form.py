@@ -434,7 +434,9 @@ class ScanForm:
         # directly under the size it disambiguates.
         self._size_pref_row = Adw.ComboRow(
             title=_("Preferred paper sizes"),
-            subtitle=_("Resolves automatic sizes that fit both A4 and Letter"),
+            subtitle=_(
+                "Fallback, used e.g. when the automatic size fits both A4 and Letter"
+            ),
         )
         self._size_pref_row.set_factory(plain_string_factory())
         self._size_pref_row.set_model(
@@ -514,7 +516,7 @@ class ScanForm:
         """
         self._collect_row = Adw.SwitchRow(
             title=_("Combine scans"),
-            subtitle=_("Add scans to the PDF until you press “Finish” (status bar)"),
+            subtitle=_("Add scans to the PDF until you press “Finish”"),
             active=False,
         )
         self.scan_group.add(self._collect_row)
@@ -759,9 +761,7 @@ class ScanForm:
         # read as a setting of its own, and dimming the row would take the
         # chips down with it.
         hint = Gtk.Label(
-            label=_(
-                "Recommended for small files: 300 dpi for B/W, 200 for Gray and Color"
-            ),
+            label=_("Recommended: 300 dpi for B/W, 200 dpi for Gray and Color"),
             wrap=True,
             xalign=0.0,
             hexpand=True,

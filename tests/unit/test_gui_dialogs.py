@@ -264,8 +264,7 @@ def test_about_dialog_links_to_the_project_and_its_funding() -> None:
         ),
         (
             "Funding:",
-            "Like this project? ♥ "
-            '<a href="https://coffee.test/scanmole/">Buy us a coffee</a>',
+            '<a href="https://coffee.test/scanmole/">Buy us a coffee</a> ♥',
         ),
     ]
     # The grid is what aligns them: every value starts one column in, at

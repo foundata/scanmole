@@ -253,9 +253,7 @@ def build_about_dialog(
             (_("Report Issues:"), _markup_link(issues_url, _link_text(issues_url))),
             (
                 _("Funding:"),
-                GLib.markup_escape_text(_("Like this project?"))
-                + " ♥ "
-                + _markup_link(funding_url, _("Buy us a coffee")),
+                _markup_link(funding_url, _("Buy us a coffee")) + " ♥",
             ),
         )
     ):

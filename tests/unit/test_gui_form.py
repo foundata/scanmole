@@ -587,9 +587,7 @@ def test_the_resolution_presets_carry_their_recommendation() -> None:
         for child in _labels(form._chips_row)
         if child.get_label() and "dim-label" in child.get_css_classes()
     ]
-    assert hints == [
-        "Recommended for small files: 300 dpi for B/W, 200 for Gray and Color"
-    ]
+    assert hints == ["Recommended: 300 dpi for B/W, 200 dpi for Gray and Color"]
 
 
 def test_the_presets_row_carries_its_own_spacing_class() -> None:
