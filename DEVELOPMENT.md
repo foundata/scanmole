@@ -8,6 +8,7 @@ This file provides information for maintainers and contributors to ScanMole. Wha
 - [Prerequisites](#prerequisites)
 - [Getting started](#getting-started)
 - [Project structure](#project-structure)
+- [Glossary](#glossary)
 - [Development standards](#development-standards)
   - [Code formatting and linting](#code-linting)
   - [Commit messages and scopes](#commit-scopes)
@@ -129,6 +130,22 @@ scanmole/                      # repository root (uv workspace)
         ├── scanimage-A/       # captured -A listings pinning the parser
         └── golden/            # committed --json transcript (compatibility check)
 ```
+
+
+## Glossary<a id="glossary"></a>
+
+Vocabulary that recurs in the code and the docs and does not explain itself from `--help`.
+
+- **P4 / P5 / P6**: the raw PNM formats a scanner delivers, 1-bit bitmap, 8-bit graymap and 24-bit pixmap. P4 is the special one: it is packed eight pixels to a byte, so rows are byte-padded and a crop that does not fall on a byte boundary must repack rather than slice, and it carries no brightness at all, which is why edge detection needs a separate ink-based path there.
+- **Frame vs page**: a frame is what the scanner delivered, one raster at the full scan window. A page is what survives cropping, deskew and the blank verdict and reaches the PDF. A frame can become no page.
+- **Capability / `-A` listing**: one option a backend advertises, parsed from `scanimage -A`, with its active/settable state and its current value. Everything ScanMole decides comes from these rather than from device names.
+- **Negotiation**: settling every acquisition setting against the capabilities before any paper moves, so a request that cannot be honored refuses while the stack is still in the feeder rather than half way through a batch.
+- **Effective settings**: what the device will actually do once negotiation is finished, as opposed to what was requested. The rest of the pipeline reads these and never the request, because a silently clamped resolution or window would otherwise be applied twice.
+- **Advisory**: any probe the GUI runs that is not a scan (discovery, capability probes, sensor reads). Advisory work must never disturb a real scan, is cancelled at scan start, and never opens a device that a scan owns.
+- **Blank verdict**: the decision to drop a page as empty, made from its mean brightness against `--blank-threshold`, with one guarded second look for sparse printed content before the page is dropped.
+- **Deskew owner**: which single mechanism straightens a page, ScanMole's own path or a backend option. Exactly one ever runs, because resampling twice costs more sharpness than the skew it removes.
+- **Sheet flow**: how many physical sheets one run acquires. `stack` drains the loaded feeder, `single` scans one sheet, `collect` keeps one run and one PDF open across reloads.
+- **Evidence corpus**: raw frames and run metadata captured from real hardware. It lives outside Git permanently; only sanitized capability fixtures and approved replay fixtures ever enter the repository.
 
 
 ## Development standards<a id="development-standards"></a>
