@@ -32,6 +32,7 @@ It consists of two components, shipped as two Python packages, so servers and sc
 - [Features](#features)
 - [Demo](#demo)
   - [Screenshots](#demo-screenshots)
+  - [Example PDF](#demo-example-pdf)
 - [Installation](#installation)
   - [Debian/Ubuntu](#installation-debian)
   - [Fedora](#installation-fedora)
@@ -75,9 +76,9 @@ Main features:
 
 ### Screenshots<a id="demo-screenshots"></a>
 
-[<img src="./assets/images/screenshots/scanmole-gui-01-main.png" alt="Screenshot: The ScanMole GUI's two-column layout with a connected ScanSnap iX500, ready to scan" height="128" />](./assets/images/screenshots/scanmole-gui-01-main.png)
+[<img src="./assets/images/screenshots/scanmole-gui-01-main.png" alt="Screenshot: The ScanMole GUI's two-column layout with a connected scanner, ready to scan" height="128" />](./assets/images/screenshots/scanmole-gui-01-main.png)
 &#160;
-[<img src="./assets/images/screenshots/scanmole-gui-02-scan-result.png" alt="Screenshot: The ScanMole GUI after a finished scan on a ScanSnap iX500, with saved pages and a skipped blank in the result bar" height="128" />](./assets/images/screenshots/scanmole-gui-02-scan-result.png)
+[<img src="./assets/images/screenshots/scanmole-gui-02-scan-result.png" alt="Screenshot: The ScanMole GUI after a finished scan, with saved pages and a skipped blank in the result bar" height="128" />](./assets/images/screenshots/scanmole-gui-02-scan-result.png)
 &#160;
 [<img src="./assets/images/screenshots/scanmole-gui-03-settings.png" alt="Screenshot: The ScanMole GUI's settings dialog, covering page size, deskew, PDF/A and feeder behavior" height="128" />](./assets/images/screenshots/scanmole-gui-03-settings.png)
 &#160;
@@ -86,6 +87,11 @@ Main features:
 [<img src="./assets/images/screenshots/scanmole-cli-01-scan.png" alt="Screenshot: The ScanMole CLI listing devices and scanning a duplex batch to a searchable PDF" height="128" />](./assets/images/screenshots/scanmole-cli-01-scan.png)
 &#160;
 [<img src="./assets/images/screenshots/scanmole-cli-02-help.png" alt="Screenshot: The upper half of the ScanMole CLI's --help output" height="128" />](./assets/images/screenshots/scanmole-cli-02-help.png)
+
+
+### Example PDF<a id="demo-example-pdf"></a>
+
+A real, unedited result: [`scanmole-demo-scan-bw-300dpi-ix500.pdf`](./assets/pdfs/scanmole-demo-scan-bw-300dpi-ix500.pdf) (3 pages, 197 KB total, so about 66 KB per page): a ScanSnap iX500 duplex batch of a few pages printed from [`scripts/scanner-evidence/print-pack.ps`](scripts/scanner-evidence/print-pack.ps), scanned at the 1-bit black-and-white, 300 dpi defaults and OCRed, giving an impression of both the typical file size and the searchable text layer.
 
 
 ## Installation<a id="installation"></a>
