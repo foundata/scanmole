@@ -93,27 +93,22 @@ Main features:
 
 ScanMole needs Python ≥ 3.12. Its two packages are available on PyPI: [`scanmole`](https://pypi.org/project/scanmole/) (the CLI) and [`scanmole-gui`](https://pypi.org/project/scanmole-gui/) (the desktop frontend, pulls the CLI automatically).
 
-**Desktop (CLI + GUI), using [`uv`](https://docs.astral.sh/uv/getting-started/installation/) (recommended):** the GUI uses the distribution's PyGObject/GTK (see the packages below), so its virtualenv must see the system site packages:
+Install them as managed applications with [`pipx`](https://pipx.pypa.io/stable/installation/): it keeps each package in an environment of its own, puts the commands on `PATH`, and needs no virtualenv to be created or activated by hand.
+
+**Desktop (CLI + GUI):** the GUI uses the distribution's PyGObject/GTK (see the packages below) instead of a PyPI build, so its environment has to see the system site packages:
 
 ```sh
-uv venv --system-site-packages ~/.venvs/scanmole
-source ~/.venvs/scanmole/bin/activate
-uv pip install scanmole-gui
+pipx install --system-site-packages scanmole-gui
 ```
 
-Tip: after the first `scanmole-gui` start, the settings dialog can install a menu entry, so later starts come straight from the desktop's application grid without any venv activation.
+`uv` is not an option here: `uv tool install` has no `--system-site-packages` equivalent, so a GUI installed with it cannot reach the distribution's PyGObject and GTK. Hence the pipx recommendation.
 
-**Server or scripting (CLI only):** the CLI carries one Python dependency (Pillow, for raster rotation) and installs into any isolated environment:
+Tip: after the first `scanmole-gui` start, the settings dialog can install a menu entry, so later starts come straight from the desktop's application grid.
 
-```sh
-uv tool install scanmole
-```
-
-**Using `pip` or `pipx` instead of uv:**
+**Server or scripting (CLI only):** the CLI carries one Python dependency (Pillow, for raster rotation) and needs nothing from the distribution's Python:
 
 ```sh
-pipx install --system-site-packages scanmole-gui   # desktop
-pip install scanmole                               # CLI only
+pipx install scanmole
 ```
 
 For development installs from a repository checkout, see [`DEVELOPMENT.md`](DEVELOPMENT.md#getting-started).
@@ -165,16 +160,11 @@ Device-specific packages, network configuration and the list of verified units a
 
 ### Updating<a id="installation-update"></a>
 
-Both packages always release together and carry the same version, and a newer GUI refuses an older engine, so updating the frontend pulls the matching CLI with it. Use whichever tool did the install:
+Both packages always release together and carry the same version, and a newer GUI refuses an older engine, so updating the frontend pulls the matching CLI with it:
 
 ```sh
-source ~/.venvs/scanmole/bin/activate    # desktop (CLI + GUI), uv
-uv pip install --upgrade scanmole-gui
-
-uv tool upgrade scanmole                 # CLI only, uv
-
-pipx upgrade scanmole-gui                # desktop, pipx
-pip install --upgrade scanmole           # CLI only, pip
+pipx upgrade scanmole-gui   # desktop (GUI and CLI)
+pipx upgrade scanmole       # CLI only
 ```
 
 The external tools come from the distribution and update with it; only a self-built `jbig2enc` needs the [rebuild shown above](#installation-fedora). To check what is actually running, use `scanmole --version`, or open "About ScanMole" from the GUI's main menu, which names the engine and the frontend separately.
@@ -214,10 +204,10 @@ What if my scanner acts up, for example wrong page sizes in `auto` mode, survivi
 
 ### The GUI<a id="usage-gui"></a>
 
-Start the GUI from the environment set up in [Installation](#installation):
+Start the GUI with the command pipx put on `PATH`:
 
 ```sh
-uv run scanmole-gui
+scanmole-gui
 ```
 
 The settings dialog can install a menu entry (`.desktop` file) for your user, so later starts work straight from the desktop's application grid.
