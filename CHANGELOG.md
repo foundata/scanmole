@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Nothing worth mentioning right now.
+
+
+## [1.2.0] - 2026-08-27
+
 ### Changed
 
 - Deskew is now ScanMole's own job by default, on every device, and which mechanism does it is an explicit choice rather than a consequence of what a driver happens to expose. `--deskew-method auto|scanmole|scanner` (with a matching "Deskew method" selector in the GUI) names the owner: `auto` picks, which means ScanMole unless the scanner deskews in a way nothing can switch off, `scanmole` insists on it, and `scanner` hands the job to the device and refuses the scan if the device cannot take it.
@@ -18,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The GUI's About dialog points at the source code, the issue tracker and the project's funding page beside the website, aligned as a two-column listing wide enough to render every link whole. Its description says what ScanMole does for the reader (a document scanner for Linux with an automation-grade CLI and an optional GUI, producing small searchable PDFs, detecting blank pages, cropping and straightening) rather than which subsystems it drives. Each version row now says which interface it belongs to, and the licence name links to the project's licensing terms. The engine version appears as soon as `scanmole --version` answers, instead of waiting for the device search it used to travel with.
 - Several GUI labels say more plainly what they mean: the filename preview is subtitled "Expected filename", the feeder switch reads "Turn off to scan single sheets", the preferred paper family is described as what it is ("Fallback, used e.g. when the automatic size fits both A4 and Letter") rather than as something that resolves sizes on its own, and ScanMole describes itself as an "Easy-to-use document scanner". The blank-page switch lost a subtitle that only repeated its title. The main window's credit line names the interface it reports the version of ("ScanMole (GUI) 1.1.0 by foundata"). The German translation no longer addresses the reader directly, so "Nächstes Blatt einlegen" rather than "Legen Sie das nächste Blatt ein"; the convention is written down for translators in [`DEVELOPMENT.md`](DEVELOPMENT.md#translations).
 
+
 ### Fixed
 
 - A sparse page with genuine printed content is no longer dropped as blank when its few words dilute the whole-page mean above the threshold; a guarded second look can now rescue it. A page whose only content is a full-width rule, a solid stamp, a lone tiny mark or very faint strokes still classifies as blank; `--keep-blanks`, a higher `--blank-threshold` and `--blank-threshold 0` remain the remedies there.
@@ -26,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--keep-images` failures now end the run as the processing failure they are (exit code 5, matching `error` event) instead of a generic crash. An all-blank run no longer leaves an empty archive directory behind, and a batch whose copy failed is removed again, with the original pages still recoverable from the preserved work directory.
 - The GUI recovers its device coordination immediately when the scan process cannot be started (for example when the `scanmole` CLI was uninstalled in between). Hardware-button and insert-to-scan polling could previously resume against the wrong device after such a failure; a fresh capability probe now runs right away instead.
 - Automatic page size no longer keeps scanner backing that happens to look like paper for a single scan line. The side edges now need 2 mm of sustained paper brightness before the walk stops, which can recover several millimetres of width on affected devices. As a documented consequence, dense content closer than 2 mm to the paper edge can be cropped with the backing; select a fixed page size to bypass edge detection entirely.
+
 
 ### Added
 
@@ -96,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All functionality and files.
 
 
-[unreleased]: https://github.com/foundata/scanmole/compare/v1.1.0...HEAD
+[unreleased]: https://github.com/foundata/scanmole/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/foundata/scanmole/releases/tag/v1.2.0
 [1.1.0]: https://github.com/foundata/scanmole/releases/tag/v1.1.0
 [1.0.0]: https://github.com/foundata/scanmole/releases/tag/v1.0.0
