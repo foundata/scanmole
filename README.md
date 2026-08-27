@@ -75,15 +75,17 @@ Main features:
 
 ### Screenshots<a id="demo-screenshots"></a>
 
-[<img src="./assets/images/screenshots/scanmole-gui-01-main.png" alt="Screenshot: The ScanMole GUI with a connected ScanSnap iX500, ready to scan" height="128" />](./assets/images/screenshots/scanmole-gui-01-main.png)
+[<img src="./assets/images/screenshots/scanmole-gui-01-main.png" alt="Screenshot: The ScanMole GUI's two-column layout with a connected ScanSnap iX500, ready to scan" height="128" />](./assets/images/screenshots/scanmole-gui-01-main.png)
 &#160;
-[<img src="./assets/images/screenshots/scanmole-gui-02-scan-result.png" alt="Screenshot: The ScanMole GUI after a finished scan on a Brother ADS-4550W, with saved pages and a skipped blank in the result bar" height="128" />](./assets/images/screenshots/scanmole-gui-02-scan-result.png)
+[<img src="./assets/images/screenshots/scanmole-gui-02-scan-result.png" alt="Screenshot: The ScanMole GUI after a finished scan on a ScanSnap iX500, with saved pages and a skipped blank in the result bar" height="128" />](./assets/images/screenshots/scanmole-gui-02-scan-result.png)
 &#160;
-[<img src="./assets/images/screenshots/scanmole-gui-03-two-column.png" alt="Screenshot: The ScanMole GUI in its two-column layout with two scanners connected" height="128" />](./assets/images/screenshots/scanmole-gui-03-two-column.png)
+[<img src="./assets/images/screenshots/scanmole-gui-03-settings.png" alt="Screenshot: The ScanMole GUI's settings dialog, covering page size, deskew, PDF/A and feeder behavior" height="128" />](./assets/images/screenshots/scanmole-gui-03-settings.png)
 &#160;
-[<img src="./assets/images/screenshots/scanmole-gui-04-settings.png" alt="Screenshot: The ScanMole GUI's settings dialog with color scheme, language and desktop integration" height="128" />](./assets/images/screenshots/scanmole-gui-04-settings.png)
+[<img src="./assets/images/screenshots/scanmole-gui-04-narrow.png" alt="Screenshot: The ScanMole GUI's single-column layout in a narrow window" height="128" />](./assets/images/screenshots/scanmole-gui-04-narrow.png)
 &#160;
 [<img src="./assets/images/screenshots/scanmole-cli-01-scan.png" alt="Screenshot: The ScanMole CLI listing devices and scanning a duplex batch to a searchable PDF" height="128" />](./assets/images/screenshots/scanmole-cli-01-scan.png)
+&#160;
+[<img src="./assets/images/screenshots/scanmole-cli-02-help.png" alt="Screenshot: The upper half of the ScanMole CLI's --help output" height="128" />](./assets/images/screenshots/scanmole-cli-02-help.png)
 
 
 ## Installation<a id="installation"></a>
