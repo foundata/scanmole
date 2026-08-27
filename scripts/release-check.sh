@@ -82,6 +82,7 @@ readonly -a POSIX_SCRIPTS=(
 readonly -a BASH_SCRIPTS=(
   'scripts/release-check.sh'
   'scripts/scanner-evidence/capture.sh'
+  'scripts/update-screenshots.sh'
 )
 readonly -a SHFMT_OPTS_COMMON=(
   '--indent' '2' '--case-indent' '--binary-next-line' '--simplify'
