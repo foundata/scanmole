@@ -309,7 +309,7 @@ Both packages always release together, with the same version and one `vX.Y.Z` ta
 2. Determine the next version number. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 3. Update several files to match the new release version:
    - [`CHANGELOG.md`](./CHANGELOG.md): insert a section for the new release with the date (Keep a Changelog format).
-   - [`uv.lock`](./uv.lock): updated by running `uv lock` after the pyproject bump, never edited by hand.
+   - [`uv.lock`](./uv.lock): updated by running `uv lock` after the pyproject bump, never edited by hand. It records a version per package, so a hand-edited or forgotten lockfile makes any install that resolves from it use a version that was never resolved.
    - [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml): the `version` variable, plus the GUI package's `scanmole>=X.Y.Z,<N` dependency pin. Releases are lockstep, so **every** release raises the pin's lower bound to its own new version (the release gate rejects the artifacts otherwise); only a new **major** additionally raises the `<N` cap to the next major, by hand. The snippet below covers the lower bound.
    - [`packages/scanmole/src/scanmole/__init__.py`](./packages/scanmole/src/scanmole/__init__.py) and [`packages/scanmole-gui/src/scanmole_gui/__init__.py`](./packages/scanmole-gui/src/scanmole_gui/__init__.py): the `__version__` variable.
    - The following snippet can help with these files:
