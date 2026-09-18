@@ -5,7 +5,7 @@ Normative description of the system as it is. If code and this document disagree
 - Audience: (foundata) Linux engineers, assumes fluency with SANE, systemd/udev, distribution packaging.
 - Scope: the `scanmole` CLI and the `scanmole-gui` GTK4 frontend, plus everything needed to reimplement both from scratch.
 - Contributor workflows live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
-- The codebase follows the [foundata Python style guide](https://github.com/foundata/guidelines/blob/master/python-style-guide.md).
+- The codebase follows the [foundata Python style guide](https://github.com/foundata/guidelines/blob/main/python-style-guide.md).
 - Diagnostics go through the `logging` module to stderr; machine-readable JSON events go to stdout (see [the CLI contract](#contract)).
 
 
