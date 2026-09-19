@@ -301,114 +301,73 @@ uv run pytest                            # 4. tests
 
 Both packages always release together, with the same version and one `vX.Y.Z` tag; a release may leave one package without changes. One product, one version: this keeps the changelog unified, the GUI's dependency pin trivially satisfied, and a single GitHub release entry per version accurate for both artifacts.
 
+The release tooling is the `release` command from foundata's [releasing](https://github.com/foundata/releasing) package, a development dependency of this project. It reads the `[tool.releasing]` table in [`pyproject.toml`](./pyproject.toml), which names both version files, the lockstep pin and the member READMEs.
+
 1. Run the release checks and only continue if everything passes:
    ```sh
    scripts/release-check.sh
    ```
-   This runs formatting, linting, the strict type check, the shell-script checks (`shfmt` and `shellcheck` over every shipped script, plus a per-dialect parse) and the test suite on every supported Python version, then builds both packages' wheels and source distributions, installs the wheels into a clean throwaway environment per version and smoke-tests the installed artifacts (import, `scanmole --version`/`--help`, and the `scanmole-gui` launcher's defined no-GTK behavior). Integration tests need `img2pdf` and the SANE `test` backend to actually run instead of skipping (see [Testing](#testing)); use a machine that has both. Also run the [smoke checklist](#smoke-checklist) on at least one fleet device.
+   This runs formatting, linting, the strict type check, the shell-script checks (`shfmt` and `shellcheck` over every shipped script, plus a per-dialect parse) and the test suite on every supported Python version, then builds both packages' wheels and source distributions from a clean checkout of `HEAD`, installs the wheels into a clean throwaway environment per version and smoke-tests the installed artifacts (import, `scanmole --version`/`--help`, and the `scanmole-gui` launcher's defined no-GTK behavior). Integration tests need `img2pdf` and the SANE `test` backend to actually run instead of skipping (see [Testing](#testing)); use a machine that has both. Also run the [smoke checklist](#smoke-checklist) on at least one fleet device.
 2. Determine the next version number. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-3. Update several files to match the new release version:
-   - [`CHANGELOG.md`](./CHANGELOG.md): insert a section for the new release with the date (Keep a Changelog format).
-   - [`uv.lock`](./uv.lock): updated by running `uv lock` after the pyproject bump, never edited by hand. It records a version per package, so a hand-edited or forgotten lockfile makes any install that resolves from it use a version that was never resolved.
-   - [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml): the `version` variable, plus the GUI package's `scanmole>=X.Y.Z,<N` dependency pin. Releases are lockstep, so **every** release raises the pin's lower bound to its own new version (the release gate rejects the artifacts otherwise); only a new **major** additionally raises the `<N` cap to the next major, by hand. The snippet below covers the lower bound.
-   - [`packages/scanmole/src/scanmole/__init__.py`](./packages/scanmole/src/scanmole/__init__.py) and [`packages/scanmole-gui/src/scanmole_gui/__init__.py`](./packages/scanmole-gui/src/scanmole_gui/__init__.py): the `__version__` variable.
-   - The following snippet can help with these files:
-     ```sh
-     old_version="<FIXME version>" # major.minor.patch
-     new_version="<FIXME version>" # major.minor.patch
-
-     files=(
-      "./packages/scanmole/pyproject.toml"
-      "./packages/scanmole-gui/pyproject.toml"
-      "./packages/scanmole/src/scanmole/__init__.py"
-      "./packages/scanmole-gui/src/scanmole_gui/__init__.py"
-     )
-
-     old_version_regex="${old_version//./\\.}"
-     version_pattern="^([[:space:]]*(__version__|version)[[:space:]]*[:=][[:space:]]*)\"?${old_version_regex}\"?$"
-
-     for file in "${files[@]}"; do
-       echo "Before: $file"
-       grep -B 1 -E "$version_pattern" "$file" || true
-       sed -i -E "s@${version_pattern}@\1\"${new_version}\"@" "$file"
-       echo "After: $file"
-       grep -B 1 -E "^([[:space:]]*(__version__|version)[[:space:]]*[:=][[:space:]]*)\"?${new_version}\"?$" "$file" || true
-       echo
-     done
-
-     # Lockstep dependency: every release raises the GUI pin's lower bound.
-     sed -i -E "s@\"scanmole>=${old_version_regex},<@\"scanmole>=${new_version},<@" \
-       ./packages/scanmole-gui/pyproject.toml
-     grep -n "scanmole>=" ./packages/scanmole-gui/pyproject.toml
-
-     uv lock # update the member versions in the lockfile
-     ```
-4. If everything is fine: commit the changes, tag the release and push:
+3. Move the version and the changelog to the new release:
    ```sh
    version="<FIXME version>" # major.minor.patch
-   git add \
-     "./CHANGELOG.md" \
-     "./uv.lock" \
-     "./packages/scanmole/pyproject.toml" \
-     "./packages/scanmole-gui/pyproject.toml" \
-     "./packages/scanmole/src/scanmole/__init__.py" \
-     "./packages/scanmole-gui/src/scanmole_gui/__init__.py"
+
+   uv run release version bump "${version}"
+   uv run release changelog release "${version}"
+   ```
+   `version bump` rewrites the `version` in both [`packages/scanmole/pyproject.toml`](./packages/scanmole/pyproject.toml) and [`packages/scanmole-gui/pyproject.toml`](./packages/scanmole-gui/pyproject.toml), raises the GUI package's `scanmole>=X.Y.Z,<N` lower bound to the new version, and runs `uv lock` so the lockfile records both member versions. Both packages read their own version from the installed distribution metadata, so there is no further place to edit. A new **major** additionally needs the `<N` cap raised by hand. `changelog release` turns the entries under `Unreleased` in [`CHANGELOG.md`](./CHANGELOG.md) into a dated section and updates the comparison links at the end of the file.
+4. Review the changes and commit them. The tag will name this commit:
+   ```sh
+   git diff
+   git add --all
    git commit -m "release: prepare ${version}"
+   git status --short
+   ```
+   The last command must print nothing.
+5. Build both packages from the committed revision:
+   ```sh
+   uv run release build --out "../dist-${version}" --expect "${version}"
+   ```
+   The build exports the commit with `git archive` and prepares the project `README.md` inside that export: its repository-relative links become absolute GitHub URLs, so they resolve on pypi.org. The prepared page is then copied over both members' pointer READMEs inside the export, so each PyPI page shows the full project page. The committed READMEs keep their relative links and the working tree is never modified, so nothing has to be restored afterwards. Source distributions are built from the export and the wheels from them; all four are checked and their SHA-256 recorded in `artifacts.json`.
+6. Tag the revision that was built, then push the branch and the tag:
+   ```sh
+   uv run release tag create "${version}"
+   git push origin main
+   git push origin "refs/tags/v${version}"
+   ```
+   `tag create` refuses a dirty working tree, or a version the two packages, the lockfile, the lockstep pin and the changelog do not all agree on. If something minor went wrong, delete the tag and start over:
+   ```sh
+   uv run release tag delete "${version}"
+   ```
+   This is refused once a [GitHub release](https://github.com/foundata/scanmole/releases/) exists for the tag. Use a new patch version number otherwise.
+7. Publish exactly the files that were validated to [PyPI](https://pypi.org/project/scanmole/):
+   ```sh
+   uv run release artifacts verify "../dist-${version}/artifacts.json"
 
-   git tag "v${version}" "$(git rev-parse --verify HEAD)" -m "version ${version}"
-   git show "v${version}"
-
-   git push origin main --follow-tags
-   ```
-   If something minor went wrong (like a missing `CHANGELOG.md` update), delete the tag and start over:
-   ```sh
-   git tag -d "v${version}" # delete the old tag locally
-   git push origin ":refs/tags/v${version}" # delete the old tag remotely
-   ```
-   This is *only* possible if there was no [GitHub release](https://github.com/foundata/scanmole/releases/). Use a new patch version number otherwise.
-5. Prepare the `README.md` files that ship with the artifacts: rewrite the project README's relative links as absolute GitHub URLs and copy the result over both members' pointer READMEs (see Wiki "Process: Release Python artifacts"; an internal `foundata` helper script is available for this). These changes are made only in the working tree between the tag and the upload; nothing is ever committed. This is why the step belongs here rather than before step 4.
-6. Build both packages and publish them to [PyPI](https://pypi.org/project/scanmole/). The build in step 1 ran before the version bump, so `dist/` still holds artifacts of the old version and has to be rebuilt:
-   ```sh
-   rm -rf "./dist"
-   uv build --all-packages
-   ls -1 "./dist" # a wheel and a source distribution per package, all carrying the new version
-   ```
-   Validate exactly these files before uploading; the release check in step 1 ran before the version bump and the README preparation, so it never saw them. This verifies versions, the tag on `HEAD`, the lockstep policy, the prepared READMEs and that the working tree carries no other changes:
-   ```sh
-   scripts/release-check.sh --artifacts
-   ```
-   Uploading needs a PyPI API token with upload rights for both projects. `uv publish` reads it from `UV_PUBLISH_TOKEN`; keep the value out of the shell history and out of command lines visible in the process list:
-   ```sh
    printf 'PyPI API token: '
    read -rs UV_PUBLISH_TOKEN
    printf '\n'
    export UV_PUBLISH_TOKEN
 
-   uv publish
+   uv publish "../dist-${version}"/*.whl "../dist-${version}"/*.tar.gz
    unset UV_PUBLISH_TOKEN
    ```
-   An account-wide token covers both packages in one call. Project-scoped tokens only cover their own project, so publish the packages one after another with the matching token: `uv publish "./dist/scanmole-${version}"*` and `uv publish "./dist/scanmole_gui-${version}"*` if so.
+   `artifacts verify` re-checks the directory against its manifest, so the upload cannot contain a file that was never validated. An account-wide token covers both packages in one call. Project-scoped tokens only cover their own project, so publish the packages one after another with the matching token: `uv publish "../dist-${version}/scanmole-${version}"*` and `uv publish "../dist-${version}/scanmole_gui-${version}"*` if so.
 
    A version number can be uploaded only once. A broken release cannot be replaced, only [yanked](https://pypi.org/help/#yanked), and the fix needs a new patch version.
-
-   Throw the prepared READMEs of step 5 away once the upload succeeded:
+8. Create the GitHub release from the changelog section:
    ```sh
-   git restore "./README.md" "./packages/scanmole/README.md" "./packages/scanmole-gui/README.md"
-   git status # expect a clean working tree
+   gh release create "v${version}" --title "v${version}" \
+     --notes-file <(uv run release changelog show "${version}")
    ```
-7. Verify that the published packages install and run from PyPI. The second command also proves the dependency pull-through, as it has to install two packages:
+   The [web form](https://github.com/foundata/scanmole/releases/new) does the same; use `v<version>` as the title.
+9. Verify what PyPI and GitHub now serve:
    ```sh
-   uv run --isolated --no-project --with "scanmole==${version}" -- scanmole --version
-   uv run --isolated --no-project --with "scanmole-gui==${version}" -- scanmole-gui --version
+   uv run release verify "../dist-${version}/artifacts.json" --distribution scanmole
+   uv run release verify "../dist-${version}/artifacts.json" --distribution scanmole-gui
    ```
-   Both print the new version. This does not start the GUI itself, which needs the distribution's PyGObject and GTK (see [`README.md`](README.md#installation)).
-8. Use [GitHub's release feature](https://github.com/foundata/scanmole/releases/new), select the tag you pushed and create a new release:
-   - Use `v<version>` as title
-   - A description is optional. In doubt, use `See CHANGELOG.md for more information about this release.`
-9. Check if the GitHub API delivers the correct version as `latest`:
-   ```sh
-   curl -s -L https://api.github.com/repos/foundata/scanmole/releases/latest | jq -r '.tag_name' | sed -e 's/^v//g'
-   ```
+   Each call checks that PyPI serves the exact files whose digests the build recorded, that an isolated install reports the new version, and that the GitHub API reports the new tag as the latest release. The second call also proves the dependency pull-through, as it has to install two packages. Neither starts the GUI itself, which needs the distribution's PyGObject and GTK (see [`README.md`](README.md#installation)).
 
 
 ## Troubleshooting<a id="troubleshooting"></a>

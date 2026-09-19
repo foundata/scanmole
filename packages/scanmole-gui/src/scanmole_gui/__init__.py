@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+from importlib.metadata import version as _distribution_version
 from pathlib import Path
 
 import scanmole
 from scanmole import BYLINE
 
 # The scanmole-gui distribution version, bumped in lockstep with scanmole.
-__version__ = "1.2.0"
+__version__ = _distribution_version("scanmole-gui")
 
 _MISSING_GUI_MESSAGE = (
     "scanmole-gui needs PyGObject and GTK 4 — install: python3-gobject gtk4 libadwaita"

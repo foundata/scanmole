@@ -5,11 +5,32 @@
 [tool.uv.workspace]
 members = ["packages/*"]
 
+[tool.releasing]
+repository = "foundata/scanmole"
+version-files = [
+  "packages/scanmole/pyproject.toml",
+  "packages/scanmole-gui/pyproject.toml",
+]
+# Lockstep: every release raises this lower bound to its own new version. A new
+# major still needs the upper bound raised by hand.
+dependency-pins = [
+  { file = "packages/scanmole-gui/pyproject.toml", name = "scanmole" },
+]
+
+# The members ship pointer READMEs; the prepared project README is copied over
+# both inside the export, so each PyPI page shows the full project page.
+[[tool.releasing.readmes]]
+copies = [
+  "packages/scanmole/README.md",
+  "packages/scanmole-gui/README.md",
+]
+
 [dependency-groups]
 dev = [
   "mypy>=1.13",
   "pytest>=9.0",
   "pytest-cov>=5.0.0",
+  "releasing>=1,<2",
   "ruff>=0.12.7",
 ]
 

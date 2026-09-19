@@ -19,16 +19,12 @@
 #
 # Usage:
 #   scripts/release-check.sh [PYTHON_VERSION ...]
-#   scripts/release-check.sh --artifacts
 #
 # Without arguments the supported version matrix below is used.
 #
-# --artifacts validates the artifacts currently in dist/ without rebuilding
-# them: the exact files "uv publish" would upload. The main gate runs before
-# the version bump and the PyPI README preparation, so it never sees those;
-# this mode checks litter, version and tag agreement, the lockstep policy,
-# the prepared READMEs and that the working tree differs from HEAD in
-# nothing but the prepared READMEs. Run it directly before uploading.
+# The release artifacts themselves are built and validated by
+# "uv run release build", which exports the committed revision, prepares the
+# READMEs that ship in them and records their digests. See DEVELOPMENT.md.
 
 # Consistent environment for predictable tool and shell behavior.
 export PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin}"
@@ -63,7 +59,6 @@ export UV_LINK_MODE='copy'
 # Supported Python versions (keep in sync with pyproject and the README).
 # Arguments override them; main() parses that.
 supported_pythons=('3.12' '3.13' '3.14')
-artifacts_only='no'
 
 # Resolve the package directory (this script lives in <pkg>/scripts/).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -169,12 +164,10 @@ ensure_pythons() {
 # via pyproject.
 run_static_checks() {
   log "Static checks (format, lint, type check)"
-  uv run ruff format --check packages tests scripts/scanner-evidence \
-    scripts/release_tree_state.py
-  uv run ruff check packages tests scripts/scanner-evidence \
-    scripts/release_tree_state.py
+  uv run ruff format --check packages tests scripts/scanner-evidence
+  uv run ruff check packages tests scripts/scanner-evidence
   uv run mypy packages/scanmole/src packages/scanmole-gui/src tests \
-    scripts/scanner-evidence scripts/release_tree_state.py
+    scripts/scanner-evidence
   uv run python scripts/scanner-evidence/print_pack.py --check
 }
 
@@ -335,130 +328,6 @@ PY
 #   COMMAND_NAME, IMPORT_NAME, WORK_DIR
 # Returns:
 #   0 when the artifacts are publishable, exits 1 otherwise.
-validate_artifacts() {
-  if ! ls dist/*.whl >/dev/null 2>&1; then
-    printf "error: no artifacts in dist/ -- run 'uv build --all-packages' first\n" >&2
-    exit 1
-  fi
-  check_artifact_hygiene
-  check_lockstep_bound dist/*
-
-  log "Tree state, versions, tag, lockstep and prepared READMEs"
-  uv run python - dist/* <<'PY'
-import re
-import subprocess
-import sys
-import tarfile
-import zipfile
-from pathlib import Path
-
-sys.path.insert(0, "scripts")
-from release_tree_state import classify_tree_state
-
-errors: list[str] = []
-
-# The working tree may differ from the tagged HEAD in exactly the three
-# prepared README files, and only by modification; a build backend's own
-# file-inclusion globs (license-files, package data, ...) can match an
-# untracked path anywhere, so every untracked path is refused regardless
-# of location -- see scripts/release_tree_state.py for the exact rules.
-status = subprocess.run(
-    ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    capture_output=True,
-    text=True,
-    check=True,
-).stdout
-errors.extend(classify_tree_state(status))
-
-# One version everywhere: both sources, the tag on HEAD, every artifact's
-# file name and metadata.
-versions: dict[str, str] = {}
-for name, init in (
-    ("scanmole", "packages/scanmole/src/scanmole/__init__.py"),
-    ("scanmole-gui", "packages/scanmole-gui/src/scanmole_gui/__init__.py"),
-):
-    match = re.search(r'__version__ = "([^"]+)"', Path(init).read_text())
-    if match is None:
-        errors.append(f"cannot read __version__ from {init}")
-    else:
-        versions[name] = match.group(1)
-version = versions.get("scanmole", "")
-if len(set(versions.values())) != 1:
-    errors.append(f"lockstep violated in the sources: {versions}")
-tags = subprocess.run(
-    ["git", "tag", "--points-at", "HEAD"], capture_output=True, text=True, check=True
-).stdout.split()
-if version and f"v{version}" not in tags:
-    errors.append(
-        f"no v{version} tag on HEAD (found: {tags or 'none'}); "
-        "artifacts must be built from the tagged release state"
-    )
-
-def metadata_text(artifact: str) -> str:
-    if artifact.endswith(".whl"):
-        with zipfile.ZipFile(artifact) as bundle:
-            meta = next(n for n in bundle.namelist() if n.endswith(".dist-info/METADATA"))
-            return bundle.read(meta).decode("utf-8", errors="replace")
-    with tarfile.open(artifact) as bundle:
-        meta = next(n for n in bundle.getnames() if n.endswith("/PKG-INFO"))
-        member = bundle.extractfile(meta)
-        assert member is not None
-        return member.read().decode("utf-8", errors="replace")
-
-relative_link = re.compile(r"\]\((?!https?://|#|mailto:)")
-for artifact in sys.argv[1:]:
-    text = metadata_text(artifact)
-    headers, _, description = text.partition("\n\n")
-    meta_version = ""
-    for line in headers.splitlines():
-        if line.startswith("Version:"):
-            meta_version = line.split(":", 1)[1].strip()
-    if meta_version != version:
-        errors.append(f"{artifact}: metadata version {meta_version} != {version}")
-    if version and version not in Path(artifact).name:
-        errors.append(f"{artifact}: file name does not carry version {version}")
-    # The PyPI page is this description. A pointer stub means the README
-    # preparation (copy over the member READMEs) was skipped; relative
-    # links break on pypi.org.
-    if len(description) < 5000:
-        errors.append(
-            f"{artifact}: description is {len(description)} chars; "
-            "looks like the pointer README instead of the prepared project page"
-        )
-    hits = relative_link.findall(description)
-    if hits:
-        errors.append(
-            f"{artifact}: description contains {len(hits)} relative link(s); "
-            "run the README preparation (see DEVELOPMENT.md step 5)"
-        )
-
-if errors:
-    for line in errors:
-        print(f"error: {line}", file=sys.stderr)
-    raise SystemExit(1)
-print(f"consistent: {len(sys.argv) - 1} artifact(s) at {version}, tag v{version} on HEAD")
-PY
-
-  log "Install + smoke test of the artifacts (clean environment)"
-  local venv="${WORK_DIR}/venv-artifacts"
-  uv venv "${venv}" >/dev/null
-  uv pip install --python "${venv}/bin/python" dist/*.whl >/dev/null
-  "${venv}/bin/${COMMAND_NAME}" --version >/dev/null
-  local runtime_version meta_cli meta_gui
-  runtime_version="$("${venv}/bin/python" -c "import ${IMPORT_NAME}; print(${IMPORT_NAME}.__version__)")"
-  meta_cli="$("${venv}/bin/python" -c \
-    "from importlib.metadata import version; print(version('scanmole'))")"
-  meta_gui="$("${venv}/bin/python" -c \
-    "from importlib.metadata import version; print(version('scanmole-gui'))")"
-  if [ "${meta_cli}" != "${runtime_version}" ] || [ "${meta_cli}" != "${meta_gui}" ]; then
-    printf 'error: version skew after install: runtime %s, scanmole %s, scanmole-gui %s\n' \
-      "${runtime_version}" "${meta_cli}" "${meta_gui}" >&2
-    exit 1
-  fi
-  printf 'install ok: both packages at %s\n' "${meta_cli}"
-  log "Artifacts are ready to publish"
-}
-
 ###
 # Install the built wheels into a clean environment per supported
 # interpreter and smoke-test the installed artifact, never the sources.
@@ -546,23 +415,15 @@ smoke_test_matrix() {
 ###
 # Main entry point.
 # Globals:
-#   artifacts_only, supported_pythons
+#   supported_pythons
 # Arguments:
-#   $@ - Command-line arguments: --artifacts, or a Python version matrix.
+#   $@ - Command-line arguments: an optional Python version matrix.
 main() {
-  if [ "${1:-}" = '--artifacts' ]; then
-    artifacts_only='yes'
-  elif [ "$#" -gt 0 ]; then
+  if [ "$#" -gt 0 ]; then
     supported_pythons=("$@")
   fi
 
-  require_tools 'uv'
-  if [ "${artifacts_only}" = 'yes' ]; then
-    printf 'Artifact validation for %s\n' "${DIST_NAME}"
-    validate_artifacts
-    return
-  fi
-  require_tools 'shellcheck' 'shfmt'
+  require_tools 'uv' 'shellcheck' 'shfmt'
   printf 'Release check for %s\n' "${DIST_NAME}"
   printf 'Python versions: %s\n' "${supported_pythons[*]}"
   ensure_pythons

@@ -1,6 +1,10 @@
 """ScanMole: scan documents from a SANE scanner straight to a searchable PDF."""
 
-__version__ = "1.2.0"
+from importlib.metadata import version as _distribution_version
+
+# One hand-edited version site per package: its pyproject.toml. Everything else
+# reads the version back from the installed distribution metadata.
+__version__ = _distribution_version("scanmole")
 
 BYLINE = "by foundata (https://foundata.com)"
 """Attribution line printed by the ``--version`` output of both commands."""
