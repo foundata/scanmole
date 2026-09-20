@@ -9,7 +9,8 @@ It consists of two components, shipped as two Python packages, so servers and sc
 1. **`scanmole`**: CLI scanning engine.
 2. **`scanmole-gui`**: GTK4/[libadwaita](https://gnome.pages.gitlab.gnome.org/libadwaita/) frontend (depends on `scanmole`). A thin subprocess wrapper around the CLI using its `--json` event protocol; it contains no scanning logic itself.
 
-
+<!-- rumdl-disable MD033 -->
+<!-- HTML for consistent rendering across limited platform parsers -->
 <div align="center" id="project-readme-header">
 <br>
 <br>
@@ -25,6 +26,7 @@ It consists of two components, shipped as two Python packages, so servers and sc
 
 <br>
 </div>
+<!-- rumdl-enable MD033 -->
 
 
 ## Table of contents<a id="toc"></a>
@@ -76,6 +78,8 @@ Main features:
 
 ### Screenshots<a id="demo-screenshots"></a>
 
+<!-- rumdl-disable MD033 -->
+<!-- HTML for consistent rendering across limited platform parsers -->
 [<img src="./assets/images/screenshots/scanmole-gui-01-main.png" alt="Screenshot: The ScanMole GUI's two-column layout with a connected scanner, ready to scan" height="128" />](./assets/images/screenshots/scanmole-gui-01-main.png)
 &#160;
 [<img src="./assets/images/screenshots/scanmole-gui-02-scan-result.png" alt="Screenshot: The ScanMole GUI after a finished scan, with saved pages and a skipped blank in the result bar" height="128" />](./assets/images/screenshots/scanmole-gui-02-scan-result.png)
@@ -87,6 +91,7 @@ Main features:
 [<img src="./assets/images/screenshots/scanmole-cli-01-scan.png" alt="Screenshot: The ScanMole CLI listing devices and scanning a duplex batch to a searchable PDF" height="128" />](./assets/images/screenshots/scanmole-cli-01-scan.png)
 &#160;
 [<img src="./assets/images/screenshots/scanmole-cli-02-help.png" alt="Screenshot: The upper half of the ScanMole CLI's --help output" height="128" />](./assets/images/screenshots/scanmole-cli-02-help.png)
+<!-- rumdl-enable MD033 -->
 
 
 ### Example PDF<a id="demo-example-pdf"></a>
@@ -379,4 +384,4 @@ Their use here is purely descriptive and does not imply any affiliation with or 
 
 ## Author information<a id="author-information"></a>
 
-This project was created and is maintained by [foundata GmbH](https://foundata.com).
+This [project](https://foundata.com/en/projects/) was created and is maintained by [foundata](https://foundata.com/).
