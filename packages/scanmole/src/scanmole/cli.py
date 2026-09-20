@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
-from typing import override
+from typing import NoReturn, override
 
 from scanmole import BYLINE, __version__
 from scanmole.config import ScanConfig
@@ -37,6 +37,19 @@ LOGGER = logging.getLogger("scanmole")
 
 _INTERRUPTED_EXIT_CODE = 130  # 128 + SIGINT
 _TERMINATED_EXIT_CODE = 143  # 128 + SIGTERM
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """Argument parser that can hand usage errors to the JSON protocol."""
+
+    structured_errors = False
+
+    @override
+    def error(self, message: str) -> NoReturn:
+        """Raise an input error in JSON mode; keep argparse's human UI otherwise."""
+        if self.structured_errors:
+            raise InputError(message)
+        super().error(message)
 
 
 def _install_sigterm_handler() -> None:
@@ -126,9 +139,9 @@ def _threshold_float(text: str) -> float:
     return value
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, structured_errors: bool = False) -> argparse.ArgumentParser:
     """Construct the ScanMole argument parser."""
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="scanmole",
         description="Scan from a SANE scanner (or image files) to a searchable PDF.",
         epilog=(
@@ -146,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.structured_errors = structured_errors
     parser.add_argument(
         "outbase",
         nargs="?",
@@ -523,7 +537,18 @@ def _list_devices(events: EventWriter, *, as_json: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the ScanMole command line and return a process exit code."""
-    args = build_parser().parse_args(argv)
+    raw_argv = sys.argv[1:] if argv is None else argv
+    option_argv = raw_argv[: raw_argv.index("--")] if "--" in raw_argv else raw_argv
+    json_requested = "--json" in option_argv
+    try:
+        args = build_parser(structured_errors=json_requested).parse_args(raw_argv)
+    except InputError as exc:
+        configure_logging(verbose=False)
+        events = EventWriter(enabled=True)
+        events.emit("hello", version=__version__)
+        events.error(exc.message, code=exc.exit_code)
+        LOGGER.error("%s", exc.message)
+        return exc.exit_code
     configure_logging(verbose=args.verbose)
     _install_sigterm_handler()
     events = EventWriter(enabled=args.json)

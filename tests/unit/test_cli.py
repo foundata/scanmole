@@ -289,6 +289,84 @@ def test_json_error_runs_still_open_with_hello(
     assert lines[-1]["event"] == "error"
 
 
+@pytest.mark.parametrize(
+    ("argv", "message_fragment"),
+    [
+        (["--json", "--unknown"], "unrecognized arguments: --unknown"),
+        (["--json", "--mode"], "argument --mode: expected one argument"),
+        (
+            ["--json", "--mode", "sepia"],
+            "argument --mode: invalid choice: 'sepia'",
+        ),
+        (
+            ["--mode", "sepia", "--json"],
+            "argument --mode: invalid choice: 'sepia'",
+        ),
+    ],
+)
+def test_json_argument_errors_use_the_event_protocol(
+    argv: list[str], message_fragment: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(argv) == 2
+
+    captured = capsys.readouterr()
+    events = [json.loads(line) for line in captured.out.splitlines()]
+    assert len(events) == 2
+    assert events[0] == {"event": "hello", "version": __version__}
+    assert events[1]["event"] == "error"
+    assert events[1]["code"] == 2
+    message = events[1]["message"]
+    assert isinstance(message, str)
+    assert message_fragment in message
+    assert captured.err == f"error: {message}\n"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--mode", "sepia"],
+        ["--mode", "sepia", "--", "--json"],
+    ],
+)
+def test_non_json_argument_errors_keep_argparse_usage(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as info:
+        main(argv)
+
+    captured = capsys.readouterr()
+    assert info.value.code == 2
+    assert captured.out == ""
+    assert captured.err.startswith("usage: scanmole ")
+    assert "invalid choice: 'sepia'" in captured.err
+
+
+def test_json_help_remains_plain_text_without_a_protocol_prefix(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as info:
+        main(["--json", "--help"])
+
+    captured = capsys.readouterr()
+    assert info.value.code == 0
+    assert captured.out.startswith("usage: scanmole ")
+    assert '"event"' not in captured.out
+    assert captured.err == ""
+
+
+def test_json_version_remains_plain_text_without_a_protocol_prefix(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as info:
+        main(["--json", "--version"])
+
+    captured = capsys.readouterr()
+    assert info.value.code == 0
+    assert captured.out.startswith(f"scanmole {__version__}\n")
+    assert '"event"' not in captured.out
+    assert captured.err == ""
+
+
 def test_runs_without_json_stay_silent_on_stdout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
