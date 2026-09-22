@@ -17,6 +17,11 @@ dependency-pins = [
   { file = "packages/scanmole-gui/pyproject.toml", name = "scanmole" },
 ]
 
+# Contributions are disclosed with an Assisted-by: trailer. The pattern allows
+# that disclosure without an address only: an address in the line is what a
+# forge turns into a contributor entry.
+allowed-attribution = ["assisted-by: ^[^<]*$"]
+
 # The members ship pointer READMEs; the prepared project README is copied over
 # both inside the export, so each PyPI page shows the full project page.
 [[tool.releasing.readmes]]
@@ -30,7 +35,7 @@ dev = [
   "mypy>=1.13",
   "pytest>=9.0",
   "pytest-cov>=5.0.0",
-  "releasing>=1,<2",
+  "releasing>=4,<5",
   "ruff>=0.12.7",
 ]
 

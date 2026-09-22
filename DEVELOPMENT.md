@@ -330,44 +330,46 @@ The release tooling is the `release` command from foundata's [releasing](https:/
    uv run release build --out "../dist-${version}" --expect "${version}"
    ```
    The build exports the commit with `git archive` and prepares the project `README.md` inside that export: its repository-relative links become absolute GitHub URLs, so they resolve on pypi.org. The prepared page is then copied over both members' pointer READMEs inside the export, so each PyPI page shows the full project page. The committed READMEs keep their relative links and the working tree is never modified, so nothing has to be restored afterwards. Source distributions are built from the export and the wheels from them; all four are checked and their SHA-256 recorded in `artifacts.json`.
-6. Tag the revision that was built, then push the branch and the tag:
+6. Tag the revision that was built, then publish the branch and the tag:
    ```sh
-   uv run release tag create "${version}"
-   git push origin main
-   git push origin "refs/tags/v${version}"
+   uv run release tag create "${version}" \
+     --manifest "../dist-${version}/artifacts.json"
+   uv run release push "${version}"
    ```
-   `tag create` refuses a dirty working tree, or a version the two packages, the lockfile, the lockstep pin and the changelog do not all agree on. If something minor went wrong, delete the tag and start over:
+   `tag create` refuses a dirty working tree, a version the two packages, the lockfile, the lockstep pin and the changelog do not all agree on and, with `--manifest`, a revision other than the one those artifacts were built from. It also refuses a commit that credits a tool as its author; the `Assisted-by:` disclosure this project uses is allowed by `allowed-attribution` in [`pyproject.toml`](./pyproject.toml). `push` sends the branch before the tag and refuses when the branch does not contain the tagged commit. If something minor went wrong, delete the tag and start over:
    ```sh
    uv run release tag delete "${version}"
    ```
    This is refused once a [GitHub release](https://github.com/foundata/scanmole/releases/) exists for the tag. Use a new patch version number otherwise.
 7. Publish exactly the files that were validated to [PyPI](https://pypi.org/project/scanmole/):
    ```sh
-   uv run release artifacts verify "../dist-${version}/artifacts.json"
-
    printf 'PyPI API token: '
    read -rs UV_PUBLISH_TOKEN
    printf '\n'
    export UV_PUBLISH_TOKEN
 
-   uv publish "../dist-${version}"/*.whl "../dist-${version}"/*.tar.gz
+   uv run release publish "../dist-${version}/artifacts.json"
    unset UV_PUBLISH_TOKEN
    ```
-   `artifacts verify` re-checks the directory against its manifest, so the upload cannot contain a file that was never validated. An account-wide token covers both packages in one call. Project-scoped tokens only cover their own project, so publish the packages one after another with the matching token: `uv publish "../dist-${version}/scanmole-${version}"*` and `uv publish "../dist-${version}/scanmole_gui-${version}"*` if so.
+   `publish` re-checks every digest against the bytes on disk and uploads exactly the files the manifest names, so a file beside them that nothing validated is a refusal rather than an extra upload. It sends all four files in one call, which an account-wide token covers. Project-scoped tokens only cover their own project: check the set with `uv run release artifacts verify "../dist-${version}/artifacts.json"`, then upload each package with its own token, `uv publish "../dist-${version}/scanmole-${version}"*` and `uv publish "../dist-${version}/scanmole_gui-${version}"*`.
 
    A version number can be uploaded only once. A broken release cannot be replaced, only [yanked](https://pypi.org/help/#yanked), and the fix needs a new patch version.
-8. Create the GitHub release from the changelog section:
+8. Create the GitHub release from the changelog section and the manifest:
    ```sh
-   gh release create "v${version}" --title "v${version}" \
-     --notes-file <(uv run release changelog show "${version}")
+   uv run release forge release-create "${version}" \
+     --manifest "../dist-${version}/artifacts.json"
    ```
-   The [web form](https://github.com/foundata/scanmole/releases/new) does the same; use `v<version>` as the title.
+   The notes are the changelog section for the version and the attached files are the ones just published, so neither can drift from what was validated. The write itself goes through `gh`, which owns the authenticated session.
 9. Verify what PyPI and GitHub now serve:
    ```sh
    uv run release verify "../dist-${version}/artifacts.json" --distribution scanmole
    uv run release verify "../dist-${version}/artifacts.json" --distribution scanmole-gui
    ```
    Each call checks that PyPI serves the exact files whose digests the build recorded, that an isolated install reports the new version, and that the GitHub API reports the new tag as the latest release. The second call also proves the dependency pull-through, as it has to install two packages. Neither starts the GUI itself, which needs the distribution's PyGObject and GTK (see [`README.md`](README.md#installation)).
+   ```sh
+   uv run release status "${version}" --manifest "../dist-${version}/artifacts.json"
+   ```
+   `status` reports the same release as separate steps and exits non-zero while any of them is unfinished, which is also how to resume after an interruption anywhere above.
 
 
 ## Troubleshooting<a id="troubleshooting"></a>
