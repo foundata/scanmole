@@ -203,8 +203,8 @@ Vocabulary that recurs in the code and the docs and does not explain itself from
 - All commands run as argument sequences with explicit timeouts, never through a
   shell (`scanmole/external.py` is the only place that spawns tools,
   `scanner.py` aside).
-- Markdown: wrapped at 80 columns by the foundata guide's formatter, no em or
-  en dashes in prose.
+- Markdown: wrapped at 80 columns, use the
+  [foundata guide's linting and formatter](https://github.com/foundata/guidelines/blob/main/markdown-style-guide.md#linting-and-automatic-formatting)
 - Encoding: UTF-8 with LF line endings, no BOM.
 
 
@@ -217,6 +217,21 @@ uv run mypy packages/scanmole/src packages/scanmole-gui/src tests scripts/scanne
 ```
 
 Always run all three before committing. The rule sets live in `pyproject.toml`.
+
+Markdown follows
+[`guidelines/markdown-style-guide.md`](https://github.com/foundata/guidelines)
+and is checked with the invocation it prescribes, which
+[`tests/check_markdown.py`](./tests/check_markdown.py) carries so no local
+configuration can alter the result:
+
+```sh
+uv run python tests/check_markdown.py            # check
+uv run python tests/check_markdown.py --format   # apply the safe fixes
+```
+
+The fixtures are excluded on purpose: their bytes are recorded input and
+expected output, and formatting them would rewrite what the tests compare
+against.
 
 Shell scripts follow
 [`guidelines/shell-scripting-style-guide.md`](https://github.com/foundata/guidelines)

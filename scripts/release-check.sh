@@ -169,6 +169,7 @@ run_static_checks() {
   uv run mypy packages/scanmole/src packages/scanmole-gui/src tests \
     scripts/scanner-evidence
   uv run python scripts/scanner-evidence/print_pack.py --check
+  uv run python tests/check_markdown.py
 }
 
 ###
