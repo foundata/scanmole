@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from support.pipeline import _config
+from tests.support.pipeline import _config
 
 from scanmole.blankpage import sparse_rescue
 from scanmole.config import ScanConfig

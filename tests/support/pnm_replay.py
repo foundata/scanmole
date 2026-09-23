@@ -279,7 +279,7 @@ def verify_fixture(directory: Path, work_dir: Path) -> list[str]:
         Human-readable mismatch descriptions; empty means bit-exact replay.
     """
     from scanmole.pnm import pnm_mean
-    from support import pnm_oracle
+    from tests.support import pnm_oracle
 
     work_dir.mkdir(parents=True, exist_ok=True)
     problems: list[str] = []

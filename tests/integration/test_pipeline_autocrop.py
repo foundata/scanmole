@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
-from support.pipeline import (
+from tests.support.pipeline import (
     _NEEDS_IMG2PDF,
     _auto_config,
     _config,

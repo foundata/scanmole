@@ -16,7 +16,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from support.pipeline import (
+from tests.support.pipeline import (
     _auto_config,
     _config,
     _gray_scan_pages,

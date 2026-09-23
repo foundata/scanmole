@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from support.pipeline import (
+from tests.support.pipeline import (
     _config,
     _gray_page,
 )

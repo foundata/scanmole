@@ -1,1 +1,1 @@
-"""Shared, repository-owned test infrastructure (importable via pythonpath)."""
+"""Shared, repository-owned test infrastructure."""

@@ -20,8 +20,8 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-from support import pnm_oracle
-from support.pnm_replay import (
+from tests.support import pnm_oracle
+from tests.support.pnm_replay import (
     MAX_COMPRESSED_BYTES,
     MAX_IMAGE_BYTES,
     Expectation,

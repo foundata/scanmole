@@ -10,7 +10,7 @@ import ast
 from pathlib import Path
 
 import pytest
-from support.scanner import (
+from tests.support.scanner import (
     _config,
 )
 

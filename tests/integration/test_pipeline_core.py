@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from support.pipeline import (
+from tests.support.pipeline import (
     _NEEDS_IMG2PDF,
     _auto_config,
     _config,
@@ -256,7 +256,7 @@ def _sparse_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frame: bytes
 ) -> tuple[int, list[dict[str, object]], bytes | None]:
     """One fixed-size gray-mode run over ``frame``; returns exit, events, raster."""
-    from support.pipeline import _gray_scan_pages
+    from tests.support.pipeline import _gray_scan_pages
 
     monkeypatch.setattr("scanmole.pipeline.require_tools", lambda tools: None)
     monkeypatch.setattr("scanmole.pipeline.pick_default_device", lambda: "test:0")
@@ -855,7 +855,7 @@ def test_a_translated_turn_survives_automatic_sizing(
     # no darker border, no blank flip and the ordinary event stream.
     import math as math_module
 
-    from support.pipeline import _gray_scan_pages
+    from tests.support.pipeline import _gray_scan_pages
 
     width, paper_h, backing = 874, 1240, 60
     frame, target = _cornered_page(width, paper_h + backing, backing)
@@ -984,7 +984,7 @@ def test_a_translated_turn_keeps_a_fixed_canvas_exactly(
     # the configured canvas dimensions to the pixel.
     import math as math_module
 
-    from support.pipeline import _gray_scan_pages
+    from tests.support.pipeline import _gray_scan_pages
 
     width, height = 874, 1240
     frame, _target = _cornered_page(width, height, 0)

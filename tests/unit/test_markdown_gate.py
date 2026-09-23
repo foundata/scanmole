@@ -6,8 +6,8 @@ import os
 import shlex
 from pathlib import Path
 
-import check_markdown
 import pytest
+from tests import check_markdown
 
 GUIDE = "markdown-style-guide.md"
 
