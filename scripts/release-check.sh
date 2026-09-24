@@ -4,10 +4,10 @@
 # Local, provider-independent release check for scanmole.
 #
 # Runs the full quality gate (format, lint, strict type check, tests) on every
-# supported Python version, then builds the wheel and source distribution,
-# installs the wheel into a clean throwaway environment and runs import and
-# command-line smoke tests against the installed artifact, including the
-# scanmole-gui launcher's defined behavior without PyGObject.
+# supported Python version, then builds the wheels and source distributions
+# with `release build`, installs the wheels into a clean throwaway environment
+# and runs import and command-line smoke tests against the installed artifact,
+# including the scanmole-gui launcher's defined behavior without PyGObject.
 #
 # This is intended to be run before tagging a release. It does not depend on
 # any CI service; CI (if added) should call the same steps.
@@ -22,9 +22,10 @@
 #
 # Without arguments the supported version matrix below is used.
 #
-# The release artifacts themselves are built and validated by
-# "uv run release build", which exports the committed revision, prepares the
-# READMEs that ship in them and records their digests. See DEVELOPMENT.md.
+# The artifacts are built by `release build`, which exports the committed
+# revision, prepares the READMEs that ship in them, refuses developer litter
+# inside them and records their digests. Building with it here means the gate
+# smoke-tests what a release uploads. See DEVELOPMENT.md.
 
 # Consistent environment for predictable tool and shell behavior.
 export PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin}"
@@ -95,7 +96,8 @@ readonly GUI_COMMAND_NAME='scanmole-gui'
 
 WORK_DIR="$(mktemp -d)"
 readonly WORK_DIR
-trap 'rm -rf "${WORK_DIR}"; git -C "${PKG_DIR}" worktree prune >/dev/null 2>&1 || true' EXIT
+readonly DIST_DIR="${WORK_DIR}/dist"
+trap 'rm -rf "${WORK_DIR}"' EXIT
 
 ###
 # Announce the step that follows.
@@ -161,15 +163,17 @@ ensure_pythons() {
 ###
 # Run the formatter, linter and type checker once. They are
 # version-independent here, because mypy targets the project minimum
-# via pyproject.
+# via pyproject. Every uv call in this gate passes --locked, so the first
+# of them refuses a lockfile that no longer matches pyproject instead of
+# quietly re-locking as a plain `uv run` would.
 run_static_checks() {
   log "Static checks (format, lint, type check)"
-  uv run ruff format --check packages tests scripts/scanner-evidence
-  uv run ruff check packages tests scripts/scanner-evidence
-  uv run mypy packages/scanmole/src packages/scanmole-gui/src tests \
+  uv run --locked ruff format --check packages tests scripts/scanner-evidence
+  uv run --locked ruff check packages tests scripts/scanner-evidence
+  uv run --locked mypy packages/scanmole/src packages/scanmole-gui/src tests \
     scripts/scanner-evidence
-  uv run python scripts/scanner-evidence/print_pack.py --check
-  uv run python tests/check_markdown.py
+  uv run --locked python scripts/scanner-evidence/print_pack.py --check
+  uv run --locked python tests/check_markdown.py
 }
 
 ###
@@ -179,32 +183,23 @@ run_static_checks() {
 run_tests_matrix() {
   for py in "${supported_pythons[@]}"; do
     log "Tests on Python ${py}"
-    uv run --python "${py}" --isolated pytest -q
+    uv run --locked --python "${py}" --isolated pytest -q
   done
 }
 
 ###
-# Build the wheels and source distributions from a pristine checkout of
-# HEAD: the developer tree carries ignored litter (tool caches, editor
-# droppings) that must never decide what ships. Local uncommitted changes
-# are deliberately not built; a release is a commit, not a working tree.
+# Build the wheels and source distributions with `release build`: it exports
+# the committed revision, so the developer tree's ignored litter (tool caches,
+# editor droppings) never decides what ships, and it refuses an artifact that
+# carries caches or bytecode. Local uncommitted changes are deliberately not
+# built; a release is a commit, not a working tree.
 # Globals:
-#   PKG_DIR, WORK_DIR
+#   DIST_DIR
 build_artifacts() {
-  log "Build wheels and source distributions (clean checkout of HEAD)"
-  local tree_status
-  tree_status="$(git status --porcelain)"
-  if [ -n "${tree_status}" ]; then
-    printf 'note: local changes present; artifacts are built from HEAD without them\n'
-  fi
-  local clean_dir="${WORK_DIR}/clean-src"
-  git worktree add --detach --quiet "${clean_dir}" HEAD
-  rm -rf dist
-  (cd "${clean_dir}" && uv build --all-packages --out-dir "${PKG_DIR}/dist")
-  git worktree remove --force "${clean_dir}"
-  ls -1 dist
-  check_artifact_hygiene
-  check_lockstep_bound dist/*
+  log "Build wheels and source distributions (release build)"
+  uv run --locked release build --out "${DIST_DIR}"
+  ls -1 "${DIST_DIR}"
+  check_lockstep_bound "${DIST_DIR}"/*.whl "${DIST_DIR}"/*.tar.gz
 }
 
 ###
@@ -218,7 +213,7 @@ build_artifacts() {
 #   0 when every bound agrees, 1 otherwise.
 check_lockstep_bound() {
   log "Lockstep dependency bound (scanmole-gui needs scanmole>=<own version>)"
-  uv run python - "$@" <<'PY'
+  uv run --locked python - "$@" <<'PY'
 import re
 import sys
 import tarfile
@@ -287,67 +282,25 @@ PY
 }
 
 ###
-# Refuse release artifacts carrying caches or bytecode.
-# Returns:
-#   0 when every artifact in dist/ is clean, 1 otherwise.
-check_artifact_hygiene() {
-  log "Artifact hygiene (no caches or bytecode inside)"
-  uv run python - dist/* <<'PY'
-import sys
-import tarfile
-import zipfile
-
-bad: list[str] = []
-for name in sys.argv[1:]:
-    if name.endswith(".whl"):
-        entries = zipfile.ZipFile(name).namelist()
-    else:
-        with tarfile.open(name) as archive:
-            entries = archive.getnames()
-    for entry in entries:
-        parts = entry.split("/")
-        if any(
-            part == "__pycache__" or (part.startswith(".") and "cache" in part)
-            for part in parts
-        ) or entry.endswith(".pyc"):
-            bad.append(f"{name}: {entry}")
-if bad:
-    print("error: developer litter inside release artifacts:", file=sys.stderr)
-    for line in bad:
-        print(f"  {line}", file=sys.stderr)
-    raise SystemExit(1)
-print(f"clean: {len(sys.argv) - 1} artifact(s) checked")
-PY
-}
-
-###
-# Validate dist/ exactly as it lies there, before publishing. The rebuild
-# after the version bump and the README preparation happens from the
-# working tree on purpose (the prepared READMEs only exist there), so
-# these are the only checks the uploaded bytes ever get.
-# Globals:
-#   COMMAND_NAME, IMPORT_NAME, WORK_DIR
-# Returns:
-#   0 when the artifacts are publishable, exits 1 otherwise.
-###
 # Install the built wheels into a clean environment per supported
 # interpreter and smoke-test the installed artifact, never the sources.
 # Globals:
-#   COMMAND_NAME, GUI_COMMAND_NAME, IMPORT_NAME, supported_pythons, WORK_DIR
+#   COMMAND_NAME, DIST_DIR, GUI_COMMAND_NAME, IMPORT_NAME, supported_pythons,
+#   WORK_DIR
 # Returns:
 #   0 when every interpreter passes, exits 1 otherwise.
 smoke_test_matrix() {
   # An unmatched glob stays literal, so the -f tests below are what
   # actually decide whether the wheels are there.
-  local -a cli_wheels=(dist/scanmole-*.whl) gui_wheels=(dist/scanmole_gui-*.whl)
+  local -a cli_wheels=("${DIST_DIR}"/scanmole-*.whl) gui_wheels=("${DIST_DIR}"/scanmole_gui-*.whl)
   local cli_wheel="${cli_wheels[0]}" gui_wheel="${gui_wheels[0]}"
   if [ ! -f "${cli_wheel}" ] || [ ! -f "${gui_wheel}" ]; then
-    printf 'error: expected scanmole and scanmole_gui wheels in dist/\n' >&2
+    printf 'error: expected scanmole and scanmole_gui wheels in %s\n' "${DIST_DIR}" >&2
     exit 1
   fi
 
   local expected_version
-  expected_version="$(uv run python -c "import ${IMPORT_NAME}; print(${IMPORT_NAME}.__version__)")"
+  expected_version="$(uv run --locked python -c "import ${IMPORT_NAME}; print(${IMPORT_NAME}.__version__)")"
 
   for py in "${supported_pythons[@]}"; do
     log "Install + smoke test on Python ${py} (clean environment)"
