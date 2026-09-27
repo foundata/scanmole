@@ -566,7 +566,7 @@ maintenance and used on a daily basis by the maintainers.
 ## Licensing, copyright<a id="licensing-copyright"></a>
 
 <!--REUSE-IgnoreStart-->
-Copyright (c) 2026 foundata GmbH (<https://foundata.com>)
+Copyright (c) 2026, foundata GmbH (<https://foundata.com>)
 
 This project is licensed under the GNU General Public License v3.0 or later
 (SPDX-License-Identifier: `GPL-3.0-or-later`), see
