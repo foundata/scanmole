@@ -9,7 +9,7 @@ disagree, fix one of them deliberately. Do not let them drift silently.
   everything needed to reimplement both from scratch.
 - Contributor workflows live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 - The codebase follows the
-  [foundata Python style guide](https://github.com/foundata/guidelines/blob/main/python-style-guide.md).
+  [foundata Python style guide](https://foundata.com/en/guidelines/python-style-guide/).
 - Diagnostics go through the `logging` module to stderr; machine-readable JSON
   events go to stdout (see [the CLI contract](#contract)).
 

@@ -204,7 +204,7 @@ Vocabulary that recurs in the code and the docs and does not explain itself from
   shell (`scanmole/external.py` is the only place that spawns tools,
   `scanner.py` aside).
 - Markdown: wrapped at 80 columns, use the
-  [foundata guide's linting and formatter](https://github.com/foundata/guidelines/blob/main/markdown-style-guide.md#linting-and-automatic-formatting)
+  [foundata guide's linting and formatter](https://foundata.com/en/guidelines/markdown-style-guide/#linting-and-automatic-formatting)
 - Encoding: UTF-8 with LF line endings, no BOM.
 
 
@@ -219,7 +219,7 @@ uv run mypy packages/scanmole/src packages/scanmole-gui/src tests scripts/scanne
 Always run all three before committing. The rule sets live in `pyproject.toml`.
 
 Markdown follows
-[`guidelines/markdown-style-guide.md`](https://github.com/foundata/guidelines)
+[`guidelines/markdown-style-guide.md`](https://foundata.com/en/guidelines/)
 and is checked with [`.rumdl.toml`](./.rumdl.toml), a verbatim copy of the
 guide's file that [`tests/check_markdown.py`](./tests/check_markdown.py) names
 explicitly, so no other configuration can alter the result;
@@ -235,7 +235,7 @@ expected output, and formatting them would rewrite what the tests compare
 against.
 
 Shell scripts follow
-[`guidelines/shell-scripting-style-guide.md`](https://github.com/foundata/guidelines)
+[`guidelines/shell-scripting-style-guide.md`](https://foundata.com/en/guidelines/)
 and are checked with the tools and option sets it prescribes.
 `scripts/release-check.sh` runs them over every shipped script, so the quickest
 way to check a change is to run that step; `checkbashisms` is not part of the
@@ -419,7 +419,7 @@ this keeps the changelog unified, the GUI's dependency pin trivially satisfied,
 and a single GitHub release entry per version accurate for both artifacts.
 
 The release tooling is the `release` command from foundata's
-[releasing](https://github.com/foundata/releasing) package, a development
+[releasing](https://foundata.com/en/projects/releasing/) package, a development
 dependency of this project. It reads the `[tool.releasing]` table in
 [`pyproject.toml`](./pyproject.toml), which names both version files, the
 lockstep pin and the member READMEs.
