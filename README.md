@@ -147,8 +147,11 @@ packages below) instead of a PyPI build, so its environment has to see the
 system site packages:
 
 ```sh
-pipx install --system-site-packages scanmole-gui
+pipx install --system-site-packages --include-deps scanmole-gui
 ```
+
+`--include-deps` also puts the dependency's `scanmole` command on `PATH`, so
+both the CLI and GUI are available from your shell.
 
 `uv` is not an option here: `uv tool install` has no `--system-site-packages`
 equivalent, so a GUI installed with it cannot reach the distribution's PyGObject
@@ -295,27 +298,41 @@ scanmole-gui
 The settings dialog can install a menu entry (`.desktop` file) for your user, so
 later starts work straight from the desktop's application grid.
 
-`scanmole-gui` is a form over the same engine with the same defaults. It covers
-and presents the CLI features in an easy-to-use way. The Scan button turns into
-Cancel while a batch runs, a collapsible log shows the underlying CLI output,
-and a result bar opens the finished PDF or its folder. The GUI remembers the
-last used form values and the window size in `~/.config/scanmole/gui.json` and
-restores them on the next start.
+`scanmole-gui` is a form over the same engine with the same defaults. The GUI
+remembers the last used form values and the window size in
+`~/.config/scanmole/gui.json` and restores them on the next start.
 
-Multi-sheet documents on single-sheet scanners: turn on "Combine scans" above
-the Scan button (or pick "Combine scans" from the button's menu for one run) and
-the scan keeps going as you insert sheet after sheet, with a Finish action
-building the one PDF. Pressing Scan acquires the first sheet straight away; on a
-scanner that can sense loaded paper the run instead waits until a sheet is
-there, so it never runs an empty feeder. Turning off "Scan all pages in feeder"
-(Advanced settings, only meaningful on feeder sources) makes every scan a single
-sheet (both sides on a duplex source) and leaves the rest of a loaded stack in
-the tray; the Scan menu offers the same as a one-shot "Scan one sheet". Advanced
-settings map the scanner's own hardware button so a press starts a scan while
-the window is idle: it repeats the Scan button by default, and can be set to one
-sheet, collecting, or off. "Auto-start when paper is inserted", beside "Combine
-scans" above the Scan button, starts a scan when a sheet is loaded; it is off by
-default. Both read the scanner's sensors only where it has them.
+#### Scan a document
+
+Press Scan to start a batch. The button turns into Cancel while the batch runs;
+press it to stop scanning. When the scan finishes, use the result bar to open
+the PDF or its folder. Expand the collapsible log to see the underlying CLI
+output.
+
+#### Combine sheets into one PDF
+
+1. Turn on "Combine scans", or pick "Combine scans" from the button's menu for
+   one run.
+2. Press Scan. On a scanner that can sense loaded paper, the run waits until a
+   sheet is present; otherwise, it acquires the first sheet straight away.
+3. Insert the remaining sheets, then choose Finish to build the one PDF.
+
+#### Scan one sheet from a feeder
+
+Choose "Scan one sheet" from the Scan menu for one run. To make that the normal
+behavior, turn off "Combine scans" and turn off "Scan all pages in feeder" in
+Advanced settings. "Combine scans" takes precedence when enabled. "Scan all
+pages in feeder" applies only to feeder sources. Both sides are scanned on a
+duplex source, and the rest of a loaded stack stays in the tray.
+
+#### Start from the scanner
+
+In Advanced settings, choose what the scanner's hardware button does while the
+window is idle: repeat the Scan button's action (the default), scan one sheet,
+collect sheets, or do nothing.
+
+"Auto-start when paper is inserted" starts a scan when a sheet is loaded; it is
+off by default. Both triggers require the corresponding scanner sensors.
 
 
 ### Exit codes<a id="usage-exit-codes"></a>
@@ -335,7 +352,8 @@ default. Both read the scanner's sensors only where it has them.
 
 ### The `--json` protocol<a id="usage-json"></a>
 
-One JSON object per line on stdout; human-readable log on stderr:
+One JSON object per line on stdout; human-readable log on stderr. Selected event
+examples (not a transcript of one run):
 
 ```text
 {"event":"hello","version":"1.0.0"}
@@ -349,16 +367,21 @@ One JSON object per line on stdout; human-readable log on stderr:
 {"event":"error","message":"...","code":3}
 ```
 
-`hello` opens every `--json` run and carries the CLI version, which is also the
-API version ([SemVer](https://semver.org/)). From 1.0.0 on compatibility is
-directional inside a major: a frontend may drive its own or any newer CLI of
-that major, but not an older one, since it emits options and expects behavior
-the older CLI does not have. Majors never mix, and before 1.0.0 the versions
-have to match exactly. `start` carries the requested settings; `settings`
-(scanner runs only) reports the values actually negotiated with the SANE
-backend. `error.code` mirrors the process exit code. This protocol, the option
-names and the exit codes are the compatibility boundary for any frontend or
-reimplementation; the authoritative definition is the CLI contract in
+`hello` is the first event of every `--json` run that emits events.
+Argument-parsing errors exit before any event is written. `devices` is emitted
+only for `--list-devices`; a successful scan ends with `done`, and a failure is
+reported with `error`.
+
+`hello` carries the CLI version, which is also the API version
+([SemVer](https://semver.org/)). From 1.0.0 on compatibility is directional
+inside a major: a frontend may drive its own or any newer CLI of that major, but
+not an older one, since it emits options and expects behavior the older CLI does
+not have. Majors never mix, and before 1.0.0 the versions have to match exactly.
+`start` carries the requested settings; `settings` (scanner runs only) reports
+the values actually negotiated with the SANE backend. `error.code` mirrors the
+process exit code. This protocol, the option names and the exit codes are the
+compatibility boundary for any frontend or reimplementation; the authoritative
+definition is the CLI contract in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#contract).
 
 
@@ -500,57 +523,52 @@ To keep files small:
 
 ### Why is a page missing from my PDF, or a blank page kept?<a id="faq-blank-pages"></a>
 
-Duplex scanning reads both sides of every sheet, and ScanMole drops a page as
-blank when its mean brightness is above `0.995`, i.e. when less than 0.5% of it
-is "ink". The mean is measured over the cropped page, or over the detected
-content area on frames still at the full scan window, so window padding cannot
-hide sparse content. That is what removes the empty backsides of single-sided
-documents. A page holding only a line or two sits close to the cutoff, so before
-such a page is dropped it gets one guarded second look: clearly printed,
-localized content (a short sentence, a group of words at least a few millimetres
-in size) overrides the whole-page verdict and the page is kept. Scanner
-artifacts such as edge shadows and punch holes do not count as content, and
-neither do marks under about 2.5 mm, solid filled blocks, lone full-width rules
-or strokes too faint for the ink cutoff, because those cannot be told from
-artifacts reliably. Both failure directions still have knobs: if a page with
-sparse or faint content was dropped, raise `--blank-threshold` towards `1`, use
-`--keep-blanks` to keep every page while blanks are still counted, or set
-`--blank-threshold 0` to switch the classification off entirely; in the GUI,
-disable "Skip blank pages" (it maps to `--keep-blanks`). If a truly blank page
-survives, something dark is pulling its mean down, typically punch holes, staple
-shadows or a skewed scan showing the scan-bed edge; if tuning the threshold does
-not fix it, [report the device quirk](CONTRIBUTING.md#issues-scanner-quirks).
+#### A page with content was dropped
+
+Disable "Skip blank pages" in the GUI, or use `--keep-blanks` in the CLI, to
+keep every page on the next scan. Blank pages are still counted.
+
+Other options:
+
+- Raise `--blank-threshold` toward `1` to keep more sparse or faint pages while
+  retaining blank-page detection.
+- Use `--blank-threshold 0` to disable classification entirely.
+
+Sparse or faint content can be mistaken for a blank page despite the detector's
+additional content checks. Marks smaller than about 2.5 mm, solid filled blocks,
+lone full-width rules, and strokes too faint for the ink cutoff can fail those
+checks because they cannot reliably be distinguished from scanner artifacts. The
+[blank-page detection explanation](./ARCHITECTURE.md#pipeline-blank) describes
+the threshold, measurement area, and content checks.
+
+#### A blank page was kept
+
+Try adjusting `--blank-threshold`; if tuning does not resolve the problem,
+[report the device quirk](./CONTRIBUTING.md#issues-scanner-quirks).
+
+Punch holes, staple shadows, or a skewed scan showing the scan-bed edge can
+lower the measured brightness and make a blank page appear nonblank to the
+detector.
 
 
 ### Why did automatic page size cut content near the edge?<a id="faq-edge-crop"></a>
 
-Automatic page size finds the paper by walking in from each edge until the image
-is bright enough to be paper. On the left and right edges it also requires that
-brightness to hold for 2 mm before it accepts the edge. That length requirement
-is what stops a scanner's own edge artifacts and its backing from being kept as
-part of the page, and on some devices it is worth several millimetres of width,
-or about 70 mm on a receipt scanned in a full-width window. The cost is that
-dense content sitting closer than 2 mm to a side edge of the paper, with only a
-thin white margin ahead of it, cannot be told apart from backing: it may be
-cropped away with it. Localized text and marks normally leave the column bright
-enough to be recognised as paper and are kept, as are alternating patterns such
-as a barcode reaching the edge; dense edge-adjacent content stays ambiguous. Top
-and bottom edges are unaffected. Scanners with a native black and white mode
-threshold the page before ScanMole sees it, so there is no brightness left to
-walk and the paper boundary is found in the ink instead. Automatic sizing
-removes sufficiently clear scanner borders but may crop dense content spanning
-an edge; select a fixed page size when preserving such content matters more. On
-that path content genuinely spanning most of an edge, an intentional border
-printed along the paper edge or a barcode running nearly the full height of the
-page, looks exactly like scanner backing and comes off with it, and all four
-edges are affected rather than just the sides. Content touching such a border is
-part of it and goes too. What does survive is a localized mark with paper around
-it, a stamp or a hand-written note near the edge: the crop follows a boundary
-running the length of the edge, and a mark is not one.
+Choose a fixed page size, such as `--page-size a4` for A4 pages, or select the
+size instead of "Automatic" in the GUI. Fixed sizes bypass automatic edge
+detection.
 
-The remedy is to choose a fixed page size, for example `--page-size a4` (in the
-GUI, pick the size instead of "Automatic"). A fixed size never runs the edge
-detection at all, so the whole frame is preserved.
+Automatic sizing can mistake dense edge content for scanner backing:
+
+- On gray/color scan images, dense content less than 2 mm from a side edge, with
+  only a thin white margin before it, may be cropped. This limitation affects
+  the side edges.
+- On native black-and-white scans, dense content, a printed border, or a barcode
+  spanning most of an edge can be removed, along with content touching that
+  border. All four edges can be affected.
+
+Localized marks surrounded by paper are normally retained. See
+[automatic page sizing](./ARCHITECTURE.md#pipeline-autosize) for the detection
+rules and their limits.
 
 
 ## Contributing<a id="contributing"></a>
