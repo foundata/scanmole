@@ -585,7 +585,7 @@ maintenance and used on a daily basis by the maintainers.
 
 <!--REUSE-IgnoreStart-->
 <!-- rumdl-disable MD034 --><!-- should match SPDX-PackageSupplier -->
-Copyright (c) 2026, [foundata GmbH](https://foundata.com/)
+Copyright (c) 2025, 2026, [foundata GmbH](https://foundata.com/)
 (https://foundata.com)
 <!-- rumdl-enable MD034 -->
 
